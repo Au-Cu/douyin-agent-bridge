@@ -34,13 +34,13 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.1.0',projectRoot:project,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.2.0',projectRoot:project,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const snapshot=store.snapshot();snapshot.knowledge=await Promise.all(snapshot.knowledge.map(async k=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
-        return json(res,{...snapshot,runtime:{codex:codex.ready,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/threads')return json(res,await codex.threads(url.searchParams.get('q')||''));
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
@@ -62,6 +62,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(req.method!=='POST')return json(res,{error:'未找到接口'},404);
       const body=await jsonBody(req);
+      if(path==='/api/codex/reconnect')return json(res,await codex.reconnect());
       if(path==='/api/shutdown'){
         if((engine.busy||engine.taskBusy)&&body.force!==true)throw new Error('仍有任务执行中，请先等待任务结束；强制停止会把执行结果标为需要核实');
         json(res,{ok:true});setTimeout(shutdown,100);return;
@@ -137,7 +138,7 @@ const server=http.createServer(async(req,res)=>{
         // Keep outdated draft replies as audit records; they no longer represent
         // the user's requested full-visual analysis and must not be sent later.
         store.db.prepare("UPDATE outbox SET status='superseded',error='已由连续视觉重分析替代，原草稿保留' WHERE status='pending' AND kind='text' AND json_extract(payload,'$.videoId')=?").run(String(body.id));
-        engine.reanalyze(String(body.id)).catch(e=>log(e.message,'error'));return json(res,{ok:true});
+        engine.reanalyze(String(body.id),{refreshAuth:true}).catch(e=>log(e.message,'error'));return json(res,{ok:true});
       }
       return json(res,{error:'未找到接口'},404);
     }
@@ -150,7 +151,7 @@ const server=http.createServer(async(req,res)=>{
 });
 server.listen(port,'127.0.0.1',()=>{console.log('抖音 Codex 助手控制台：'+origin);log('控制台已启动，等待账号连接');});
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
-engine.start();codex.connect().then(()=>log('本机 Codex 已连接')).catch(e=>log('Codex 连接失败：'+e.message,'error'));
+engine.start();codex.startAuthWatcher();codex.connect().then(()=>log('本机 Codex 已连接')).catch(e=>log('Codex 连接失败：'+e.message,'error'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);engine.stop();codex.close();await adapter.close();server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

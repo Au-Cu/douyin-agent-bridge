@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Reload local Codex authentication after account changes without replacing owner binding, target IDs or video progress.
+- Defer reconnection during active work; never replay uncertain execution tasks.
+- Resume videos paused by authentication or quota errors and expose reconnect controls in the console and Douyin.
+- Retry authentication failures once only for isolated read-only visual analysis.
+- Load fixed assistant and visual rules from prompts/*.md at the session level; shorten per-message inputs.
+- Preserve existing target-project instructions when updating the assistant's rules.
+
 ## 0.1.0
 
 - Douyin private video shares and bound-owner instructions.

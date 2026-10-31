@@ -16,7 +16,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   const server=http.createServer(async(req,res)=>{
     if(req.url.startsWith('/api/')){
       res.setHeader('Content-Type','application/json');
-      res.end(JSON.stringify(req.url==='/api/state'?state:req.url==='/api/threads'?threads:[]));return;
+      res.end(JSON.stringify(req.url==='/api/state'?state:req.url==='/api/threads'?threads:req.url==='/api/codex/reconnect'?{deferred:false,auth:{status:'ready'}}:[]));return;
     }
     const name=req.url==='/'?'index.html':req.url.slice(1);
     if(!['index.html','app.js','style.css'].includes(name)){res.writeHead(404).end();return;}
@@ -51,6 +51,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     await page.setViewportSize({width:390,height:900});
     assert.equal(await page.locator('#targetList small').textContent(),longName);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    await page.getByRole('button',{name:'重新连接 Codex'}).click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('已读取本机当前 Codex 登录'));
     assert.deepEqual(errors,[]);
   }finally{
     await browser?.close();await new Promise(resolve=>server.close(resolve));

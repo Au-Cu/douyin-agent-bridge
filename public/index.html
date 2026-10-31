@@ -7,7 +7,7 @@
   <section class="panel setup"><div class="section-title"><h2>连接助手</h2><span>首次连接完成这三步</span></div>
     <div class="steps"><div><b>01</b><h3>登录抖音助手账号</h3><p>用专门的助手账号登录打开的 Edge 窗口。主号与它互关后，从手机给它发一条私信。</p><button id="openBrowser">打开抖音登录窗口</button></div>
     <div><b>02</b><h3>绑定你的私信会话</h3><p>在浏览器里点开你的主号会话，再绑定。助手只接收这个账号的新消息。</p><button id="bindOwner">绑定当前会话</button><small id="scanInfo"></small></div>
-    <div><b>03</b><h3>准备 Codex 与口播转写</h3><p>建立固定的调度聊天。视频按完整时间轴逐段读取画面，口播在本机转写。</p><div class="button-row"><button id="createCoordinator">创建调度聊天</button><button id="setupAsr" class="secondary">安装转写模型</button></div></div></div>
+    <div><b>03</b><h3>准备 Codex 与口播转写</h3><p>建立固定的调度聊天。视频按完整时间轴逐段读取画面，口播在本机转写。</p><div class="button-row"><button id="createCoordinator">创建调度聊天</button><button id="reconnectCodex" class="secondary">重新连接 Codex</button><button id="setupAsr" class="secondary">安装转写模型</button></div></div></div>
     <div class="listen-row"><div><strong id="listenTitle">准备好后开始监听</strong><small>启动时跳过历史消息；电脑需要保持运行。</small></div><button id="toggleListen" class="primary">开始监听</button></div>
   </section>
   <section class="panel"><div class="section-title"><h2>可以交给哪些 Codex 聊天</h2><button id="loadThreads" class="secondary">读取本机聊天</button></div><p class="hint">给允许接收任务的聊天设置一个好记的别名。之后在抖音说「把这个交给别名去做」，或发送「/派给 别名 具体任务」。</p>

@@ -1,5 +1,5 @@
 {
-  "directories": ["src", "public", "test"],
+  "directories": ["src", "public", "test", "prompts"],
   "files": [
     "README.md", "AGENTS.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "SECURITY.md", "CHANGELOG.md",
     "package.json", "package-lock.json", "release-manifest.json", ".gitignore", ".gitattributes",

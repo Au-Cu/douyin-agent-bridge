@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);let state=null,targets=[],threads=[],dirty=false,busy=false;
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const statuses={queued:'排队中',running:'执行中',done:'已完成',failed:'处理失败',uncertain:'需要核实',pending:'待发送',sent:'已送达',sending:'发送中',new:'等待处理',processing:'处理中'};
+const statuses={queued:'排队中',running:'执行中',done:'已完成',failed:'处理失败',waiting_auth:'等待账号恢复',uncertain:'需要核实',pending:'待发送',sent:'已送达',sending:'发送中',new:'等待处理',processing:'处理中'};
 async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||'请求失败');return data;}
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'error':'';$('notice').style.display='block';}
 function action(id,fn){$(id).addEventListener('click',async()=>{const button=$(id);button.disabled=true;try{await fn();await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}});}
@@ -26,7 +26,7 @@ async function refresh(){
     $('liveBadge').textContent=state.config.enabled?'正在监听':'尚未监听';$('liveBadge').className='badge'+(state.config.enabled?' active':'');
     $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接'})[r.browser]||r.browser;
     $('ownerStatus').textContent=state.config.owner?'已绑定：'+state.config.owner.displayName:'尚未绑定主人会话';
-    $('codexStatus').textContent=r.codex?'已连接':'等待连接';$('coordinatorStatus').textContent=state.config.coordinator?'固定调度聊天已建立':'尚未建立调度聊天';
+    $('codexStatus').textContent=r.auth?.reconnectPending?'等待切换连接':r.auth?.status==='login'?'请重新登录':r.auth?.status==='quota'?'额度暂不可用':r.codex?'已连接':'等待连接';$('coordinatorStatus').textContent=state.config.coordinator?'固定调度聊天已建立':'尚未建立调度聊天';
     $('asrStatus').textContent=r.asrReady?'已就绪':r.asrInstalling?'正在安装':'尚未安装';$('setupAsr').disabled=r.asrInstalling||r.asrReady;
     $('createCoordinator').disabled=!!state.config.coordinator;
     $('knowledgeCount').textContent=state.counts.knowledge;$('taskCount').textContent='执行中 '+state.counts.runningTasks+' · 排队 '+state.counts.queuedTasks;
@@ -37,7 +37,7 @@ async function refresh(){
     if(r.processing&&r.visualProgress){const p=r.visualProgress;$('listenTitle').textContent=`连续视觉分析 ${p.completed}/${p.total||'…'} 段 · ${p.fps} 帧/秒`;}
     $('taskList').innerHTML=state.tasks.map(t=>`<div class="item"><strong>${escape(t.alias)}</strong><span class="pill ${['failed','uncertain'].includes(t.status)?'error':''}">${statuses[t.status]||escape(t.status)}</span><p>${escape(t.result?.slice(0,200)||('编号 '+t.id.slice(0,8)))}</p></div>`).join('')||'<p class="empty">你指示派发的任务会出现在这里。</p>';
     $('outboxList').innerHTML=state.outbox.filter(o=>!['sent','superseded'].includes(o.status)).slice(0,5).map(o=>`<div class="item"><span class="pill ${o.status==='uncertain'?'error':''}">回复：${statuses[o.status]}</span><p>${escape(o.body.slice(0,100))}</p><small>${escape(o.error)}</small>${o.status==='uncertain'?`<button data-delivered="${o.id}">已在抖音收到</button> <button data-resend="${o.id}">确认未收到，重新发送</button>`:''}</div>`).join('');
-    const failed=state.messages.filter(m=>m.status==='failed'&&m.kind==='video');
+    const failed=state.messages.filter(m=>['failed','waiting_auth'].includes(m.status)&&m.kind==='video');
     $('outboxList').innerHTML+=failed.slice(0,3).map(m=>`<div class="item"><small>视频处理失败：${escape(m.result)}</small><button data-retry="${escape(m.id)}">重试这条视频</button></div>`).join('');
     $('eventList').innerHTML=state.events.map(e=>`<div class="event ${escape(e.level)}">${new Date(e.created).toLocaleTimeString('zh-CN',{hour12:false})}　${escape(e.message)}</div>`).join('');
     const approvals=await api('approvals');$('approvalList').innerHTML=approvals.map(a=>`<div class="approval"><strong>待确认操作 #${escape(a.id)}</strong><pre>${escape(a.description)}</pre><button data-approve="${escape(a.id)}">同意本次</button> <button data-decline="${escape(a.id)}">拒绝</button></div>`).join('');
@@ -46,6 +46,7 @@ async function refresh(){
 action('openBrowser',async()=>{notice('正在打开 Edge。请登录助手账号，然后打开与你主号的私信会话。');await api('browser/open',{});});
 action('bindOwner',async()=>{const r=await api('bind',{});notice('已绑定：'+r.owner.displayName);});
 action('createCoordinator',async()=>{await api('coordinator',{});notice('固定调度聊天已建立。');});
+action('reconnectCodex',async()=>{const r=await api('codex/reconnect',{});notice(r.deferred?'当前任务仍在执行，结束后会重新连接。':r.auth.status==='ready'?'已读取本机当前 Codex 登录，视频进度和目标名单已保留。':r.auth.message,!r.deferred&&r.auth.status!=='ready');});
 action('setupAsr',async()=>{await api('asr/setup',{});notice('转写模型正在后台安装，可在运行记录查看进度。');});
 action('toggleListen',async()=>{await api('listen',{enabled:!state.config.enabled});notice(state.config.enabled?'已暂停接收新指令。':'监听已启动。请从手机分享一条新视频。');});
 action('loadThreads',async()=>{threads=await api('threads');renderThreadOptions();notice('已读取 '+threads.length+' 个本机聊天。');});

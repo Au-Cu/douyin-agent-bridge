@@ -7,7 +7,7 @@ const root=join(projectRoot,'data','test-runs','portable-'+Date.now(),'fresh clo
 for(const file of await collectReleaseFiles()){await mkdir(dirname(join(root,file)),{recursive:true});await copyFile(join(projectRoot,file),join(root,file));}
 const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=reservation.address().port;await new Promise(r=>reservation.close(r));
 const url='http://127.0.0.1:'+port;
-const proc=spawn(process.execPath,['--use-env-proxy','src/server.mjs','--port',String(port)],{cwd:root,env:{...process.env,CODEX_BIN:join(root,'test','fixture-rpc.mjs')},windowsHide:true,stdio:['ignore','ignore','pipe']});
+const proc=spawn(process.execPath,['--use-env-proxy','src/server.mjs','--port',String(port)],{cwd:root,env:{...process.env,CODEX_HOME:join(root,'data','fixture-codex-home'),CODEX_BIN:join(root,'test','fixture-rpc.mjs')},windowsHide:true,stdio:['ignore','ignore','pipe']});
 let stderr='';proc.stderr.on('data',b=>{stderr=(stderr+b).slice(-3000);});let cookie;
 const request=async(path,{method='GET',body,auth=true}={})=>fetch(url+'/api/'+path,{method,headers:{...(auth?{Cookie:cookie}:{}),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(5000)});
 try{
@@ -22,6 +22,9 @@ try{
   for(const key of ['knowledge','messages','outbox','tasks'])assert.equal(state[key].length,0);
   assert.equal(existsSync(join(root,'data','browser-profile')),false);
   assert.equal((await request('state',{auth:false})).status,401);
+  const reconnected=await (await request('codex/reconnect',{method:'POST',body:{}})).json();assert.equal(typeof reconnected.deferred,'boolean');
+  let recovered;for(let i=0;i<40;i++){recovered=await (await request('state')).json();if(recovered.runtime.auth.status==='ready'&&!recovered.runtime.auth.reconnectPending)break;await new Promise(r=>setTimeout(r,100));}
+  assert.equal(recovered.runtime.auth.status,'ready');assert.equal(recovered.runtime.auth.reconnectPending,false);assert.equal(recovered.config.owner,null);
   if(process.platform==='win32'){
     const wrong=await new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(projectRoot,'Stop.ps1'),'-Port',String(port)],{cwd:projectRoot,windowsHide:true,stdio:'ignore'});p.on('error',reject);p.on('exit',resolve);});
     assert.notEqual(wrong,0,'another copy must not stop this instance');assert.equal((await request('state')).status,200);
@@ -30,4 +33,4 @@ try{
   }else await request('shutdown',{method:'POST',body:{}});
   if(proc.exitCode===null){let timer;try{await Promise.race([once(proc,'exit'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Shutdown timed out')),10000);})]);}finally{clearTimeout(timer);}}
   console.log(JSON.stringify({ok:true,cleanOwnerAndHistory:true,unicodeAndSpaces:true,otherCopyStopBlocked:process.platform==='win32',modelCalls:0,sourceFiles:(await collectReleaseFiles()).length},null,2));
-}finally{if(proc.exitCode===null){try{await request('shutdown',{method:'POST',body:{force:true}});}catch{}if(proc.exitCode===null)proc.kill();}}
+}finally{if(proc.exitCode===null){try{await request('shutdown',{method:'POST',body:{force:true}});}catch{}let timer;try{if(proc.exitCode===null)await Promise.race([once(proc,'exit'),new Promise(r=>{timer=setTimeout(r,1500);})]);}finally{clearTimeout(timer);}if(proc.exitCode===null)proc.kill();}}
