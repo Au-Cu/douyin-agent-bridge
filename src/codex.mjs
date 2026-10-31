@@ -68,7 +68,7 @@ export class CodexClient extends EventEmitter {
     this.proc.stderr.on('data',()=>{}); // Do not copy auth diagnostics or credentials to app logs.
     this.lines=createInterface({input:this.proc.stdout});
     this.lines.on('line',line=>{if(proc!==this.proc)return;try { this.#receive(JSON.parse(line)).catch(e=>this.log('Codex 消息处理失败：'+e.message,'error')); } catch(e) { this.log('Codex 消息解析失败：'+e.message,'error'); } });
-    await this.request('initialize',{clientInfo:{name:'douyin_codex_bridge',title:'抖音 Codex 助手',version:'0.2.0'},capabilities:{experimentalApi:true}},20000);
+    await this.request('initialize',{clientInfo:{name:'douyin_codex_bridge',title:'抖音 Codex 助手',version:'0.2.1'},capabilities:{experimentalApi:true}},20000);
     this.send({method:'initialized'}); this.ready=true;
   }
   send(message) { if(!this.proc?.stdin?.writable) throw new Error('Codex 未连接'); this.proc.stdin.write(JSON.stringify(message)+'\n'); }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Move target-chat video reading instructions into prompts/task-reference.md.
+- Keep original video indexes and image attachments while replacing repeated full transcripts and visual notes with short summaries and file references.
+
 ## 0.2.0
 
 - Reload local Codex authentication after account changes without replacing owner binding, target IDs or video progress.

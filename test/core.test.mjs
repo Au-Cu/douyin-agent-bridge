@@ -49,7 +49,7 @@ function harness(){
 test('派任务携带主人原话及学习资料，只接受白名单目标',()=>{
   const h=harness();h.store.addKnowledge({id:'vid',title:'讲解',transcript:'具体视频资料',summary:'方法',path:'note.md'});
   assert.throws(()=>h.engine.dispatch('陌生聊天','做事','主人指示'),/未加入/);
-  const id=h.engine.dispatch('网站','修改首页','把视频交给网站');const t=h.store.queuedTasks()[0];assert.equal(t.id,id);assert.match(t.prompt,/把视频交给网站/);assert.match(t.prompt,/具体视频资料/);h.store.close();
+  const id=h.engine.dispatch('网站','修改首页','把视频交给网站');const t=h.store.queuedTasks()[0];assert.equal(t.id,id);assert.match(t.prompt,/把视频交给网站/);assert.match(t.prompt,/note\.md/);assert.match(t.prompt,/task-reference\.md/);h.store.close();
 });
 test('发送回执不明时不自动重复发送',async()=>{
   const h=harness();let calls=0;h.adapter.send=async()=>{calls++;throw Object.assign(new Error('回执丢失'),{uncertain:true});};h.engine.reply('处理完成');
