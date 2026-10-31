@@ -61,10 +61,18 @@ export function scanConversation() {
     messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl});
   }
   messages.sort((a,b)=>a.created-b.created);
+  const interactiveRows=rows.filter(row=>{const e=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row,r=e.getBoundingClientRect(),x=r.x+Math.min(24,r.width/4),y=r.y+Math.min(24,r.height/4);if(x<0||y<0||x>=innerWidth||y>=innerHeight)return false;const hit=document.elementFromPoint(x,y);return !!hit&&(e===hit||e.contains(hit));}).length;
   const inbound=messages.filter(m=>m.direction==='in');
   const last=inbound.at(-1);
   const peer=last?{chatKey:last.conversation||'peer:'+last.sender,peerUid:last.sender,displayName:clean(title?.textContent)||last.sender}:null;
-  return {url:location.href,title:clean(title?.textContent),peer,messages,diagnostics:{rows:rows.length,parsed:messages.length,unknownDirection,withoutIdentity},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
+  return {url:location.href,title:clean(title?.textContent),peer,messages,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
+}
+
+export async function foregroundFrame(frame){
+  for(let f=frame;f.parentFrame();f=f.parentFrame()){
+    const reachable=await(await f.frameElement()).evaluate(e=>{const r=e.getBoundingClientRect();if(!r.width||!r.height||getComputedStyle(e).visibility==='hidden')return false;return [[.5,.5],[.15,.15],[.85,.85]].some(([dx,dy])=>{const x=r.x+r.width*dx,y=r.y+r.height*dy;if(x<0||y<0||x>=innerWidth||y>=innerHeight)return false;const top=document.elementFromPoint(x,y);return top===e||e.contains(top);});});
+    if(!reachable)return false;
+  }return true;
 }
 
 export function isOwnerMessage(message,owner,armedAt) {
@@ -96,6 +104,14 @@ export function inspectComposers() {
   }).filter(e=>e.visible).sort((a,b)=>b.score-a.score);
 }
 
+export function inspectChatSurface(){
+  const visible=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(e).visibility!=='hidden';};
+  const geometry=e=>{const r=e.getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)};};
+  const rows=[...document.querySelectorAll('[data-bridge-message-id]')].filter(visible);
+  const hit=e=>{const r=e.getBoundingClientRect(),x=Math.max(0,Math.min(innerWidth-1,r.x+Math.min(24,r.width/4))),y=Math.max(0,Math.min(innerHeight-1,r.y+Math.min(24,r.height/4))),top=document.elementFromPoint(x,y);return {clear:!!top&&(e===top||e.contains(top)),topClass:String(top?.className||'').slice(0,160),topTag:top?.tagName||'',modalId:top?.closest('[id]')?.id||''};};
+  return {viewport:{width:innerWidth,height:innerHeight},messages:rows.length,rows:rows.slice(-6).map(row=>{const target=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row;return {className:String(row.className),...geometry(target),hit:hit(target)};}),layers:[...document.querySelectorAll('[role="dialog"],[aria-modal="true"],#pc-im-popup-container,[class*="semi-modal-wrap"]')].filter(visible).map(e=>({tag:e.tagName,id:e.id,className:String(e.className).slice(0,160),...geometry(e),messageRows:e.querySelectorAll('[data-bridge-message-id]').length,iframes:e.querySelectorAll('iframe').length})).slice(0,12)};
+}
+
 // Inspect only a visible message context menu. Emoji identity must come from
 // observable labels or a Unicode code point in the actual image URL.
 export function captureMessageMenu(){
@@ -115,13 +131,15 @@ export function inspectReactionChoices(token) {
   const candidates=[...new Set(roots.flatMap(root=>[...root.querySelectorAll('button,[role="button"],img,[class*="emoji" i],[class*="reaction" i]')]))].filter(visible);
   const choices=[];
   for(const e of candidates){
-    const img=e.matches('img')?e:e.querySelector('img');
+    const imgs=e.matches('img')?[e]:[...e.querySelectorAll('img')];
+    if(imgs.length>1)continue; // A whole row/grid is never one emoji target.
+    const img=imgs[0];
     const label=[e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('data-title'),e.textContent?.length<30?e.textContent:'',img?.alt,img?.title].filter(Boolean).join(' ').trim();
     const src=img?.getAttribute('src')||'';
     const value=label+' '+src;
     const emoji=/👌|\[OK\]|(?:^|[\s_/-])ok[_\s.-]?(?:hand)?(?:[\s_.?/-]|$)|(?:^|[^a-f\d])1f44c(?:[^a-f\d]|$)/i.test(value)?'👌':/👀|眼睛|围观|(?:^|[^a-f\d])1f440(?:[^a-f\d]|$)/i.test(value)?'👀':/🎉|庆祝|撒花|(?:^|[^a-f\d])1f389(?:[^a-f\d]|$)/i.test(value)?'🎉':/✅|完成|勾选|2705/i.test(value)?'✅':/💪|加油|肌肉|奋斗|1f4aa/i.test(value)?'💪':/🤠|牛仔|1f920/i.test(value)?'🤠':/👍|\[赞\]|\[强\]|点赞|(?:^|[^a-f\d])1f44d(?:[^a-f\d]|$)/i.test(value)?'👍':'';
     if(!emoji)continue;
-    const target=e.closest('button,[role="button"]')||e;
+    const target=img?(img.closest('button,[role="button"]')||img):(e.closest('button,[role="button"]')||e);
     if(choices.some(c=>c.element===target))continue;
     const index=choices.length;target.setAttribute('data-bridge-reaction-choice',token+'-'+index);
     choices.push({element:target,index,emoji,label:label.slice(0,80),selected:target.getAttribute('aria-pressed')==='true'||target.getAttribute('data-state')==='checked'});
@@ -135,6 +153,17 @@ export function markMoreReactions(){
     const options=[...root.querySelectorAll('button,[role="button"],[class*="expand" i],[class*="more" i]')].filter(e=>e.getClientRects().length);
     const more=options.find(e=>/展开|更多|expand|more/i.test([e.getAttribute('aria-label'),e.getAttribute('title'),e.textContent,String(e.className)].join(' ')));
     if(more){more.setAttribute('data-bridge-more-reactions','true');return true;}
+    // Douyin's native quick-reaction row uses an unlabeled circular SVG caret.
+    // Restrict structural detection to the row containing multiple emoji images,
+    // never to message actions such as delete, share or reply.
+    for(const img of root.querySelectorAll('img[class*="PopBodyEmojiQuickReply"]')){
+      let row=img.parentElement;for(let depth=0;depth<4&&row&&root.contains(row);depth++,row=row.parentElement){
+        if(row.querySelectorAll('img[class*="PopBodyEmojiQuickReply"]').length<2)continue;
+        const carets=[...row.querySelectorAll('svg')].filter(svg=>{const r=svg.getBoundingClientRect();return svg.querySelector('circle')&&r.width>0&&r.width<=72&&r.height<=72&&svg.getClientRects().length;});
+        if(carets.length===1){const target=carets[0].closest('button,[role="button"]')||carets[0].parentElement;if(!/回复|复制|分享|转发|多选|删除|撤回/.test(target.innerText||'')){target.setAttribute('data-bridge-more-reactions','true');return true;}}
+        break;
+      }
+    }
   }
   return false;
 }
@@ -176,6 +205,7 @@ export class DouyinAdapter {
       if(scan.loginRequired)return false;
       for(const frame of this.page.frames()){
         if(!/^https:\/\/(www\.)?douyin\.com\//.test(frame.url()))continue;
+        if(!await foregroundFrame(frame))continue;
         const count=await frame.evaluate(markOwnerConversation,owner.displayName);
         if(count>1)throw new Error('联系人重名，需手动选择后核验账号');
         if(count===1&&(!clicked||attempt===10)){await frame.locator('[data-bridge-owner-choice="true"]').click({timeout:3000});clicked=true;}
@@ -190,13 +220,19 @@ export class DouyinAdapter {
     const scans=[];
     for(const page of candidates)for(const frame of page.frames()){
       if(!/^https:\/\/(www\.)?douyin\.com\//.test(frame.url()))continue;
-      try{scans.push({page,frame,value:await frame.evaluate(scanConversation)});}catch{}
+      try{if(await foregroundFrame(frame))scans.push({page,frame,value:await frame.evaluate(scanConversation)});}catch{}
     }
-    const best=scans.sort((a,b)=>b.value.messages.length-a.value.messages.length)[0];
+    const best=scans.sort((a,b)=>Number(b.value.diagnostics.interactiveRows>0)-Number(a.value.diagnostics.interactiveRows>0)||b.value.messages.length-a.value.messages.length)[0];
     const value=best?.value||{peer:null,messages:[],diagnostics:{pages:candidates.length},loginRequired:true};
     if(best){this.page=best.page;this.chatFrame=best.frame;}
     this.lastScan=value;
-    this.status=value.loginRequired?'waiting_login':value.peer?'ready':'select_chat';return value;
+    this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';return value;
+  }
+  async uiDiagnostics(){
+    if(!this.page)return {opened:false};const frames=[];
+    for(const f of this.page.frames())if(/^https:\/\/(?:[a-z\d-]+\.)?douyin\.com\//i.test(f.url())){
+      let host=null;try{if(f!==this.page.mainFrame())host=await(await f.frameElement()).evaluate(e=>{const r=e.getBoundingClientRect(),top=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {visible:!!e.getClientRects().length&&r.width>0&&r.height>0,hit:top===e||e.contains(top),className:String(e.className),parentClass:String(e.parentElement?.className||'').slice(0,100)};});frames.push({main:f===this.page.mainFrame(),host,...await f.evaluate(inspectChatSurface)});}catch{}
+    }return {opened:true,frames};
   }
   async send(owner,text,{plainText=false}={}) {
     if(this.sending)throw new Error('正在发送上一条回复');
@@ -234,7 +270,7 @@ export class DouyinAdapter {
       this.lastReactionDiagnostic={messageId,stage:'locating'};
       surface=this.chatFrame||this.page;
       if(surface.mainFrame)surface=surface.mainFrame();
-      menuSurfaces=[...new Set([surface,...this.page.frames().filter(f=>/^https:\/\/([a-z\d-]+\.)?douyin\.com\//i.test(f.url()))])];
+      menuSurfaces=[surface];for(const frame of this.page.frames())if(!menuSurfaces.includes(frame)&&/^https:\/\/([a-z\d-]+\.)?douyin\.com\//i.test(frame.url())&&await foregroundFrame(frame))menuSurfaces.push(frame);
       const row=surface.locator('[data-bridge-message-id="'+messageId+'"]');
       // The message list virtualizes old cards. Scroll only this bound chat,
       // then restore its tail so incoming messages stay visible to the listener.
@@ -262,17 +298,22 @@ export class DouyinAdapter {
           return {tag:n.tagName,className:String(n.className).slice(0,120),handlers:Object.keys(props).filter(k=>/^on(?:ContextMenu|MouseDown|MouseUp|PointerDown|Click)$/.test(k)&&typeof props[k]==='function'),contextMenu:typeof props.onContextMenu==='function'?String(props.onContextMenu).slice(0,500):undefined};
         })};
       });
+      await target.scrollIntoViewIfNeeded({timeout:2500});const hit=await target.evaluate(e=>{
+        const r=e.getBoundingClientRect();for(const [x,y]of [[Math.min(24,r.width/4),Math.min(24,r.height/4)],[r.width/2,r.height/2],[Math.min(12,r.width/4),Math.max(1,r.height-12)]]){const top=document.elementFromPoint(r.x+x,r.y+y);if(top&&(top===e||e.contains(top)))return {clear:true,x,y};}return {clear:false};
+      });
+      this.lastReactionDiagnostic={messageId,structure,stage:'before_menu',hit};
+      if(!hit.clear||!await foregroundFrame(surface))return {supported:false,notSubmitted:true,retryable:true,code:'OVERLAY_BLOCKED',reason:'抖音弹层遮挡原消息，尚未点击表情；弹层关闭后可恢复。'};
       await Promise.all(menuSurfaces.map(f=>f.evaluate(captureMessageMenu)));
       // The center of a video card is the SVG play control, which does not open
       // the message menu. Use a point inside the card away from that control.
-      const bounds=await target.boundingBox();const position=bounds?{x:Math.min(24,bounds.width/4),y:Math.min(24,bounds.height/4)}:undefined;
+      const position={x:hit.x,y:hit.y};
       await target.click({button:'right',timeout:3500,...(position?{position}:{})});
       await new Promise(r=>setTimeout(r,250));
       const token=String(Date.now());let menus=await Promise.all(menuSurfaces.map(async(f,i)=>({surface:f,token:token+'f'+i,value:await f.evaluate(inspectReactionChoices,token+'f'+i)})));
       this.lastReactionDiagnostic={messageId,structure,frames:menus.map((m,i)=>({frame:i,...m.value}))};
       let selected;
       for(const emoji of emojis){selected=menus.map(m=>({menu:m,choice:m.value.choices.find(c=>c.emoji===emoji)})).find(c=>c.choice);if(selected)break;}
-      if(!selected&&!probeOnly){
+      if(!selected){
         for(const frame of menuSurfaces){if(await frame.evaluate(markMoreReactions)){await frame.locator('[data-bridge-more-reactions="true"]').first().click({timeout:2500});await new Promise(r=>setTimeout(r,200));break;}}
         menus=await Promise.all(menuSurfaces.map(async(f,i)=>({surface:f,token:token+'more'+i,value:await f.evaluate(inspectReactionChoices,token+'more'+i)})));
         this.lastReactionDiagnostic.frames=menus.map((m,i)=>({frame:i,...m.value}));
@@ -296,7 +337,7 @@ export class DouyinAdapter {
         if(evidence.count>before.count)return {supported:true,verified:true,emoji:choice.emoji};
       }
       throw new UncertainDelivery('已点击消息表情，但未能核验贴到原消息，不重复点击');
-    }catch(e){if(submitted)e.uncertain=true;throw e;}
+    }catch(e){if(submitted)e.uncertain=true;else if(/intercepts pointer events/.test(e.message)){e.notSubmitted=true;e.retryable=true;e.code='OVERLAY_BLOCKED';}throw e;}
     finally{if(surface){await this.page.keyboard.press('Escape').catch(()=>{});await Promise.all(menuSurfaces.map(f=>f.evaluate(()=>{
       document.removeEventListener('contextmenu',globalThis.__douyinBridgeContextListener,true);
       const scroll=globalThis.__douyinBridgeReactionScroller;if(scroll?.isConnected)scroll.scrollTop=scroll.scrollHeight;

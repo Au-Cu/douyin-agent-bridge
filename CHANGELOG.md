@@ -2,6 +2,9 @@
 
 ## 0.5.0
 
+- Use persistent numeric task/need labels and short titles; announce new task identities once and group execution, reply delivery and reactions by their actual operation association.
+- Allow different Codex chats to run concurrently, serialize only the same target chat and reuse loaded chats without repeated resume calls.
+- Handle foreground chat layers and unlabeled native reaction expansion; click individual emoji leaves rather than rows or grids, and bound retries to proven unsubmitted clicks.
 - Store account state and memory in a fixed per-user data directory, independent of source folders and launcher copies; support explicit isolated profiles.
 - Migrate legacy data without deleting the original or overwriting an existing account, and rebase video/evidence paths.
 - Commit settings to SQLite with FULL durability, atomic configuration mirrors and consistent automatic/manual snapshots.

@@ -14,6 +14,8 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     runtime:{browser:'closed',codex:false},counts:{knowledge:0,runningTasks:0,queuedTasks:0},
     knowledge:[],tasks:[],outbox:[],messages:[],events:[]
   };
+  const reaction=(stage,sent,total=1,errors=[])=>({stage,sent,total,pending:0,uncertain:0,unavailable:sent===total?0:total-sent,errors});
+  state.work=[{id:'operation-A',number:1,title:'修改首页',kind:'text',status:'blocked',detail:'只有首页任务等待写入权',receipts:[reaction('roger',0,1,['此消息菜单没有可核验的贴表情选项']),reaction('active',0,0),reaction('done',0,0)],replies:[],targets:[]},{id:'operation-B',number:2,title:'整理资料',kind:'text',status:'done',detail:'资料任务与回复已完成',receipts:['roger','active','done'].map(s=>reaction(s,1)),replies:[{id:'reply-B',status:'sent',notification:false}],targets:[]}];
   const catalog={defaults:{model:'fixture-sol',effort:'max'},models:[{model:'fixture-sol',displayName:'Fixture Sol',supportedReasoningEfforts:['low','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority',name:'Fast'}]}]};
   let preferencesSaved;
   const server=http.createServer(async(req,res)=>{
@@ -38,6 +40,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     const page=await browser.newPage({viewport:{width:1100,height:900}}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto('http://127.0.0.1:'+server.address().port);
+    await page.locator('[data-operation="operation-A"]').waitFor();const cardA=page.locator('[data-operation="operation-A"]'),cardB=page.locator('[data-operation="operation-B"]');assert.match(await cardA.textContent(),/任务 1：修改首页/);assert.match(await cardA.textContent(),/收到：未送达/);assert.doesNotMatch(await cardA.textContent(),/整理资料/);assert.match(await cardB.textContent(),/任务 2：整理资料/);assert.match(await cardB.textContent(),/完成：已送达/);assert.equal(await cardA.locator('.work-details').getAttribute('open'),null);
     await page.getByRole('button',{name:'读取本机聊天'}).click();
     await page.waitForFunction(()=>document.querySelectorAll('#threadSelect option').length===3);
     await page.selectOption('#threadSelect','long-thread-id');

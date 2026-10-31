@@ -14,7 +14,7 @@ export function approvalResponse(request,allow) {
 export class CodexClient extends EventEmitter {
   constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome() }={}) {
     super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome}); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
-    this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
+    this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.loaded=new Set();this.threadLocks=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
   }
   async connect() {
     if(this.closed)throw Object.assign(new Error('Codex 客户端已关闭'),{code:'CODEX_CLIENT_CLOSED'});
@@ -28,7 +28,7 @@ export class CodexClient extends EventEmitter {
     if(this.runs.size||this.pending.size)throw authError('pending');
     const recovered=this.generation>0&&(changed||this.needsReconnect);
     const old=this.proc;this.proc=null;this.ready=false;this.lines?.close();old?.kill();
-    this.early.clear();this.approvals.clear();this.profiles.clear();this.usage.clear();
+    this.early.clear();this.approvals.clear();this.profiles.clear();this.loaded.clear();this.usage.clear();
     this.loadedRevision=revision;this.needsReconnect=false;
     try{
       await this.#connect();
@@ -77,13 +77,14 @@ export class CodexClient extends EventEmitter {
     const id=++this.seq;
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{this.pending.delete(id); reject(new Error(`${method} 超时`));},timeoutMs);
-      this.pending.set(id,{resolve,reject,timer,method});
+      this.pending.set(id,{resolve,reject,timer,method,threadId:params.threadId});
       try { this.send({id,method,params}); } catch(e) {clearTimeout(timer);this.pending.delete(id);reject(e);}
     });
   }
   #disconnect(error,proc=this.proc) {
     if(proc!==this.proc)return;
     this.ready=false;
+    this.loaded.clear();
     for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);} this.pending.clear();
     for(const r of this.runs.values()){clearTimeout(r.timer);r.reject(error);} this.runs.clear();
     this.approvals.clear();
@@ -93,6 +94,7 @@ export class CodexClient extends EventEmitter {
     if(msg.id!==undefined&&!msg.method) {
       const p=this.pending.get(msg.id); if(!p)return;
       clearTimeout(p.timer);this.pending.delete(msg.id);
+      if(!msg.error){if(['thread/start','thread/resume'].includes(p.method)&&(msg.result?.thread?.id||p.threadId))this.loaded.add(msg.result?.thread?.id||p.threadId);if(['thread/unsubscribe','thread/archive'].includes(p.method))this.loaded.delete(p.threadId);}
       msg.error?p.reject(this.#noteFailure(Object.assign(new Error(msg.error.message||JSON.stringify(msg.error)),{remote:true,code:msg.error.code,rpcMethod:p.method,notSubmitted:writerConflict(msg.error.message)&&['thread/resume','turn/start'].includes(p.method)}))):p.resolve(msg.result); return;
     }
     if(msg.id!==undefined&&msg.method) {
@@ -176,11 +178,15 @@ export class CodexClient extends EventEmitter {
       finally{if(thread&&generation===this.generation&&this.ready)await this.request('thread/unsubscribe',{threadId:thread},5000).catch(()=>{});if(thread){this.ephemeral.delete(thread);this.usage.delete(thread);}}
     }
   }
-  async run(threadId,input,{toolHandler,onStarted,onSubmitted,timeoutMs=15*60*1000,resume=true,effort,model,serviceTier,outputSchema,interruptOnTimeout=false,assistant=false}={}) {
+  async run(threadId,input,options={}){
+    if(this.threadLocks.has(threadId))throw Object.assign(new Error('目标聊天已有任务运行，正在等待同一聊天的写入权'),{code:'THREAD_BUSY',notSubmitted:true,threadId});
+    const token=Symbol(threadId);this.threadLocks.set(threadId,token);try{return await this.runThread(threadId,input,options);}catch(e){e.threadId||=threadId;throw e;}finally{if(this.threadLocks.get(threadId)===token)this.threadLocks.delete(threadId);}
+  }
+  async runThread(threadId,input,{toolHandler,onStarted,onSubmitted,timeoutMs=15*60*1000,resume=true,effort,model,serviceTier,outputSchema,interruptOnTimeout=false,assistant=false}={}) {
     await this.ensureAuthenticated();
     if(this.ephemeral.has(threadId)&&this.ephemeral.get(threadId)!==this.generation)throw Object.assign(new Error('登录更新后需重新建立只读分析会话'),{code:'CODEX_AUTH_CHANGED'});
     if([...this.runs.values()].some(r=>r.threadId===threadId))throw new Error('该 Codex 聊天仍在工作，请稍后再试');
-    if(resume){
+    if(resume&&!this.loaded.has(threadId)){
       const update=assistant&&this.profiles.get(threadId)!==instructionRevision;
       await this.request('thread/resume',{threadId,excludeTurns:true,...(update?{developerInstructions:assistantInstructions}:{})});
       if(update)this.profiles.set(threadId,instructionRevision);

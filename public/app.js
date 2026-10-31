@@ -2,7 +2,16 @@ const $=id=>document.getElementById(id);let state=null,targets=[],threads=[],dir
 let catalog=null,preferencesDirty=false;
 const effortLabels={none:'无',minimal:'最小',low:'低',medium:'中',high:'高',xhigh:'极高',max:'Max',ultra:'Ultra'};
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const statuses={queued:'排队中',blocked:'调度受阻',running:'执行中',done:'已完成',failed:'处理失败',unavailable:'表情暂不可用',waiting_auth:'等待账号恢复',waiting_route:'等待选择需求',uncertain:'需要核实',pending:'待发送',sent:'已送达',sending:'发送中',new:'等待处理',processing:'处理中'};
+const cleanError=s=>String(s||'').replace(/\x1b\[[\d;]*[A-Za-z]/g,'');
+function deliveryError(s){s=cleanError(s);return /intercepts pointer events|OVERLAY_BLOCKED/.test(s)?'抖音弹层遮挡原消息，尚未点击表情。关闭视频预览或弹窗后可恢复。':/locator\.click: Timeout/.test(s)?'原消息暂不可操作，未确认贴表情。请检查弹层遮挡或消息位置。':s.length>220?s.slice(0,220)+'…':s;}
+function renderWorkCard(w){
+  const labels={roger:'收到',active:'运行',done:'完成'};
+  const receipt=w.receipts.map(r=>{const text=!r.total?'未生成回执':r.uncertain?'送达需核实':r.sent===r.total?'已送达'+(r.total>1?' '+r.sent+'/'+r.total:''):r.pending?'等待发送':r.unavailable?'未送达':'待确认';return `<span class="receipt-state ${r.uncertain||r.unavailable?'error':''}">${labels[r.stage]}：${escape(text)}</span>`;}).join('');
+  const errors=[...new Set(w.receipts.flatMap(r=>r.errors||[]))],results=w.replies.filter(r=>!r.notification),sent=results.filter(r=>r.status==='sent').length,uncertain=w.replies.filter(r=>r.status==='uncertain');
+  const details=errors.length?`<details class="work-details"><summary>表情发送详情${errors.length?'（'+errors.length+'）':''}</summary>${errors.map(e=>`<p>${escape(deliveryError(e))}</p>${cleanError(e).length>240?`<details><summary>技术详情</summary><pre>${escape(cleanError(e).slice(0,1800))}</pre></details>`:''}`).join('')}</details>`:'';
+  return `<article class="work-card" data-operation="${escape(w.id)}"><div class="work-head"><strong>${w.kind==='control'?'命令：':'任务 '+(w.number||'待登记')+'：'}${escape(w.title)}</strong><span class="pill ${['uncertain','failed_delivery','failed','blocked'].includes(w.status)?'error':''}">${statuses[w.status]||escape(w.status)}</span></div><p>${escape(w.detail)}</p>${w.targets?.length?`<small>目标：${w.targets.map(t=>escape(t.alias)+'（'+(statuses[t.status]||escape(t.status))+'）').join('、')}</small>`:''}<div class="work-receipts">${receipt}</div>${results.length?`<p class="work-meta">结果回复：已送达 ${sent}/${results.length} 段</p>`:''}${uncertain.map(r=>`<div class="reply-review">回复送达需核实 <button data-delivered="${r.id}">已在抖音收到</button> <button data-resend="${r.id}">确认未收到，重新发送</button></div>`).join('')}${details}</article>`;
+}
+const statuses={queued:'排队中',blocked:'调度受阻',running:'执行中',done:'已完成',failed:'处理失败',cancelled:'已取消',waiting:'等待恢复',failed_delivery:'送达需核实',unavailable:'表情暂不可用',waiting_auth:'等待账号恢复',waiting_route:'等待选择需求',uncertain:'需要核实',pending:'待发送',sent:'已送达',sending:'发送中',new:'等待处理',processing:'处理中'};
 async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||'请求失败');return data;}
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'error':'';$('notice').style.display='block';}
 function action(id,fn){$(id).addEventListener('click',async()=>{const button=$(id);button.disabled=true;try{await fn();await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}});}
@@ -26,8 +35,8 @@ async function loadModels(){
 }
 function renderNeeds(){
   const sessions=state.conversations,list=sessions?.needs||[],active=list.find(n=>n.id===sessions.activeNeed);
-  $('currentNeed').textContent=active?`当前需求：${active.title} (${active.id})\n第 ${active.seq} 个续接会话 · ${active.contextTokens>=sessions.budget?'下次处理前将交接续开':`上下文约 ${active.contextTokens} / ${sessions.budget} tokens`}`:'发送消息后按需求自动判断；旧对话会保留为历史记录。';
-  $('needList').innerHTML=list.map(n=>`<div class="need-item"><strong>${escape(n.title)}</strong><small>${escape(n.id)} · 第 ${n.seq} 个会话</small><div>${escape(n.summary.slice(0,150))}</div><button data-switch-need="${escape(n.id)}" ${n.id===sessions.activeNeed?'disabled':''}>${n.id===sessions.activeNeed?'当前需求':'切换到此需求'}</button></div>`).join('');
+  $('currentNeed').textContent=active?`当前需求${active.number?' '+active.number:''}：${active.title}\n第 ${active.seq} 个续接会话 · ${active.contextTokens>=sessions.budget?'下次处理前将交接续开':`上下文约 ${active.contextTokens} / ${sessions.budget} tokens`}`:'发送消息后按需求自动判断；旧对话会保留为历史记录。';
+  $('needList').innerHTML=list.map(n=>`<div class="need-item"><strong>${n.number?'需求 '+n.number+'：':''}${escape(n.title)}</strong><small>第 ${n.seq} 个会话</small><div>${escape(n.summary.slice(0,150))}</div><button data-switch-need="${escape(n.id)}" ${n.id===sessions.activeNeed?'disabled':''}>${n.id===sessions.activeNeed?'当前需求':'切换到此需求'}</button></div>`).join('');
 }
 function renderThreadOptions(){
   const select=$('threadSelect'),selected=select.value;
@@ -49,7 +58,7 @@ async function refresh(){
     state=await api('state');const r=state.runtime;
     if(state.storage){$('storagePath').textContent='固定数据目录：'+state.storage.dataRoot;$('backupInfo').textContent=(state.storage.recovery?state.storage.recovery+'。':'')+(state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。':'尚未生成状态快照。')+' 原视频、连续画面和登录态保留在上述目录；自动备份配置、需求与任务记录，退出程序时也会生成快照。';}
     $('liveBadge').textContent=state.config.enabled?'正在监听':'尚未监听';$('liveBadge').className='badge'+(state.config.enabled?' active':'');
-    $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接'})[r.browser]||r.browser;
+    $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接',blocked:'被弹层遮挡'})[r.browser]||r.browser;
     $('ownerStatus').textContent=state.config.owner?'已绑定：'+state.config.owner.displayName:'尚未绑定用户会话';
     $('codexStatus').textContent=r.auth?.reconnectPending?'等待切换连接':r.auth?.status==='login'?'请重新登录':r.auth?.status==='quota'?'额度暂不可用':r.codex?'已连接':'等待连接';$('coordinatorStatus').textContent=state.config.coordinator?'固定调度聊天已建立':'尚未建立调度聊天';
     $('asrStatus').textContent=r.asrReady?'已就绪':r.asrInstalling?'正在安装':'尚未安装';$('setupAsr').disabled=r.asrInstalling||r.asrReady;
@@ -62,9 +71,10 @@ async function refresh(){
     renderNeeds();
     $('knowledgeList').innerHTML=state.knowledge.map(k=>`<div class="item"><strong>${escape(k.title)}</strong><p>${escape(r.processing&&r.visualProgress?.id===k.id?'正在按完整时间轴分析视觉内容，等待本次结论。':k.visualStatus==='partial'?`视觉已完成 ${k.visualCompleted}/${k.visualTotal} 段，尚未覆盖全片，可继续重分析。`:k.visualStatus==='legacy'?'此视频尚未完成连续视觉分析，请重新分析后查看完整结论。':k.summary?.slice(0,150)||'视频已保存，等待连续视觉分析完成。')}</p><div class="button-row"><button data-note="${escape(k.id)}" class="secondary">学习笔记</button><button data-visual="${escape(k.id)}" class="secondary">查看连续画面</button><button data-reanalyze="${escape(k.id)}" ${r.processing?'disabled':''}>重新分析视觉</button></div></div>`).join('')||'<p class="empty">分享第一条视频后，资料会出现在这里。</p>';
     if(r.processing&&r.visualProgress){const p=r.visualProgress;$('listenTitle').textContent=`连续视觉分析 ${p.completed}/${p.total||'…'} 段 · ${p.fps} 帧/秒`;}
-    $('taskList').innerHTML=state.tasks.map(t=>`<div class="item"><strong>${escape(t.alias)}</strong><span class="pill ${['failed','uncertain'].includes(t.status)?'error':''}">${statuses[t.status]||escape(t.status)}</span><p>${escape(t.result?.slice(0,200)||('编号 '+t.id.slice(0,8)))}</p></div>`).join('')||'<p class="empty">你指示派发的任务会出现在这里。</p>';
-    $('outboxList').innerHTML=state.outbox.filter(o=>!['sent','superseded'].includes(o.status)).slice(0,5).map(o=>`<div class="item"><span class="pill ${o.status==='uncertain'?'error':''}">回复：${statuses[o.status]}</span><p>${escape(o.body.slice(0,100))}</p><small>${escape(o.error)}</small>${o.status==='uncertain'?`<button data-delivered="${o.id}">已在抖音收到</button> <button data-resend="${o.id}">确认未收到，重新发送</button>`:''}</div>`).join('');
-    $('outboxList').innerHTML+=(state.operations||[]).slice(0,8).map(o=>`<div class="item"><strong>要求 ${escape(o.shortId)}</strong><p>${escape(o.detail)}</p></div>`).join('');
+    const work=state.work||[],business=work.filter(w=>w.kind!=='control'),commands=work.filter(w=>w.kind==='control');
+    $('taskList').innerHTML=business.map(renderWorkCard).join('')||'<p class="empty">收到任务后，这里会把执行进度、文字回复和表情回执放在同一张卡片内。</p>';
+    const linked=new Set(work.map(w=>w.id)),legacy=state.outbox.filter(o=>!['sent','superseded'].includes(o.status)&&!linked.has(JSON.parse(o.payload||'{}').operationId));
+    $('outboxList').innerHTML=(commands.length?`<details><summary>命令回执（${commands.length}）</summary>${commands.map(renderWorkCard).join('')}</details>`:'')+(legacy.length?`<details><summary>历史回复回执（${legacy.length}）</summary>${legacy.map(o=>`<div class="item"><p>${escape(o.body.slice(0,100))}</p><small>${escape(deliveryError(o.error))}</small>${o.status==='uncertain'?`<button data-delivered="${o.id}">已在抖音收到</button> <button data-resend="${o.id}">确认未收到，重新发送</button>`:''}</div>`).join('')}</details>`:'');
     const failed=state.messages.filter(m=>['failed','waiting_auth'].includes(m.status)&&m.kind==='video');
     $('outboxList').innerHTML+=failed.slice(0,3).map(m=>`<div class="item"><small>视频处理失败：${escape(m.result)}</small><button data-retry="${escape(m.id)}">重试这条视频</button></div>`).join('');
     $('eventList').innerHTML=state.events.map(e=>`<div class="event ${escape(e.level)}">${new Date(e.created).toLocaleTimeString('zh-CN',{hour12:false})}　${escape(e.message)}</div>`).join('');

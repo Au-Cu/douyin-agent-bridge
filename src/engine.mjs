@@ -39,7 +39,7 @@ export function mayDispatch(text) { return /派给|交给|发给|转交|安排|�
 
 export class BridgeEngine {
   constructor({store,adapter,media,codex,visual,preferences=null,conversations=null}) {
-    Object.assign(this,{store,adapter,media,codex,visual,preferences,conversations});this.armedAt=0;this.seen=new Set();this.busy=false;this.taskBusy=false;this.outboxBusy=false;this.visualProgress=null;
+    Object.assign(this,{store,adapter,media,codex,visual,preferences,conversations});this.armedAt=0;this.seen=new Set();this.busy=false;this.taskBusy=false;this.taskRuns=new Map();this.outboxBusy=false;this.visualProgress=null;
     this.context=new AsyncLocalStorage();
     this.progress=new Progress({store,codex,notify:(text,o)=>this.reply(text,{...o,payload:{notification:true}}),classify:conversations?(p,s)=>conversations.lightCall('followup',p,s):null});
     codex.on('approval',request=>{const op=this.progress.open().find(o=>o.thread===request.params?.threadId);this.store.event('Codex 有待确认操作，编号 '+request.id,'attention');if(op)this.progress.stage(op.id,'等待确认','操作编号 '+request.id);});
@@ -63,9 +63,9 @@ export class BridgeEngine {
   }
   reply(text,options) {
     const owner=this.store.config.owner;if(!owner)return;
-    const operationId=options?.operationId||this.context.getStore()?.operationId,parts=splitReply(toPlainChatText(text).replaceAll(String.fromCharCode(0x4e3b,0x4eba),'用户')),group=randomUUID(),ids=[];
+    const operationId=options?.operationId||this.context.getStore()?.operationId,op=this.progress?.get(operationId),notification=!!(options?.notification||options?.payload?.notification),parts=splitReply(toPlainChatText(text).replaceAll(String.fromCharCode(0x4e3b,0x4eba),'用户')),group=randomUUID(),ids=[];
     const plainOptions={...options,payload:{...options?.payload,plainText:true,...(operationId?{operationId}:{}),notification:!!(options?.notification||options?.payload?.notification)}};
-    for(const [i,part] of parts.entries())ids.push(this.store.enqueueReply(owner.chatKey,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{...plainOptions,dedupe:options?.dedupe?options.dedupe+':'+i:'',payload:{...plainOptions.payload,group,segment:i+1,totalSegments:parts.length}}));
+    for(const [i,part] of parts.entries())ids.push(this.store.enqueueReply(owner.chatKey,(parts.length>1?`${op?.number&&!notification?'任务 '+op.number+' · ':''}回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:op?.number&&!notification?`任务 ${op.number}：${op.title}\n\n`:'')+part,{...plainOptions,dedupe:options?.dedupe?options.dedupe+':'+i:'',payload:{...plainOptions.payload,group,segment:i+1,totalSegments:parts.length}}));
     return ids;
   }
   notifyVideo(message,phase,{key}={}){
@@ -155,8 +155,8 @@ export class BridgeEngine {
         const {counts}=this.store.snapshot();const v=this.visualProgress,partial=!this.busy&&this.findIncompleteVideo();
         const processing=this.busy?(v?`正在分析视频画面：${v.completed}/${v.total||'…'} 段。\n`:'正在处理视频或指令。\n'):partial?`最近视频尚未完成：${partial.progress.completedSegments}/${partial.progress.totalSegments} 段。发送 /继续视频 可续做。\n`:'';
         const auth=this.codex.authState,need=this.conversations?.needs.get(this.store.config.activeNeed);
-        const running=this.progress.state().filter(o=>this.progress.get(o.id)?.kind!=='control').slice(0,4).map(o=>'编号 '+o.shortId+'：'+o.detail).join('\n');
-        this.reply(`${need?'当前需求：'+need.title+' ('+need.id+')\n':''}${auth&&auth.status!=='ready'?(auth.message||'Codex 尚未连接')+'。\n':''}${running||processing}\n已保存视频 ${counts.knowledge} 条；任务排队 ${counts.queuedTasks} 条；执行中 ${counts.runningTasks} 条。${this.preferences?'\n\n'+this.preferences.describe():''}`,{priority:90});
+        const running=this.progress.state().filter(o=>this.progress.get(o.id)?.kind!=='control').slice(-6).map(o=>`任务 ${o.number||'待登记'}：${o.title}\n${o.detail}`).join('\n\n');
+        this.reply(`${need?'当前需求 '+need.number+'：'+need.title+'\n\n':''}${auth&&auth.status!=='ready'?(auth.message||'Codex 尚未连接')+'。\n':''}${running||processing}\n\n已保存视频 ${counts.knowledge} 条；任务排队 ${counts.queuedTasks} 条；执行中 ${counts.runningTasks} 条。${this.preferences?'\n\n'+this.preferences.describe():''}`,{priority:90});
       }
       this.store.messageStatus(message.id,'done');
     }catch(e){this.store.messageStatus(message.id,'failed',e.message);this.reply('指令未完成：'+e.message);}
@@ -166,16 +166,16 @@ export class BridgeEngine {
     const {name,arg}=command;if(name==='help')return commandHelp;if(name==='unknown')return '未识别的命令，发送 /帮助 查看完整用法。';
     if(!this.preferences)throw new Error('此运行入口未启用配置服务');
     if(name==='settings')return this.preferences.describe();
-    if(name==='retry'){if(!arg)throw new Error('格式：/重试 未提交任务编号');this.progress.retry(arg);return '已恢复确定未提交要求的调度。发送 /状态 可查看。';}
+    if(name==='retry'){if(!arg)throw new Error('格式：/重试 任务编号，例如 /重试 5');const id=this.progress.retry(arg);return this.progress.get(id)?this.progress.label(id)+'\n已恢复确定尚未提交的工作，已有执行不会重跑。':'已恢复确定尚未提交的工作。';}
     if(name==='find'){
       await this.conversations.ensureLegacy();const list=this.conversations.needs.directory(arg);
-      return list.length?'需求目录\n'+list.map(n=>`${n.id}  ${n.title}\n${n.summary.slice(0,75)}`).join('\n\n')+'\n\n发送 /切换 需求ID 找回。':'还没有保存的需求。';
+      return list.length?'需求目录\n'+list.map(n=>`需求 ${n.number}：${n.title}\n${n.summary.slice(0,75)}`).join('\n\n')+'\n\n发送 /切换 编号 找回，例如 /切换 2。':'还没有保存的需求。';
     }
-    if(name==='new'){const n=await this.conversations.create(arg||'新需求'),resolved=this.conversations.resolveWaiting(n);return `已新建并切换：${n.title}\n需求 ID：${n.id}${resolved?'\n刚才待选择的消息会归入新需求继续处理。':''}`;}
+    if(name==='new'){const n=await this.conversations.create(arg||'新需求'),resolved=this.conversations.resolveWaiting(n);return `已新建并切换到需求 ${n.number}：${n.title}${resolved?'\n刚才待选择的消息会归入新需求继续处理。':''}`;}
     if(name==='switch'){
-      if(!arg)throw new Error('格式：/切换 需求ID；用 /找 查看目录');const n=await this.conversations.switchTo(arg);
+      if(!arg)throw new Error('格式：/切换 需求编号；用 /找 查看目录');const n=await this.conversations.switchTo(arg);
       const waiting=this.conversations.resolveWaiting(n);
-      return `已切换：${n.title} (${n.id})${waiting?'\n刚才待选择的消息会归入此需求继续处理。':''}`;
+      return `已切换到需求 ${n.number}：${n.title}${waiting?'\n刚才待选择的消息会归入此需求继续处理。':''}`;
     }
     if(!arg){
       if(name==='model'){const c=await this.preferences.catalog();return this.preferences.describe()+'\n\n可用模型\n'+c.models.map(m=>m.model+'  '+m.displayName).join('\n')+'\n\n用 /模型 完整ID 选择；/模型 默认 恢复默认。';}
@@ -239,7 +239,7 @@ export class BridgeEngine {
       const direct=message.kind==='text'?parseDispatch(message.text,this.store.config.targets):null;
       if(direct) {
         const id=this.dispatch(direct.target.alias,direct.instruction,message.text,{needId:route?.needId});
-        const queued='任务已排队给「'+direct.target.alias+'」，编号 '+id.slice(0,8)+'。执行完成后会回到这里。';this.reply(queued);
+        const queued='任务已登记给「'+direct.target.alias+'」。';
         if(route){const needId=this.conversations.record(row.id,queued);await this.conversations.refreshMemory(needId);}
         this.store.messageStatus(row.id,'done',id);return;
       }
@@ -349,14 +349,16 @@ export class BridgeEngine {
     const id=this.store.createTask(alias,target.id,prompt,context);this.store.event('已排队到「'+alias+'」：'+id.slice(0,8));return id;
   }
   async runTask() {
-    if(this.taskBusy||!this.store.config.enabled)return;
+    if(!this.store.config.enabled)return;
     for(const t of this.store.queuedTasks())if(t.turn)this.store.taskStatus(t.id,'uncertain','已有执行回合，需要核实，不能自动重跑');
-    const task=this.store.queuedTasks().find(t=>this.progress.mayAttempt(t));if(!task)return;
+    const task=this.store.queuedTasks().find(t=>!this.taskRuns.has(t.thread)&&this.progress.mayAttempt(t));if(!task)return;
     const context=JSON.parse(task.context||'{}');
-    return this.context.run({operationId:context.operationId},()=>this.processTask(task));
+    this.taskRuns.set(task.thread,task.id);this.taskBusy=true;
+    try{return await this.context.run({operationId:context.operationId},()=>this.processTask(task));}
+    finally{if(this.taskRuns.get(task.thread)===task.id)this.taskRuns.delete(task.thread);this.taskBusy=this.taskRuns.size>0;}
   }
   async processTask(task){
-    this.taskBusy=true;let started=false;
+    let started=false;
     try {
       if(this.codex.ensureAuthenticated)await this.codex.ensureAuthenticated();else await this.codex.connect();
       // Never forcibly take over a live writer from the desktop app.
@@ -371,14 +373,14 @@ export class BridgeEngine {
       });
       this.store.taskStatus(task.id,'done',result.text,result.turnId);this.store.event('「'+task.alias+'」已返回执行结果');
       if(context.needId&&this.conversations){const need=this.conversations.needs.get(context.needId);if(need){const message={id:'task-result:'+task.id,kind:'text',text:'已授权任务执行结果，原指令：'+task.prompt,created:Date.now()};this.conversations.needs.reserve(message,need);this.conversations.record(message.id,result.text);await this.conversations.refreshMemory(need.id);}}
-      this.reply('「'+task.alias+'」任务 '+task.id.slice(0,8)+' 的执行结果：\n'+result.text,{dedupe:'task-result:'+task.id});
+      this.reply('「'+task.alias+'」执行结果：\n'+result.text,{dedupe:'task-result:'+task.id});
       this.progress.sync(JSON.parse(task.context||'{}').operationId);
     } catch(e) {
       if(!started&&authFailure(e)){this.progress.taskBlocked(task,'等待本机 Codex 登录或额度恢复');return;}
       if(writerConflict(e)&&(!started||e.notSubmitted)){const id=JSON.parse(task.context||'{}').operationId;if(id)this.progress.db.prepare("UPDATE operations SET submitted=0,turn='' WHERE id=?").run(id);this.progress.taskBlocked(task,'Codex 拒绝写入：already has an active writer；尚未提交执行');return;}
       this.store.taskStatus(task.id,started||e.uncertain?'uncertain':'failed',e.message);this.store.event('任务未完成：'+e.message,'error');
       this.reply('「'+task.alias+'」任务暂未完成：'+e.message+(started?'。执行可能已经开始，请在原聊天查看；不会自动重做。':''));
-    } finally{this.taskBusy=false;}
+    }
   }
   async deliver() {
     if(this.outboxBusy||!this.store.config.enabled)return;
@@ -392,7 +394,7 @@ export class BridgeEngine {
       if(out.kind==='progress_reaction'){
         const payload=JSON.parse(out.payload);let result;
         if(this.adapter.react)result=await this.adapter.react(this.store.config.owner,payload.messageId,{emojis:payload.emojis});
-        if(!result?.verified){this.store.delivery(out.id,'unavailable',result?.reason||'当前消息未提供可核验的状态表情');return;}
+        if(!result?.verified){const attempts=(payload.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:'not_submitted',attempts,code:result?.code||'UNAVAILABLE'}});this.store.delivery(out.id,result?.notSubmitted&&result?.retryable&&attempts<3?'pending':'unavailable',result?.reason||'当前消息未提供可核验的状态表情');return;}
         this.store.mergeOutboxPayload(out.id,{receiptResult:{method:'reaction',...result}});method='reaction';
       }
       else if(out.kind==='video_ack'&&this.adapter.acknowledge){const result=await this.adapter.acknowledge(this.store.config.owner,JSON.parse(out.payload),out.body);method=result.method;this.store.mergeOutboxPayload(out.id,{receiptResult:result});}
@@ -401,7 +403,7 @@ export class BridgeEngine {
       const operationId=JSON.parse(out.payload||'{}').operationId;if(operationId)this.progress.sync(operationId);
       if(out.kind==='video_ack')this.store.event('已在抖音确认收到视频（'+(method==='reaction'?'消息表情回应':'私信文字')+'）');
     }
-    catch(e){this.store.delivery(out.id,e.uncertain?'uncertain':out.kind==='progress_reaction'?'unavailable':'pending',e.message);}
+    catch(e){let status=e.uncertain?'uncertain':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}this.store.delivery(out.id,status,e.message);}
     finally{this.outboxBusy=false;}
   }
   start(){this.timer=setInterval(()=>{for(const task of [()=>this.scan(),()=>this.processNext(),()=>this.runTask(),()=>this.deliver()])task().catch(e=>this.store.event(e.message,'error'));},3000);this.watchdog=setInterval(()=>this.progress.inspect().catch(e=>this.store.event('独立进度检查暂不可用','attention')),5000);}

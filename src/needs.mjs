@@ -14,11 +14,14 @@ export class Needs{
       CREATE TABLE IF NOT EXISTS need_routes(message_id TEXT PRIMARY KEY,need_id TEXT,thread TEXT,action TEXT,reason TEXT,created INTEGER);
       CREATE TABLE IF NOT EXISTS need_threads(thread TEXT PRIMARY KEY,need_id TEXT,seq INTEGER,handoff TEXT,created INTEGER);`);
     if(!this.db.prepare('PRAGMA table_info(need_turns)').all().some(c=>c.name==='revision'))this.db.exec('ALTER TABLE need_turns ADD COLUMN revision INTEGER DEFAULT 0');
+    if(!this.db.prepare('PRAGMA table_info(needs)').all().some(c=>c.name==='number'))this.db.exec('ALTER TABLE needs ADD COLUMN number INTEGER');
+    let number=this.db.prepare('SELECT COALESCE(MAX(number),0) AS n FROM needs').get().n;for(const n of this.db.prepare('SELECT id FROM needs WHERE number IS NULL ORDER BY created,rowid').all())this.db.prepare('UPDATE needs SET number=? WHERE id=?').run(++number,n.id);
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS needs_number ON needs(number) WHERE number IS NOT NULL');
   }
   get(id){const row=this.db.prepare('SELECT * FROM needs WHERE id=?').get(id);return row?{...row,memory:JSON.parse(row.memory)}:null;}
   list(){return this.db.prepare('SELECT * FROM needs ORDER BY updated DESC').all().map(r=>({...r,memory:JSON.parse(r.memory)}));}
   create(title='未命名需求',thread=''){
-    const id=randomUUID().slice(0,8),now=Date.now();this.db.prepare('INSERT INTO needs VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,title,JSON.stringify({...emptyMemory(),title}),thread,thread?1:0,0,0,0,0,now,now);
+    const id=randomUUID().slice(0,8),now=Date.now(),number=this.db.prepare('SELECT COALESCE(MAX(number),0)+1 AS n FROM needs').get().n;this.db.prepare('INSERT INTO needs(id,title,memory,thread,seq,context_tokens,model_window,version,summary_version,created,updated,number) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,title,JSON.stringify({...emptyMemory(),title}),thread,thread?1:0,0,0,0,0,now,now,number);
     if(thread)this.db.prepare('INSERT INTO need_threads VALUES(?,?,?,?,?)').run(thread,id,1,'',now);return this.get(id);
   }
   rename(id,title){this.db.prepare('UPDATE needs SET title=? WHERE id=?').run(String(title).slice(0,60),id);}
@@ -52,15 +55,15 @@ export class Needs{
     return this.db.prepare('UPDATE needs SET memory=?,title=?,summary_version=? WHERE id=? AND version=?').run(JSON.stringify(memory),memory.title.slice(0,60),version,id,expected).changes>0;
   }
   json(id,name,value){const folder=join(this.root,id);mkdirSync(folder,{recursive:true});const path=join(folder,name);durableJson(path,value);return path;}
-  taskState(id,limit=8){return this.db.prepare("SELECT id,alias,status,result,turn,created FROM tasks WHERE json_extract(context,'$.needId')=? ORDER BY created DESC LIMIT ?").all(id,limit);}
+  taskState(id,limit=8){const hasOperations=this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'").get();return this.db.prepare("SELECT id,alias,status,result,turn,created,json_extract(context,'$.operationId') AS operationId FROM tasks WHERE json_extract(context,'$.needId')=? ORDER BY created DESC LIMIT ?").all(id,limit).map(({operationId,...task})=>{const op=hasOperations&&this.db.prepare('SELECT number,title FROM operations WHERE id=?').get(operationId||'');return {...task,...(op?{number:op.number,title:op.title}:{})};});}
   history(id){const turns=this.db.prepare('SELECT * FROM need_turns WHERE need_id=? ORDER BY created').all(id),tasks=this.taskState(id,10000);return this.json(id,'history.json',{needId:id,turns,tasks});}
-  lookup(value){const q=String(value).toLowerCase();const matches=this.list().filter(n=>n.id.startsWith(q)||n.title===value);if(matches.length!==1)throw new Error(matches.length?'需求不唯一，请使用完整需求 ID。':'未找到需求，发送 /找 查看目录。');return matches[0];}
+  lookup(value){const q=String(value).trim().toLowerCase().replace(/^需求\s*/,'').replace(/^#/,'');if(/^\d+$/.test(q)){const numbered=this.list().find(n=>n.number===Number(q));if(numbered)return numbered;}const matches=this.list().filter(n=>n.id.startsWith(q)||n.title===value);if(matches.length!==1)throw new Error(matches.length?'需求不唯一，请使用需求编号。':'未找到需求，发送 /找 查看目录。');return matches[0];}
   directory(query='',limit=20){
     const list=this.list(),words=String(query).toLowerCase().match(/[a-z\d-]{2,}|[\p{Script=Han}]{2,}/gu)||[];
     const grams=words.flatMap(w=>/\p{Script=Han}/u.test(w)?Array.from({length:Math.max(0,w.length-1)},(_,i)=>w.slice(i,i+2)):[w]);
     const score=n=>grams.reduce((s,w)=>s+Number((n.title+' '+memoryText(n.memory)).toLowerCase().includes(w)),0);
     const candidates=[...list.slice(0,12),...list.filter(n=>score(n)>0).sort((a,b)=>score(b)-score(a)).slice(0,8)];
-    return [...new Map(candidates.map(n=>[n.id,n])).values()].slice(0,limit).map(n=>({id:n.id,title:n.title,summary:memoryText(n.memory).slice(0,240),updated:new Date(n.updated).toISOString()}));
+    return [...new Map(candidates.map(n=>[n.id,n])).values()].slice(0,limit).map(n=>({id:n.id,number:n.number,title:n.title,summary:memoryText(n.memory).slice(0,240),updated:new Date(n.updated).toISOString()}));
   }
-  state(){return {activeNeed:this.store.config.activeNeed,needs:this.list().slice(0,100).map(n=>({id:n.id,title:n.title,summary:memoryText(n.memory).slice(0,240),updated:new Date(n.updated).toISOString(),thread:n.thread,seq:n.seq,contextTokens:n.context_tokens})),budget:this.store.config.contextBudget};}
+  state(){return {activeNeed:this.store.config.activeNeed,needs:this.list().slice(0,100).map(n=>({id:n.id,number:n.number,title:n.title,summary:memoryText(n.memory).slice(0,240),updated:new Date(n.updated).toISOString(),thread:n.thread,seq:n.seq,contextTokens:n.context_tokens})),budget:this.store.config.contextBudget};}
 }

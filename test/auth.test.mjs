@@ -60,7 +60,7 @@ test('固定规则在恢复助手聊天时仅加载一次，目标聊天已有�
     await h.client.run('project-chat',input('执行任务'));
     const resumes=h.logs().filter(e=>e.method==='thread/resume');
     assert.match(resumes[0].params.developerInstructions,/抖音助手固定规则/);
-    assert.equal(resumes[1].params.developerInstructions,undefined);assert.equal(resumes[2].params.developerInstructions,undefined);
+    assert.equal(resumes.length,2);assert.equal(resumes[1].params.developerInstructions,undefined);
     assert.deepEqual(h.logs().filter(e=>e.method==='turn/start').map(e=>e.params.input[0].text),['新的指示','另一条指示','执行任务']);
   }finally{h.client.close();}
 });
@@ -69,6 +69,16 @@ test('关闭时正在检查登录文件也不能在关闭后启动新的子进�
   const h=setup(),connecting=h.client.connect();h.client.close();
   await assert.rejects(connecting,e=>e.code==='CODEX_CLIENT_CLOSED');
   await assert.rejects(h.client.connect(),e=>e.code==='CODEX_CLIENT_CLOSED');assert.equal(h.client.generation,0);
+});
+
+test('写入锁按聊天隔离：A 运行时 B 可完成，同一 A 不能重入，也不重复恢复本机已加载聊天',async()=>{
+  const h=setup();try{let started;const ready=new Promise(r=>started=r),a=h.client.run('chat-A',input('hold'),{onStarted:started});await ready;
+    await assert.rejects(h.client.run('chat-A',input('duplicate')),e=>e.code==='THREAD_BUSY'&&e.notSubmitted===true);
+    assert.equal((await h.client.run('chat-B',input('independent'))).text,'ACCOUNT_first');assert.equal(h.client.runs.size,1);
+    await h.client.request('test/release');await a;await h.client.run('chat-A',input('next'));
+    assert.equal(h.logs().filter(e=>e.method==='thread/resume'&&e.params.threadId==='chat-A').length,1);
+    assert.equal(h.logs().filter(e=>e.method==='turn/start').length,3);
+  }finally{h.client.close();}
 });
 
 test('模型、推理强度、快速档位透传到每轮；临时路由会话使用独立角色且结束后卸载',async()=>{

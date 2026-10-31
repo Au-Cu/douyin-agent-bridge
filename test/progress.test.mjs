@@ -13,18 +13,19 @@ function harness(root){
   return {s,c,engine,calls,sent,reactions,advance:ms=>clock+=ms};
 }
 async function drain(h){for(let i=0;i<60&&h.s.pendingOutbox().length;i++)await h.engine.deliver();}
+async function firstPart(h,id){for(let i=0;i<10&&h.engine.progress.resultParts(id).sent<1;i++)await h.engine.deliver();assert.equal(h.engine.progress.resultParts(id).sent,1);}
 
 test('三段回复发到一半的重复要求关联原操作，不再次调用模型；done 等所有分段和催办答复送达',async()=>{
   const h=harness();try{
     const first=msg('1000000000001','按视频做一个网站');h.s.incoming(first);await h.engine.processNext();
     assert.equal(h.calls.length,1);assert.equal(h.engine.progress.resultParts(first.id).total,3);
-    await h.engine.deliver();await h.engine.deliver();await h.engine.deliver();
+    await firstPart(h,first.id);
     assert.equal(h.engine.progress.resultParts(first.id).sent,1);assert.match(h.engine.progress.status(first.id),/第 2\/3 段/);
     const repeat=msg('1000000000002',first.text);h.s.incoming(repeat);await h.engine.processNext();assert.equal(h.calls.length,1);assert.equal(h.s.db.prepare('SELECT status FROM messages WHERE id=?').get(repeat.id).status,'linked');
     assert.equal(h.s.snapshot().outbox.some(o=>JSON.parse(o.payload).stage==='done'),false);
     await drain(h);assert.equal(h.engine.progress.get(first.id).status,'done');assert.equal(h.calls.length,1);
     assert.ok(h.sent.some(t=>t.includes('这项要求正在处理，没有重复启动')&&t.includes('第 2/3 段')));
-    assert.ok(h.sent.some(t=>t.startsWith('回复 1/3 段')));assert.ok(h.sent.some(t=>t.startsWith('回复 3/3 段（末段）')));
+    assert.ok(h.sent.some(t=>t.startsWith('任务 1 · 回复 1/3 段')));assert.ok(h.sent.some(t=>t.startsWith('任务 1 · 回复 3/3 段（末段）')));assert.equal(h.sent.filter(t=>t.startsWith('已登记任务 1：')).length,1);assert.equal(h.engine.progress.forMessage(repeat.id).number,1);
     for(const id of [first.platformId,repeat.platformId])assert.deepEqual(h.reactions.filter(r=>r.id===id).map(r=>r.emojis[0]),['👌','👀','🎉']);
   }finally{h.s.close();}
 });
@@ -76,12 +77,35 @@ test('无法核验表情时保持静默；不把不明点击自动重试，也�
 });
 
 test('重启保留分段发送进度与重复关联，不重跑已生成结果；新发文字只使用用户称谓',async()=>{
-  const h=harness(),root=h.s.root,first=msg('6000000000001','生成长结果');h.s.incoming(first);await h.engine.processNext();await h.engine.deliver();await h.engine.deliver();await h.engine.deliver();h.s.close();
+  const h=harness(),root=h.s.root,first=msg('6000000000001','生成长结果');h.s.incoming(first);await h.engine.processNext();await firstPart(h,first.id);h.s.close();
   const restored=harness(root);try{
     const repeat=msg('6000000000002',first.text);restored.s.incoming(repeat);await restored.engine.processNext();assert.equal(restored.calls.length,0);assert.match(restored.engine.progress.status(first.id),/2\/3/);
     const oldWord=String.fromCharCode(0x4e3b,0x4eba);restored.engine.reply(oldWord+'已确认');await drain(restored);assert.ok(restored.sent.includes('用户已确认'));assert.equal(restored.engine.progress.get(first.id).status,'done');
     restored.s.enqueueReply(owner.chatKey,oldWord+'的旧待发消息');await drain(restored);assert.ok(restored.sent.includes('用户的旧待发消息'));
   }finally{restored.s.close();}
+});
+
+test('任务使用持久递增编号和短标题；登记只通知一次，数字重试只恢复对应未提交工作',async()=>{
+  const h=harness();try{
+    const m=msg('8000000000001','/派 网站 修改首页配色');h.s.incoming(m);await h.engine.processNext();const op=h.engine.progress.forMessage(m.id);assert.equal(op.number,1);assert.match(op.title,/网站.*修改首页配色/);await drain(h);assert.equal(h.sent.filter(t=>t.includes('已登记任务 1：')).length,1);
+    h.c.request=async()=>({thread:{status:{type:'active'}}});await h.engine.runTask();h.engine.progress.retry('1');assert.equal(h.s.queuedTasks().length,1);assert.match(h.engine.progress.label(m.id),/^任务 1：网站/);
+    const second=msg('8000000000002','重新做另一份网站');h.s.incoming(second);await h.engine.processNext();assert.equal(h.engine.progress.forMessage(second.id).number,2);
+    assert.throws(()=>h.engine.progress.retry('99'),/没有找到任务 99/);
+  }finally{h.s.close();}
+});
+
+test('弹层遮挡仅对确定未点击的表情退避三次；点击不明的回执保留不重试',async()=>{
+  const h=harness();try{const m=msg('9000000000001','测试');h.s.incoming(m);h.engine.progress.receive(m);let attempts=0;h.engine.adapter.react=async()=>{attempts++;return {supported:false,notSubmitted:true,retryable:true,code:'OVERLAY_BLOCKED',reason:'弹层遮挡'};};
+    for(let i=0;i<3;i++){await h.engine.deliver();h.s.db.prepare('UPDATE outbox SET next_attempt=0').run();}await h.engine.deliver();assert.equal(attempts,3);assert.equal(h.s.snapshot().outbox[0].status,'unavailable');assert.equal(h.sent.length,0);
+  }finally{h.s.close();}
+});
+
+test('派发调度只锁具体目标聊天，不同目标并行，同目标后续任务串行',async()=>{
+  const h=harness();try{h.s.saveConfig({targets:[{id:'chat-A',alias:'A'},{id:'chat-B',alias:'B'}]});const a=h.engine.dispatch('A','第一个','授权A'),again=h.engine.dispatch('A','第二个','授权A2'),b=h.engine.dispatch('B','独立任务','授权B');let release,started;const ready=new Promise(r=>started=r),hold=new Promise(r=>release=r),calls=[];
+    h.c.run=async(id,input,o)=>{calls.push(id);o.onSubmitted();o.onStarted('turn-'+calls.length);if(calls.length===1){started();await hold;}return {text:'完成',turnId:'turn-'+calls.length};};
+    const first=h.engine.runTask();await ready;await h.engine.runTask();assert.deepEqual(calls,['chat-A','chat-B']);assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(b).status,'done');assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(a).status,'running');assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(again).status,'queued');assert.equal(h.engine.taskBusy,true);
+    release();await first;await h.engine.runTask();assert.deepEqual(calls,['chat-A','chat-B','chat-A']);assert.equal(h.engine.taskBusy,false);
+  }finally{h.s.close();}
 });
 
 test('轻量判断尚未返回时重叠调度不能重复启动模型',async()=>{

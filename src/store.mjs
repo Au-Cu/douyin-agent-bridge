@@ -10,7 +10,8 @@ export class Store {
     mkdirSync(root, { recursive: true });
     this.unlock=lockStorage(root);
     try{
-    if(!existsSync(join(root,'bridge.sqlite'))&&(existsSync(join(root,'backups','latest.json'))||['knowledge','needs'].some(name=>existsSync(join(root,name))&&readdirSync(join(root,name)).length)))throw new Error('已保存资料的数据库文件缺失，已停止启动并保留资料与备份，不能创建空库替代。');
+    const established=existsSync(join(root,'config.json'))||existsSync(join(root,'storage.json'));
+    if(!existsSync(join(root,'bridge.sqlite'))&&(existsSync(join(root,'backups','latest.json'))||established&&['knowledge','needs'].some(name=>existsSync(join(root,name))&&readdirSync(join(root,name)).length)))throw new Error('已保存资料的数据库文件缺失，已停止启动并保留资料与备份，不能创建空库替代。');
     this.db = new DatabaseSync(join(root, 'bridge.sqlite'));
     if(this.db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('数据库完整性检查未通过，已保留原文件；请从备份恢复并核实任务状态，不能创建空记忆替代。');
     this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;

@@ -26,7 +26,7 @@ function harness(){
 test('正在分析别的视频时，新视频也立即贴收到表情；排队时不贴 active，重复扫描不重复回应',async()=>{
   const h=harness();h.engine.busy=true;
   await h.engine.scan();await settle();
-  assert.equal(h.receipts.length,1);assert.deepEqual(h.receipts[0].payload.emojis,['👌']);assert.equal(h.s.snapshot().outbox.some(o=>o.kind==='text'),false);
+  assert.equal(h.receipts.length,1);assert.deepEqual(h.receipts[0].payload.emojis,['👌']);assert.equal(h.s.snapshot().outbox.filter(o=>o.kind==='text').length,1);assert.match(h.s.snapshot().outbox.find(o=>o.kind==='text').body,/^已登记任务 1：/);assert.equal(h.s.snapshot().outbox.some(o=>JSON.parse(o.payload).stage==='active'),false);
   h.engine.seen.clear();await h.engine.scan();await settle();assert.equal(h.receipts.length,1);h.s.close();
 });
 

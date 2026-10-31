@@ -3,6 +3,33 @@ import { chromium } from 'playwright-core';
 import { DouyinAdapter,captureMessageMenu,inspectReactionChoices,markOwnerConversation } from '../src/douyin.mjs';
 const owner={chatKey:'bound-chat',peerUid:'bound-owner'};
 
+test('原生无文字圆形展开按钮也能打开完整表情；探测不点击实际表情',async()=>{
+  const browser=await chromium.launch({channel:'msedge',headless:true});try{const page=await browser.newPage();await page.setContent('<div data-bridge-message-id="8000000000001" style="padding:30px">原消息</div>');
+    await page.evaluate(()=>{window.emojiClicks=0;document.querySelector('[data-bridge-message-id]').addEventListener('contextmenu',e=>{e.preventDefault();document.querySelectorAll('[role="menu"]').forEach(n=>n.remove());const menu=document.createElement('div');menu.setAttribute('role','menu');menu.className='MessageOperatePopBodywrapper';menu.style.width='300px';menu.innerHTML='<div class="PopBodyEmojiQuickReplyrow"><img class="PopBodyEmojiQuickReplyemojiImg" alt="[微笑]" width="32" height="32"><img class="PopBodyEmojiQuickReplyemojiImg" alt="[色]" width="32" height="32"><div class="quickArrow"><svg width="32" height="32"><circle cx="16" cy="16" r="14"/><path d="M10 13L16 20L22 13"/></svg></div></div>';
+      menu.querySelector('.quickArrow').onclick=()=>{const b=document.createElement('button');b.setAttribute('aria-label','[OK]');b.textContent='👌';b.onclick=()=>{window.emojiClicks++;const pill=document.createElement('span');pill.className='message-reaction';pill.textContent='👌';document.querySelector('[data-bridge-message-id]').append(pill);menu.remove();};menu.append(b);};document.body.append(menu);});});
+    const a=new DouyinAdapter({root:'unused'});a.page=page;a.chatFrame=page;a.scan=async()=>({peer:owner});const probe=await a.react(owner,'8000000000001',{probeOnly:true,emojis:['👌']});assert.equal(probe.supported,true);assert.equal(await page.evaluate(()=>window.emojiClicks),0);assert.equal((await a.react(owner,'8000000000001',{emojis:['👌']})).verified,true);
+  }finally{await browser.close();}
+});
+
+test('快捷表情行和整块表情网格不能被当成一个图标点击',async()=>{
+  const browser=await chromium.launch({channel:'msedge',headless:true});try{const page=await browser.newPage();await page.setContent('<div role="menu" style="width:300px"><div class="PopBodyEmojiQuickReplyrow"><img id="celebrate" alt="[庆祝]" width="32" height="32"><img id="active" alt="[一起加油]" width="32" height="32"><img id="roger" alt="[OK]" width="32" height="32"></div></div>');const choices=(await page.evaluate(inspectReactionChoices,'exact')).choices;assert.deepEqual(choices.map(c=>c.emoji),['🎉','💪','👌']);for(const c of choices)assert.equal(await page.locator('[data-bridge-reaction-choice="exact-'+c.index+'"]').evaluate(e=>e.tagName),'IMG');
+  }finally{await browser.close();}
+});
+
+test('弹层拦截消息时不强制穿透点击，不发送表情并记录确定未提交',async()=>{
+  const browser=await chromium.launch({channel:'msedge',headless:true});try{const page=await browser.newPage();await page.setContent('<div data-bridge-message-id="8000000000002" style="padding:30px">原消息</div><div class="semi-modal-wrap" style="position:fixed;inset:0;z-index:999"></div>');
+    await page.evaluate(()=>{window.contextClicks=0;document.querySelector('[data-bridge-message-id]').addEventListener('contextmenu',()=>window.contextClicks++);});const a=new DouyinAdapter({root:'unused'});a.page=page;a.chatFrame=page;a.scan=async()=>({peer:owner});const result=await a.react(owner,'8000000000002');assert.equal(result.code,'OVERLAY_BLOCKED');assert.equal(result.notSubmitted,true);assert.equal(await page.evaluate(()=>window.contextClicks),0);
+  }finally{await browser.close();}
+});
+
+test('弹出会话覆盖背景时选择前景可操作 iframe，不按背景消息数量选择',async()=>{
+  const browser=await chromium.launch({channel:'msedge',headless:true});try{const context=await browser.newContext(),page=await context.newPage();
+    const body=count=>'<div class="RightPanelHeadertitle">测试用户</div>'+Array.from({length:count},(_,i)=>`<div class="messageMessageBoxcontentBox" data-direction="in" data-fixture="${9000000000000+i}" style="height:42px"><div class="MessageBoxContentactiveClickArea">fixture</div></div>`).join('')+'<script>document.querySelectorAll("[data-fixture]").forEach(e=>e.__reactProps$fixture={message:{serverId:e.dataset.fixture,sender:"bound-owner",conversationId:"bound-chat",createTime:Date.now(),content:JSON.stringify({text:"fixture"})}})</script>';
+    await context.route('https://www.douyin.com/chat**',route=>route.fulfill({contentType:'text/html',body:route.request().url().endsWith('/active-frame')?body(1):body(5)+'<div style="position:fixed;inset:0;z-index:100"><iframe src="https://www.douyin.com/chat/active-frame" style="width:100%;height:100%;border:0"></iframe></div>'}));
+    await page.goto('https://www.douyin.com/chat');await page.frameLocator('iframe').locator('[data-fixture]').waitFor();const a=new DouyinAdapter({root:'unused'});a.context=context;a.page=page;const scan=await a.scan();assert.equal(scan.messages.length,1);assert.ok(a.chatFrame.url().endsWith('/active-frame'));assert.equal(scan.peer.peerUid,owner.peerUid);
+  }finally{await browser.close();}
+});
+
 test('重复打开平台菜单仍能识别三个表情，并阻止浏览器菜单遮挡而不截断平台处理',async()=>{
   const browser=await chromium.launch({channel:'msedge',headless:true});
   try{
