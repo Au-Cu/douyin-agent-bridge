@@ -1,7 +1,8 @@
-import { mkdir,readdir,readFile,writeFile,stat } from 'node:fs/promises';
+import { mkdir,readdir,readFile,stat } from 'node:fs/promises';
 import { join,dirname } from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
 import { runFfmpeg } from './media.mjs';
+import {durableJson,durableWrite} from './durable.mjs';
 
 const VERSION='continuous-v2';
 export function planVisualSegments(sheets,duration,fps,maxSheets=8) {
@@ -49,7 +50,8 @@ export class VisualAnalyzer {
   constructor({codex,log=()=>{},settings=async()=>({})}){Object.assign(this,{codex,log,settings});}
   async prepare(learned,fps=4) {
     const video=join(dirname(learned.path),'video.mp4');const info=await stat(video);const size=info.size;
-    const revision=createHash('sha256').update(`${size}:${info.mtimeMs}:${learned.seconds}`).digest('hex').slice(0,12);
+    let mtime=info.mtimeMs;try{const origin=JSON.parse(await readFile(join(dirname(video),'video-storage.json'),'utf8'));if(origin.bytes===size&&origin.storedMtimeMs===mtime&&Number.isFinite(origin.originalMtimeMs))mtime=origin.originalMtimeMs;}catch{}
+    const revision=createHash('sha256').update(`${size}:${mtime}:${learned.seconds}`).digest('hex').slice(0,12);
     const cacheKey=`visual-${VERSION}-${fps}fps-${revision}`;
     const folder=join(dirname(learned.path),cacheKey);await mkdir(folder,{recursive:true});
     const manifestPath=join(folder,'manifest.json');let manifest=null;
@@ -62,7 +64,7 @@ export class VisualAnalyzer {
       const finalFrame=join(folder,'final-frame.jpg');
       await runFfmpeg(['-hide_banner','-loglevel','error','-y','-ss',String(Math.max(0,learned.seconds-.15)),'-i',video,'-frames:v','1','-q:v','3',finalFrame]);
       manifest={version:VERSION,cacheKey,videoBytes:size,fps,duration:learned.seconds,sheets,finalFrame,created:new Date().toISOString()};
-      await writeFile(manifestPath,JSON.stringify(manifest,null,2));
+      durableJson(manifestPath,manifest);
     }
     const sheets=manifest.sheets.map(n=>join(folder,n));
     for(const p of sheets)await stat(p);
@@ -74,7 +76,7 @@ export class VisualAnalyzer {
     const statePath=join(dirname(learned.path),'visual-report.json');
     const save=async(status,error='')=>{
       const report={version:VERSION,cacheKey:manifest.cacheKey,status,fps,duration:learned.seconds,sheetCount:manifest.sheets.length,totalSegments:segments.length,completedSegments:results.length,coveredUntil:results.length?results.at(-1).end:0,segments:results,error,updated:new Date().toISOString()};
-      await writeFile(statePath,JSON.stringify(report,null,2));return report;
+      durableJson(statePath,report);return report;
     };
     try{
       for(const segment of segments){
@@ -110,11 +112,11 @@ export class VisualAnalyzer {
         }};
         const result=this.codex.runReadOnly?await this.codex.runReadOnly(input,{...options,tools:visualTools}):await this.codex.run(await this.codex.createCoordinator(visualTools,true),input,options);
         const observation={version:VERSION,start:segment.start,end:segment.end,text:result.text,detailedViews,settings:callSettings};
-        await writeFile(resultPath,JSON.stringify(observation,null,2));results.push(observation);await save('partial');onProgress(results.length,segments.length);
+        durableJson(resultPath,observation);results.push(observation);await save('partial');onProgress(results.length,segments.length);
       }
       const report=await save('complete');
       const notes=`# 全时段视觉观察\n\n采样：${fps} fps；覆盖 0–${learned.seconds.toFixed(2)} 秒；${manifest.sheets.length} 张连续画面组；${results.length} 段。每组 2×2 连续画面，保留时间顺序。\n\n${results.map(r=>`## ${r.start.toFixed(1)}–${r.end.toFixed(1)} 秒\n\n${r.text}`).join('\n\n')}`;
-      await writeFile(join(dirname(learned.path),'visual-analysis.md'),notes);return {...report,notes};
+      durableWrite(join(dirname(learned.path),'visual-analysis.md'),notes);return {...report,notes};
     }catch(e){await save('partial',e.message);throw new Error(`全时段视觉分析尚未完成（${results.length}/${segments.length} 段已保存，可续做）：${e.message}`,{cause:e});}
   }
 }

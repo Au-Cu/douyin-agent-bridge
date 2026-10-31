@@ -1,13 +1,17 @@
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import {existsSync} from 'node:fs';
+import {resolveDataRoot} from './data-root.mjs';
+import {durableJson,durableWrite} from './durable.mjs';
 import { modelName } from '../scripts/setup-asr.mjs';
-const ffmpeg=fileURLToPath(new URL('../data/runtime/ffmpeg.exe',import.meta.url));
+const legacyFfmpeg=fileURLToPath(new URL('../data/runtime/ffmpeg.exe',import.meta.url));
 
 export function runFfmpeg(args,timeout=180000) {
   return new Promise((resolve,reject)=>{
+    const stable=join(resolveDataRoot(),'runtime','ffmpeg.exe'),ffmpeg=existsSync(stable)?stable:legacyFfmpeg;
     const child=spawn(ffmpeg,args,{windowsHide:true});let stderr='';const timer=setTimeout(()=>{child.kill();reject(new Error('音视频处理超时'));},timeout);
     child.stderr.on('data',b=>{stderr=(stderr+b).slice(-24000);});child.on('error',e=>{clearTimeout(timer);reject(e);});
     child.on('exit',code=>{clearTimeout(timer);code===0?resolve(stderr):reject(new Error('音视频处理失败：'+stderr.slice(-900)));});
@@ -50,8 +54,8 @@ export class MediaProcessor {
     }
     // Do not persist expiring CDN URLs, cookies or request headers.
     const saved={id,title:metadata.title,author:metadata.author,source:metadata.source,seconds,transcript,noAudio,frames,created:new Date().toISOString()};
-    await writeFile(join(folder,'metadata.json'),JSON.stringify(saved,null,2));
-    const path=join(folder,'note.md');await writeFile(path,`# ${saved.title}\n\n来源：${saved.source}\n作者：${saved.author}\n时长：${seconds.toFixed(1)} 秒\n\n## 口播文字稿\n\n${transcript||(noAudio?'此视频没有音轨，后续依据连续视觉记录学习。':'未识别到有效口播，后续依据连续视觉记录学习。')}\n`);
+    durableJson(join(folder,'metadata.json'),saved);
+    const path=join(folder,'note.md');durableWrite(path,`# ${saved.title}\n\n来源：${saved.source}\n作者：${saved.author}\n时长：${seconds.toFixed(1)} 秒\n\n## 口播文字稿\n\n${transcript||(noAudio?'此视频没有音轨，后续依据连续视觉记录学习。':'未识别到有效口播，后续依据连续视觉记录学习。')}\n`);
     return {...saved,path};
   }
 }

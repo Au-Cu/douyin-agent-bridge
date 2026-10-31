@@ -29,4 +29,4 @@ export async function setupAsr(dataRoot,log=console.log) {
   if((await stat(join(folder,'model.int8.onnx'))).size<200000000)throw new Error('转写模型文件不完整');
   log('本地转写模型安装完成');return folder;
 }
-if(process.argv[1]&&fileURLToPath(import.meta.url)===process.argv[1])await setupAsr(fileURLToPath(new URL('../data/',import.meta.url)));
+if(process.argv[1]&&fileURLToPath(import.meta.url)===process.argv[1]){const {prepareDataRoot}=await import('../src/data-root.mjs');await setupAsr(await prepareDataRoot(fileURLToPath(new URL('../',import.meta.url))));}

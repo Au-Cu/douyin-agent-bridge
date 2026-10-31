@@ -6,7 +6,9 @@ import { createRequire } from 'node:module';
 import { CodexClient } from '../src/codex.mjs';
 import { runFfmpeg,transcribe } from '../src/media.mjs';
 import { modelName } from './setup-asr.mjs';
-const project=fileURLToPath(new URL('../',import.meta.url));const data=join(project,'data');let missing=false;
+import {resolveDataRoot} from '../src/data-root.mjs';
+import {existsSync} from 'node:fs';
+const project=fileURLToPath(new URL('../',import.meta.url));const stable=resolveDataRoot(),data=existsSync(stable)?stable:join(project,'data');let missing=false;
 function check(label,ok,detail=''){console.log(`[${ok?'OK':'待完成'}] ${label}${detail?'：'+detail:''}`);if(!ok)missing=true;}
 const [nodeMajor,nodeMinor]=process.versions.node.split('.').map(Number);
 check('Node.js',nodeMajor>24||nodeMajor===24&&nodeMinor>=5,process.version+' / '+process.arch);

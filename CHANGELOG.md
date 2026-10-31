@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Store account state and memory in a fixed per-user data directory, independent of source folders and launcher copies; support explicit isolated profiles.
+- Migrate legacy data without deleting the original or overwriting an existing account, and rebase video/evidence paths.
+- Commit settings to SQLite with FULL durability, atomic configuration mirrors and consistent automatic/manual snapshots.
+- Restore saved browser sessions, owner conversation and listening intent on restart; keep uncertain work isolated.
+- Prevent concurrent processes from rewriting one data profile, and save target-list changes immediately.
+- Add a data/recovery panel and regression checks for forced termination, torn configuration files and safe migration.
+
 ## 0.4.0
 
 - Track execution and multi-part reply delivery as one persisted operation; mark done only after all work and replies are confirmed.

@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'scripts\Launcher.ps1')
 $node = Get-BridgeNode
 Set-Location -LiteralPath $PSScriptRoot
+$dataRoot = Get-BridgeDataRoot $PSScriptRoot -Prepare
 Write-Output 'Installing dependencies, including the official Codex CLI...'
 & npm.cmd ci --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { throw 'npm ci failed. Check the network/proxy and try again.' }

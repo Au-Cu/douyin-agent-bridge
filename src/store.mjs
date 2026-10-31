@@ -1,14 +1,20 @@
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, writeFileSync, renameSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { DatabaseSync,backup } from 'node:sqlite';
+import { mkdirSync, existsSync, readFileSync, readdirSync,rmSync } from 'node:fs';
+import { join,resolve,relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import {durableJson,lockStorage} from './durable.mjs';
 
 export class Store {
   constructor(root) {
     this.root = root;
     mkdirSync(root, { recursive: true });
+    this.unlock=lockStorage(root);
+    try{
+    if(!existsSync(join(root,'bridge.sqlite'))&&(existsSync(join(root,'backups','latest.json'))||['knowledge','needs'].some(name=>existsSync(join(root,name))&&readdirSync(join(root,name)).length)))throw new Error('已保存资料的数据库文件缺失，已停止启动并保留资料与备份，不能创建空库替代。');
     this.db = new DatabaseSync(join(root, 'bridge.sqlite'));
-    this.db.exec(`PRAGMA journal_mode=WAL;
+    if(this.db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('数据库完整性检查未通过，已保留原文件；请从备份恢复并核实任务状态，不能创建空记忆替代。');
+    this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
+      CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, peer TEXT, kind TEXT, body TEXT, status TEXT, result TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS knowledge(id TEXT PRIMARY KEY, title TEXT, transcript TEXT, summary TEXT, path TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, alias TEXT, thread TEXT, prompt TEXT, status TEXT, turn TEXT, result TEXT, created INTEGER);
@@ -25,17 +31,24 @@ export class Store {
       UPDATE tasks SET status='uncertain' WHERE status='running';
       UPDATE outbox SET status='uncertain' WHERE status='sending';`);
     const file = join(root, 'config.json');
-    const saved = existsSync(file) ? JSON.parse(readFileSync(file,'utf8')) : {};
-    this.config = { port: 39361, enabled: false, owner: null, targets: [], coordinator: '', pollMs: 3000, maxVideoSeconds: 1800, visualFps:4, ackMode:'auto',model:'',reasoningEffort:'',fastMode:false,autoRoute:true,contextBudget:48000,activeNeed:'', ...saved };
+    const stored=this.db.prepare("SELECT value FROM app_settings WHERE key='config'").get();let saved;
+    if(stored){saved=JSON.parse(stored.value);if(!saved||typeof saved!=='object'||Array.isArray(saved))throw new Error('已保存的配置无效，已停止启动以保留现场。');if(existsSync(file))try{JSON.parse(readFileSync(file,'utf8'));}catch{this.recovery='配置文件损坏，已从数据库恢复完整设置';}}
+    else{for(const candidate of [file,file+'.tmp',file+'.bak'])if(existsSync(candidate)){try{const v=JSON.parse(readFileSync(candidate,'utf8'));if(v&&typeof v==='object'&&!Array.isArray(v)){saved=v;if(candidate!==file)this.recovery='已从配置备份恢复设置';break;}}catch{}}if(!saved&&[file,file+'.tmp',file+'.bak'].some(existsSync))throw new Error('配置文件无法读取，原文件已保留；请恢复备份，不能用空配置覆盖。');}
+    saved||={};
+    this.config = { port: 39361, enabled: false, owner: null, targets: [], coordinator: '', pollMs: 3000, maxVideoSeconds: 1800, visualFps:4, ackMode:'auto',model:'',reasoningEffort:'',fastMode:false,autoRoute:true,contextBudget:48000,activeNeed:'',resumeOnStartup:!!saved.enabled, ...saved };
     // Explicitly re-arm the listener after a restart; old history is not a new command.
     this.config.enabled = false;
     this.saveConfig({});
+    if(this.recovery)this.event(this.recovery,'attention');
+    }catch(e){try{this.db?.close();}catch{}this.unlock();throw e;}
   }
   saveConfig(patch) {
-    this.config = { ...this.config, ...patch };
+    const next={...this.config,...patch};
+    // The authoritative copy commits with SQLite FULL durability before a
+    // successful response. JSON is a readable recovery mirror, not sole state.
+    this.db.prepare("INSERT OR REPLACE INTO app_settings VALUES('config',?,?)").run(JSON.stringify(next),Date.now());this.config=next;
     const file = join(this.root,'config.json');
-    writeFileSync(file+'.tmp',JSON.stringify(this.config,null,2));
-    renameSync(file+'.tmp',file);
+    try{if(existsSync(file))try{const old=JSON.parse(readFileSync(file,'utf8'));durableJson(file+'.bak',old);}catch{}durableJson(file,this.config);}catch{this.event('配置已提交数据库，但可读配置镜像暂未写入，请检查磁盘可用空间。','attention');}
     return this.config;
   }
   event(message, level='info') {
@@ -87,5 +100,17 @@ export class Store {
     const counts={knowledge:this.db.prepare('SELECT COUNT(*) AS n FROM knowledge').get().n,queuedTasks:this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status='queued'").get().n,runningTasks:this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status='running'").get().n};
     return {config:this.config,counts,knowledge:read('knowledge'),tasks:read('tasks'),messages:read('messages').map(({body,...r})=>r),outbox:read('outbox'),events:read('events')};
   }
-  close() { this.db.close(); }
+  backup(){
+    if(this.backingUp)return this.backingUp;
+    this.backingUp=(async()=>{
+      const parent=join(this.root,'backups'),name='state-'+Date.now()+'-'+randomUUID(),folder=join(parent,name);mkdirSync(folder,{recursive:true});
+      await backup(this.db,join(folder,'bridge.sqlite'));const snapshot=new DatabaseSync(join(folder,'bridge.sqlite'),{readOnly:true});let saved;try{saved=JSON.parse(snapshot.prepare("SELECT value FROM app_settings WHERE key='config'").get().value);}finally{snapshot.close();}durableJson(join(folder,'config.json'),saved);
+      const record={created:Date.now(),folder:name,includes:['配置','需求记忆','学习索引','任务与送达记录'],media:'原视频、连续画面和浏览器登录态仍保存在固定数据目录中'};durableJson(join(folder,'snapshot.json'),record);durableJson(join(parent,'latest.json'),record);
+      const snapshots=readdirSync(parent).filter(n=>/^state-\d{13}-[a-f\d-]{36}$/.test(n)).sort().reverse();
+      for(const old of snapshots.slice(32)){const target=resolve(parent,old);if(relative(resolve(parent),target)!==old)throw new Error('备份路径校验失败');rmSync(target,{recursive:true,force:true});}
+      return record;
+    })().finally(()=>{this.backingUp=null;});return this.backingUp;
+  }
+  storageState(){let latest=null;try{latest=JSON.parse(readFileSync(join(this.root,'backups','latest.json'),'utf8'));}catch{}return {dataRoot:resolve(this.root),persistent:true,backup:latest,recovery:this.recovery||''};}
+  close() {if(this.closed)return;this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');this.db.close();this.unlock();this.closed=true;}
 }

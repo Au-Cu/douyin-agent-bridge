@@ -51,7 +51,7 @@ export class BridgeEngine {
     const id=await this.codex.createCoordinator(coordinatorTools);this.store.saveConfig({coordinator:id});this.store.event('已建立固定的 Codex 调度聊天');return id;
   }
   async arm(enabled,{resumeSince}={}) {
-    if(!enabled){this.store.saveConfig({enabled:false});this.store.event('已暂停接收新指令；正在执行的任务保持原状态');return;}
+    if(!enabled){this.store.saveConfig({enabled:false,resumeOnStartup:false});this.store.event('已暂停接收新指令；正在执行的任务保持原状态');return;}
     if(!this.store.config.owner)throw new Error('请先绑定用户的抖音会话');
     if(!this.store.config.coordinator)throw new Error('请先创建 Codex 调度聊天');
     const scan=await this.adapter.scan();
@@ -59,7 +59,7 @@ export class BridgeEngine {
     if(resumeSince!==undefined&&(!Number.isFinite(resumeSince)||resumeSince<=0||resumeSince>Date.now()||Date.now()-resumeSince>30*60*1000))throw new Error('恢复监听的时间范围无效');
     this.armedAt=resumeSince??Date.now();
     this.seen=new Set(scan.messages.filter(m=>resumeSince===undefined||m.created<resumeSince-1500).map(m=>m.id));
-    this.store.saveConfig({enabled:true});this.store.event(resumeSince===undefined?'监听已启动，现有历史消息已跳过':'监听已恢复，将补收本次更新期间的新消息');
+    this.store.saveConfig({enabled:true,resumeOnStartup:true});this.store.event(resumeSince===undefined?'监听已启动，现有历史消息已跳过':'监听已恢复，将补收本次更新期间的新消息');
   }
   reply(text,options) {
     const owner=this.store.config.owner;if(!owner)return;

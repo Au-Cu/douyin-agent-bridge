@@ -3,9 +3,10 @@
 <body><main>
   <header><div><span class="eyebrow">LOCAL BRIDGE</span><h1>抖音 × Codex</h1><p>把视频交给助手，让学习接着变成行动。</p></div><span id="liveBadge" class="badge">正在连接</span></header>
   <div id="notice" role="status"></div>
+  <section class="panel"><div class="section-title"><h2>数据与恢复</h2><button id="backupNow" class="secondary">备份配置与记录</button></div><p id="storagePath" class="hint">正在读取固定数据目录…</p><p id="backupInfo" class="hint">已保存的设置即时写入磁盘，无需等退出程序；原视频、画面、需求记忆和抖音登录态保存在同一固定目录。</p></section>
   <section class="status-grid"><article><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录助手账号，再选中你的会话</small></article><article><span>Codex</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small></article><article><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
   <section class="panel setup"><div class="section-title"><h2>连接助手</h2><span>首次连接完成这三步</span></div>
-    <div class="steps"><div><b>01</b><h3>登录抖音助手账号</h3><p>用专门的助手账号登录打开的 Edge 窗口。主号与它互关后，从手机给它发一条私信。</p><button id="openBrowser">打开抖音登录窗口</button></div>
+    <div class="steps"><div><b>01</b><h3>连接抖音助手账号</h3><p>首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。</p><button id="openBrowser">打开抖音窗口</button></div>
     <div><b>02</b><h3>绑定你的私信会话</h3><p>在浏览器里点开你的主号会话，再绑定。助手只接收这个账号的新消息。</p><button id="bindOwner">绑定当前会话</button><small id="scanInfo"></small></div>
     <div><b>03</b><h3>准备 Codex 与口播转写</h3><p>建立固定的调度聊天。视频按完整时间轴逐段读取画面，口播在本机转写。</p><div class="button-row"><button id="createCoordinator">创建调度聊天</button><button id="reconnectCodex" class="secondary">重新连接 Codex</button><button id="setupAsr" class="secondary">安装转写模型</button></div></div></div>
     <div class="listen-row"><div><strong id="listenTitle">准备好后开始监听</strong><small>启动时跳过历史消息；电脑需要保持运行。</small></div><button id="toggleListen" class="primary">开始监听</button></div>

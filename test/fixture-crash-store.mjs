@@ -1,0 +1,10 @@
+import {join} from 'node:path';import {mkdirSync,writeFileSync} from 'node:fs';
+import {Store} from '../src/store.mjs';import {Needs} from '../src/needs.mjs';
+const store=new Store(process.argv[2]);
+store.saveConfig({owner:{chatKey:'fixture-owner',peerUid:'fixture-uid',displayName:'测试用户'},targets:[{id:'fixture-target',alias:'网站'}],model:'fixture-model',reasoningEffort:'max',fastMode:true,resumeOnStartup:true});
+const needs=new Needs(store),need=needs.create('重启恢复需求','fixture-thread');needs.activate(need.id);
+const folder=join(store.root,'knowledge','fixture-video');mkdirSync(folder,{recursive:true});writeFileSync(join(folder,'note.md'),'原视频视觉记录');store.addKnowledge({id:'fixture-video',title:'完整视频资料',path:join(folder,'note.md')});
+store.incoming({id:'fixture-message',peer:'fixture-owner',kind:'text',text:'执行已授权任务'});store.messageStatus('fixture-message','processing');
+const running=store.createTask('网站','fixture-target','不允许重复的已提交任务');store.taskStatus(running,'running','','accepted-turn');
+store.createTask('网站','fixture-target','尚未提交的排队任务');const reply=store.enqueueReply('fixture-owner','送达结果未知');store.delivery(reply,'sending');
+process.send?.({ready:true});setInterval(()=>{},1000);

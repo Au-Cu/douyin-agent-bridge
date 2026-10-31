@@ -7,6 +7,8 @@ async function api(path,body){const r=await fetch('/api/'+path,body===undefined?
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'error':'';$('notice').style.display='block';}
 function action(id,fn){$(id).addEventListener('click',async()=>{const button=$(id);button.disabled=true;try{await fn();await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}});}
 function renderTargets(){$('targetList').innerHTML=targets.map((t,i)=>`<div class="target">${escape(t.alias)} <small>${escape(t.name)}</small><button data-remove="${i}" aria-label="移除目标">×</button></div>`).join('');}
+let targetTail=Promise.resolve();
+function changeTargets(change){const task=targetTail.catch(()=>{}).then(async()=>{const next=change(targets);await api('targets',{targets:next});targets=next;state.config.targets=next;renderTargets();notice('授权名单已即时保存，重启后会恢复。');});targetTail=task;return task;}
 function renderEfforts(value=$('defaultEffort').value){
   const id=$('defaultModel').value||catalog?.defaults?.model,model=catalog?.models?.find(m=>m.model===id);
   $('defaultEffort').innerHTML='<option value="">使用默认强度</option>'+(model?.supportedReasoningEfforts||[]).map(e=>`<option value="${escape(e.reasoningEffort)}">${escape(effortLabels[e.reasoningEffort]||e.reasoningEffort)}</option>`).join('');
@@ -45,6 +47,7 @@ window.addEventListener('resize',()=>{if(threads.length)requestAnimationFrame(re
 async function refresh(){
   if(busy)return;busy=true;try{
     state=await api('state');const r=state.runtime;
+    if(state.storage){$('storagePath').textContent='固定数据目录：'+state.storage.dataRoot;$('backupInfo').textContent=(state.storage.recovery?state.storage.recovery+'。':'')+(state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。':'尚未生成状态快照。')+' 原视频、连续画面和登录态保留在上述目录；自动备份配置、需求与任务记录，退出程序时也会生成快照。';}
     $('liveBadge').textContent=state.config.enabled?'正在监听':'尚未监听';$('liveBadge').className='badge'+(state.config.enabled?' active':'');
     $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接'})[r.browser]||r.browser;
     $('ownerStatus').textContent=state.config.owner?'已绑定：'+state.config.owner.displayName:'尚未绑定用户会话';
@@ -68,7 +71,8 @@ async function refresh(){
     const approvals=await api('approvals');$('approvalList').innerHTML=approvals.map(a=>`<div class="approval"><strong>待确认操作 #${escape(a.id)}</strong><pre>${escape(a.description)}</pre><button data-approve="${escape(a.id)}">同意本次</button> <button data-decline="${escape(a.id)}">拒绝</button></div>`).join('');
   }catch(e){notice(e.message,true);}finally{busy=false;}
 }
-action('openBrowser',async()=>{notice('正在打开 Edge。请登录助手账号，然后打开与你主号的私信会话。');await api('browser/open',{});});
+action('openBrowser',async()=>{notice('正在恢复已保存的抖音登录态和绑定会话。只有平台要求重新验证时才需登录。');await api('browser/open',{});});
+action('backupNow',async()=>{await api('storage/backup',{});notice('配置、需求记忆和任务记录已生成状态快照。原视频和登录态保留在固定数据目录。');});
 action('bindOwner',async()=>{const r=await api('bind',{});notice('已绑定：'+r.owner.displayName);});
 action('createCoordinator',async()=>{await api('coordinator',{});notice('固定调度聊天已建立。');});
 action('reconnectCodex',async()=>{const r=await api('codex/reconnect',{});notice(r.deferred?'当前任务仍在执行，结束后会重新连接。':r.auth.status==='ready'?'已读取本机当前 Codex 登录，视频进度和目标名单已保留。':r.auth.message,!r.deferred&&r.auth.status!=='ready');});
@@ -80,12 +84,12 @@ for(const id of ['defaultEffort','fastMode','autoRoute','contextBudget'])$(id).a
 action('setupAsr',async()=>{await api('asr/setup',{});notice('转写模型正在后台安装，可在运行记录查看进度。');});
 action('toggleListen',async()=>{await api('listen',{enabled:!state.config.enabled});notice(state.config.enabled?'已暂停接收新指令。':'监听已启动。请从手机分享一条新视频。');});
 action('loadThreads',async()=>{threads=await api('threads');renderThreadOptions();notice('已读取 '+threads.length+' 个本机聊天。');});
-action('addTarget',async()=>{const t=threads.find(t=>t.id===$('threadSelect').value);if(!t)throw new Error('请先选择聊天');const alias=$('targetAlias').value.trim();if(!alias)throw new Error('请填写别名');if(targets.some(x=>x.id===t.id||x.alias===alias))throw new Error('此聊天或别名已在名单中');targets.push({id:t.id,name:t.name,alias});dirty=true;renderTargets();});
+action('addTarget',async()=>{const t=threads.find(t=>t.id===$('threadSelect').value);if(!t)throw new Error('请先选择聊天');const alias=$('targetAlias').value.trim();if(!alias)throw new Error('请填写别名');await changeTargets(list=>{if(list.some(x=>x.id===t.id||x.alias===alias))throw new Error('此聊天或别名已在名单中');return [...list,{id:t.id,name:t.name,alias}];});});
 action('saveConfig',async()=>{await api('config',{targets,maxVideoSeconds:Number($('maxMinutes').value)*60,visualFps:Number($('visualFps').value),ackMode:$('ackMode').value});dirty=false;notice('配置已保存。');});
 $('maxMinutes').addEventListener('input',()=>dirty=true);
 $('visualFps').addEventListener('change',()=>dirty=true);
 $('ackMode').addEventListener('change',()=>dirty=true);
-$('targetList').addEventListener('click',e=>{const index=e.target.dataset.remove;if(index!==undefined){targets.splice(Number(index),1);dirty=true;renderTargets();}});
+$('targetList').addEventListener('click',e=>{const index=e.target.dataset.remove,id=targets[Number(index)]?.id;if(index!==undefined&&id)changeTargets(list=>list.filter(t=>t.id!==id)).catch(e=>notice(e.message,true));});
 document.addEventListener('click',async e=>{try{
   const d=e.target.dataset;
   if(d.switchNeed){const n=await api('needs/switch',{id:d.switchNeed});notice('已切换到：'+n.title);await refresh();}

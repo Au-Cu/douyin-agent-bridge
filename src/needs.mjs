@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
-import {mkdirSync,writeFileSync,renameSync} from 'node:fs';
+import {mkdirSync} from 'node:fs';
+import {durableJson} from './durable.mjs';
 import {join} from 'node:path';
 
 export const emptyMemory=()=>({title:'未命名需求',goal:'',constraints:[],decisions:[],pending:[],progress:''});
@@ -50,7 +51,7 @@ export class Needs{
   saveMemory(id,memory,version,expected=version){
     return this.db.prepare('UPDATE needs SET memory=?,title=?,summary_version=? WHERE id=? AND version=?').run(JSON.stringify(memory),memory.title.slice(0,60),version,id,expected).changes>0;
   }
-  json(id,name,value){const folder=join(this.root,id);mkdirSync(folder,{recursive:true});const path=join(folder,name);writeFileSync(path+'.tmp',JSON.stringify(value,null,2));renameSync(path+'.tmp',path);return path;}
+  json(id,name,value){const folder=join(this.root,id);mkdirSync(folder,{recursive:true});const path=join(folder,name);durableJson(path,value);return path;}
   taskState(id,limit=8){return this.db.prepare("SELECT id,alias,status,result,turn,created FROM tasks WHERE json_extract(context,'$.needId')=? ORDER BY created DESC LIMIT ?").all(id,limit);}
   history(id){const turns=this.db.prepare('SELECT * FROM need_turns WHERE need_id=? ORDER BY created').all(id),tasks=this.taskState(id,10000);return this.json(id,'history.json',{needId:id,turns,tasks});}
   lookup(value){const q=String(value).toLowerCase();const matches=this.list().filter(n=>n.id.startsWith(q)||n.title===value);if(matches.length!==1)throw new Error(matches.length?'需求不唯一，请使用完整需求 ID。':'未找到需求，发送 /找 查看目录。');return matches[0];}

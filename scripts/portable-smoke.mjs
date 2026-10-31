@@ -7,7 +7,8 @@ const root=join(projectRoot,'data','test-runs','portable-'+Date.now(),'fresh clo
 for(const file of await collectReleaseFiles()){await mkdir(dirname(join(root,file)),{recursive:true});await copyFile(join(projectRoot,file),join(root,file));}
 const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=reservation.address().port;await new Promise(r=>reservation.close(r));
 const url='http://127.0.0.1:'+port;
-const proc=spawn(process.execPath,['--use-env-proxy','src/server.mjs','--port',String(port)],{cwd:root,env:{...process.env,CODEX_HOME:join(root,'data','fixture-codex-home'),CODEX_BIN:join(root,'test','fixture-rpc.mjs')},windowsHide:true,stdio:['ignore','ignore','pipe']});
+const profile=join(root,'data');
+const proc=spawn(process.execPath,['--use-env-proxy','src/server.mjs','--port',String(port)],{cwd:root,env:{...process.env,BRIDGE_DATA_DIR:profile,CODEX_HOME:join(root,'data','fixture-codex-home'),CODEX_BIN:join(root,'test','fixture-rpc.mjs')},windowsHide:true,stdio:['ignore','ignore','pipe']});
 let stderr='';proc.stderr.on('data',b=>{stderr=(stderr+b).slice(-3000);});let cookie;
 const request=async(path,{method='GET',body,auth=true}={})=>fetch(url+'/api/'+path,{method,headers:{...(auth?{Cookie:cookie}:{}),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(5000)});
 try{
@@ -33,9 +34,9 @@ try{
   const needs=await (await request('needs')).json();assert.equal(needs.activeNeed,need.id);assert.equal(needs.needs.length,1);
   assert.ok((await (await request('commands')).json()).text.includes('/密度 2|4|8'));
   if(process.platform==='win32'){
-    const wrong=await new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(projectRoot,'Stop.ps1'),'-Port',String(port)],{cwd:projectRoot,windowsHide:true,stdio:'ignore'});p.on('error',reject);p.on('exit',resolve);});
+    const wrong=await new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(projectRoot,'Stop.ps1'),'-Port',String(port)],{cwd:projectRoot,env:{...process.env,BRIDGE_DATA_DIR:join(root,'other-data')},windowsHide:true,stdio:'ignore'});p.on('error',reject);p.on('exit',resolve);});
     assert.notEqual(wrong,0,'another copy must not stop this instance');assert.equal((await request('state')).status,200);
-    const right=await new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(root,'Stop.ps1')],{cwd:root,env:{...process.env,BRIDGE_PORT:''},windowsHide:true,stdio:'ignore'});p.on('error',reject);p.on('exit',resolve);});
+    const right=await new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(root,'Stop.ps1')],{cwd:root,env:{...process.env,BRIDGE_DATA_DIR:profile,BRIDGE_PORT:''},windowsHide:true,stdio:['ignore','pipe','pipe']});let diagnostic='';for(const stream of[p.stdout,p.stderr])stream.on('data',b=>diagnostic=(diagnostic+b).slice(-2500));p.on('error',reject);p.on('exit',code=>code===0?resolve(code):reject(new Error('Isolated stop script failed: '+diagnostic)));});
     assert.equal(right,0,'this copy must stop its saved-port instance');
   }else await request('shutdown',{method:'POST',body:{}});
   if(proc.exitCode===null){let timer;try{await Promise.race([once(proc,'exit'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Shutdown timed out')),10000);})]);}finally{clearTimeout(timer);}}

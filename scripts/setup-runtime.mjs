@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-const root=fileURLToPath(new URL('../data/runtime/',import.meta.url));
+import {prepareDataRoot} from '../src/data-root.mjs';
+const project=fileURLToPath(new URL('../',import.meta.url));
+const root=join(await prepareDataRoot(project),'runtime');
 if(process.platform!=='win32'||!['x64','arm64'].includes(process.arch))throw new Error('此安装入口支持 Windows x64/ARM64');
 await mkdir(root,{recursive:true});
 try{if((await stat(join(root,'ffmpeg.exe'))).size>10000000){console.log('FFmpeg 已就绪');process.exit(0);}}catch{}

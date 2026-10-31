@@ -15,9 +15,13 @@ import {Preferences} from './preferences.mjs';
 import {Conversations} from './conversations.mjs';
 import {commandHelp} from './commands.mjs';
 import {progressEmoji} from './progress.mjs';
+import {prepareDataRoot} from './data-root.mjs';
+import {existsSync} from 'node:fs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
-const store=new Store(join(project,'data'));
+const {values:args}=parseArgs({options:{port:{type:'string'},'data-dir':{type:'string'}}});
+if(args['data-dir'])process.env.BRIDGE_DATA_DIR=args['data-dir'];
+const dataRoot=await prepareDataRoot(project),store=new Store(dataRoot);
 const log=(message,level)=>store.event(message,level);
 const adapter=new DouyinAdapter({root:store.root,log});
 const codex=new CodexClient({cwd:project,log});
@@ -27,7 +31,6 @@ const conversations=new Conversations({store,codex,preferences});
 const visual=new VisualAnalyzer({codex,log,settings:()=>preferences.work()});
 const engine=new BridgeEngine({store,adapter,media,codex,visual,preferences,conversations});
 const token=randomBytes(32).toString('hex');let asrInstalling=false;let closing=false;
-const {values:args}=parseArgs({options:{port:{type:'string'}}});
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
 if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口必须为 1024–65535 的整数');
 store.saveConfig({port});const origin='http://127.0.0.1:'+port;
@@ -40,13 +43,13 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.4.0',projectRoot:project,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.5.0',projectRoot:project,dataRoot,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const snapshot=store.snapshot();snapshot.knowledge=await Promise.all(snapshot.knowledge.map(async k=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
-        return json(res,{...snapshot,conversations:conversations.state(),operations:engine.progress.state(),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,storage:store.storageState(),conversations:conversations.state(),operations:engine.progress.state(),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models')return json(res,await preferences.catalog());
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state());
@@ -71,6 +74,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(req.method!=='POST')return json(res,{error:'未找到接口'},404);
       const body=await jsonBody(req);
+      if(path==='/api/storage/backup')return json(res,await store.backup());
       if(path==='/api/codex/reconnect')return json(res,await codex.reconnect());
       if(path==='/api/preferences'){await preferences.update(body);let effective=null,effectiveError;try{effective=await preferences.work();}catch(e){effectiveError=e.message;}return json(res,{ok:true,config:store.config,effective,effectiveError});}
       if(path==='/api/needs/new'){const n=await conversations.create(String(body.title||'新需求'));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
@@ -116,12 +120,13 @@ const server=http.createServer(async(req,res)=>{
       }
       if(path==='/api/coordinator'){const id=await engine.createCoordinator();return json(res,{id});}
       if(path==='/api/listen'){await engine.arm(body.enabled===true,{resumeSince:body.resumeSince});return json(res,{enabled:store.config.enabled});}
-      if(path==='/api/config'){
+      if(path==='/api/config'||path==='/api/targets'){
         if(!Array.isArray(body.targets)||body.targets.length>20)throw new Error('目标聊天列表格式错误');
         const targets=body.targets.map(t=>({id:String(t.id||''),alias:String(t.alias||'').trim(),name:String(t.name||'').slice(0,150)}));
         if(targets.some(t=>!/^[\w-]{5,100}$/.test(t.id)||!t.alias||t.alias.length>60)||new Set(targets.map(t=>t.alias)).size!==targets.length)throw new Error('目标 ID 或别名无效，别名不能重复');
         if(targets.some(t=>t.id===store.config.coordinator))throw new Error('调度聊天不能作为派发目标');
         if(targets.some(t=>store.db.prepare('SELECT 1 FROM need_threads WHERE thread=?').get(t.id)))throw new Error('需求助手会话不能作为派发目标');
+        if(path==='/api/targets'){store.saveConfig({targets});return json(res,{ok:true});}
         const seconds=Number(body.maxVideoSeconds||1800);if(!Number.isFinite(seconds)||seconds<30||seconds>7200)throw new Error('视频上限必须在 30–7200 秒之间');
         const visualFps=Number(body.visualFps||store.config.visualFps||4);if(![2,4,8].includes(visualFps))throw new Error('视觉读取密度只能是每秒 2、4 或 8 帧');
         const ackMode=body.ackMode||store.config.ackMode||'auto';if(!['auto','text'].includes(ackMode))throw new Error('收到视频的确认方式无效');
@@ -163,9 +168,15 @@ const server=http.createServer(async(req,res)=>{
     res.end(await readFile(join(project,'public',assets[path])));
   }catch(e){json(res,{error:e.message},400);}
 });
-server.listen(port,'127.0.0.1',()=>{console.log('抖音 Codex 助手控制台：'+origin);log('控制台已启动，等待账号连接');});
+server.listen(port,'127.0.0.1',()=>{console.log('抖音 Codex 助手控制台：'+origin);log('控制台已启动，正在恢复本机连接');store.backup().catch(()=>log('状态快照暂未完成，请检查磁盘空间','attention'));});
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
-engine.start();codex.startAuthWatcher();codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 Codex 已连接');}).catch(e=>log('Codex 连接失败：'+e.message,'error'));
+engine.start();codex.startAuthWatcher();
+const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 Codex 已连接');}).catch(e=>log('Codex 连接失败：'+e.message,'error'));
+if(store.config.owner&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
+  await codexReady;if(closing||!store.config.resumeOnStartup||!store.config.coordinator)return;
+  try{await engine.arm(true);log('已恢复保存的会话与监听；启动前的旧消息不会作为新指令执行');}catch(e){log('绑定和资料已保留，等待恢复抖音会话：'+e.message,'attention');}
+}).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
-async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);engine.stop();codex.close();await adapter.close();server.close(()=>{store.close();process.exit(0);});}
+const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
+async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();codex.close();await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

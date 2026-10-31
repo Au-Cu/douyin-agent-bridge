@@ -20,6 +20,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     if(req.url.startsWith('/api/')){
       res.setHeader('Content-Type','application/json');
       if(req.url==='/api/preferences'){let text='';for await(const b of req)text+=b;preferencesSaved=JSON.parse(text);Object.assign(state.config,preferencesSaved);res.end(JSON.stringify({ok:true}));return;}
+      if(req.url==='/api/targets'){let text='';for await(const b of req)text+=b;state.config.targets=JSON.parse(text).targets;res.end(JSON.stringify({ok:true}));return;}
       if(req.url==='/api/models'){res.end(JSON.stringify(catalog));return;}
       if(req.url==='/api/needs/new'){let text='';for await(const b of req)text+=b;const title=JSON.parse(text).title;const n={id:'created-need',title,seq:1,contextTokens:0,summary:''};state.conversations.needs.push(n);state.conversations.activeNeed=n.id;res.end(JSON.stringify(n));return;}
       if(req.url==='/api/needs/switch'){state.conversations.activeNeed='website-1';res.end(JSON.stringify(state.conversations.needs[0]));return;}
@@ -57,6 +58,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     await page.locator('#targetAlias').fill('视频项目');await page.getByRole('button',{name:'加入名单'}).click();
     await page.setViewportSize({width:390,height:900});
     assert.equal(await page.locator('#targetList small').textContent(),longName);
+    assert.equal(state.config.targets[0].id,'long-thread-id');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     await page.getByRole('button',{name:'重新连接 Codex'}).click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('已读取本机当前 Codex 登录'));
     await page.waitForFunction(()=>document.querySelectorAll('#defaultModel option').length===2);
