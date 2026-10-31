@@ -1,0 +1,32 @@
+name: Windows source checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run setup:runtime
+      - run: npm test
+      - run: npm run test:portable
+      - run: npm run release:check
+      - run: npm run release:build
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windows-source
+          path: |
+            dist/*-windows-source.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

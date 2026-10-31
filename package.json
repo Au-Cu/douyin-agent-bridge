@@ -1,0 +1,52 @@
+{
+  "name": "douyin-codex-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "抖音私信接入本机 Codex，视频学习与指定聊天任务转发",
+  "engines": {
+    "node": ">=24.5.0"
+  },
+  "scripts": {
+    "start": "node --use-env-proxy src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "setup:asr": "node --use-env-proxy scripts/setup-asr.mjs",
+    "setup:runtime": "node --use-env-proxy scripts/setup-runtime.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "test:live": "node --use-env-proxy scripts/live-smoke.mjs",
+    "test:visual": "node --use-env-proxy scripts/visual-smoke.mjs",
+    "codex:login": "codex login",
+    "release:check": "node scripts/release-check.mjs",
+    "release:build": "node scripts/release-build.mjs",
+    "test:portable": "node --use-env-proxy scripts/portable-smoke.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.64.1",
+    "sherpa-onnx-node": "2.0.1",
+    "@openai/codex": "0.166.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Au-Cu/douyin-codex-bridge.git"
+  },
+  "homepage": "https://github.com/Au-Cu/douyin-codex-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/Au-Cu/douyin-codex-bridge/issues"
+  },
+  "files": [
+    "src/",
+    "public/",
+    "scripts/",
+    "test/",
+    "docs/",
+    "Install.ps1",
+    "Start.ps1",
+    "Stop.ps1",
+    "*.cmd",
+    "release-manifest.json",
+    "AGENTS.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ]
+}
