@@ -51,7 +51,8 @@ export class Needs{
     return this.db.prepare('UPDATE needs SET memory=?,title=?,summary_version=? WHERE id=? AND version=?').run(JSON.stringify(memory),memory.title.slice(0,60),version,id,expected).changes>0;
   }
   json(id,name,value){const folder=join(this.root,id);mkdirSync(folder,{recursive:true});const path=join(folder,name);writeFileSync(path+'.tmp',JSON.stringify(value,null,2));renameSync(path+'.tmp',path);return path;}
-  history(id){const turns=this.db.prepare('SELECT * FROM need_turns WHERE need_id=? ORDER BY created').all(id);return this.json(id,'history.json',{needId:id,turns});}
+  taskState(id,limit=8){return this.db.prepare("SELECT id,alias,status,result,turn,created FROM tasks WHERE json_extract(context,'$.needId')=? ORDER BY created DESC LIMIT ?").all(id,limit);}
+  history(id){const turns=this.db.prepare('SELECT * FROM need_turns WHERE need_id=? ORDER BY created').all(id),tasks=this.taskState(id,10000);return this.json(id,'history.json',{needId:id,turns,tasks});}
   lookup(value){const q=String(value).toLowerCase();const matches=this.list().filter(n=>n.id.startsWith(q)||n.title===value);if(matches.length!==1)throw new Error(matches.length?'需求不唯一，请使用完整需求 ID。':'未找到需求，发送 /找 查看目录。');return matches[0];}
   directory(query='',limit=20){
     const list=this.list(),words=String(query).toLowerCase().match(/[a-z\d-]{2,}|[\p{Script=Han}]{2,}/gu)||[];

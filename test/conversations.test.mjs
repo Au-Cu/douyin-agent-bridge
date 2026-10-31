@@ -82,6 +82,7 @@ test('重启和登录恢复复用已保存的路由；不同需求的任务不�
     const other=await h.manager.create('其他需求');const v2=video(h,'9000000000000000004','不相关原片');h.manager.needs.attach(other.id,v2.id);
     const engine=new BridgeEngine({store:h.store,codex:h.codex,adapter:{},media:{},preferences:h.preferences,conversations:h.manager});
     engine.dispatch('网站','按参考实现','交给网站',{needId:website});const task=h.store.queuedTasks()[0];assert.match(task.prompt,/9000000000000000003/);assert.doesNotMatch(task.prompt,/9000000000000000004/);assert.match(task.prompt,/needId/);
+    h.store.taskStatus(task.id,'uncertain','已提交但回执丢失');assert.equal(h.manager.context({needId:website}).tasks[0].status,'uncertain');assert.match(readFileSync(h.manager.needs.history(website),'utf8'),/已提交但回执丢失/);
     assert.throws(()=>{h.store.saveConfig({targets:[{id:r.threadId,alias:'助手'}]});engine.dispatch('助手','做事','派给助手',{needId:website});},/助手会话/);
   }finally{h.store.close();}
   const fresh=setup(root);try{const r=await fresh.manager.prepare({...text('stable-msg',''),kind:'video',awemeId:'9000000000000000003'});assert.equal(r.needId,website);assert.equal(fresh.codex.calls.length,0);}finally{fresh.store.close();}

@@ -113,7 +113,7 @@ export class Conversations{
     const thread=await this.codex.createCoordinator(coordinatorTools,false,{name:`抖音 · ${need.title} · ${need.seq+1}`,...await this.preferences.work()});
     const next=this.needs.bindThread(need.id,thread,handoff);await this.codex.request('thread/unsubscribe',{threadId:need.thread},5000).catch(()=>{});this.store.event('上下文预算触发交接：'+need.title.slice(0,40));return next;
   }
-  context(route){const n=this.needs.get(route.needId),thread=this.store.db.prepare('SELECT handoff FROM need_threads WHERE thread=?').get(n.thread),legacy=join(this.needs.root,n.id,'legacy-thread.json');return {needId:n.id,title:n.title,memory:n.memory,summaryIncomplete:n.version!==n.summary_version,historyPath:route.historyPath,handoffPath:thread?.handoff||undefined,...(existsSync(legacy)?{legacyHistoryPath:legacy,legacySummaryScope:'较早要求请核对完整历史记录'}:{})};}
+  context(route){const n=this.needs.get(route.needId),thread=this.store.db.prepare('SELECT handoff FROM need_threads WHERE thread=?').get(n.thread),legacy=join(this.needs.root,n.id,'legacy-thread.json');return {needId:n.id,title:n.title,memory:n.memory,summaryIncomplete:n.version!==n.summary_version,historyPath:route.historyPath,handoffPath:thread?.handoff||undefined,tasks:this.needs.taskState(n.id).map(t=>({...t,result:t.result.slice(0,1000)})),...(existsSync(legacy)?{legacyHistoryPath:legacy,legacySummaryScope:'较早要求请核对完整历史记录'}:{})};}
   related(id,query='',limit=6){return this.needs.knowledge(id,query,limit);}
   record(messageId,reply,usage,inputTokens=0){
     const n=this.needs.complete(messageId,reply);if(!n)return;

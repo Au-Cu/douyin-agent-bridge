@@ -24,7 +24,7 @@ async function loadModels(){
 }
 function renderNeeds(){
   const sessions=state.conversations,list=sessions?.needs||[],active=list.find(n=>n.id===sessions.activeNeed);
-  $('currentNeed').textContent=active?`当前需求：${active.title} (${active.id})\n第 ${active.seq} 个续接会话 · 上下文 ${active.contextTokens} / ${sessions.budget} tokens`:'发送消息后按需求自动判断；旧对话会保留为历史记录。';
+  $('currentNeed').textContent=active?`当前需求：${active.title} (${active.id})\n第 ${active.seq} 个续接会话 · ${active.contextTokens>=sessions.budget?'下次处理前将交接续开':`上下文约 ${active.contextTokens} / ${sessions.budget} tokens`}`:'发送消息后按需求自动判断；旧对话会保留为历史记录。';
   $('needList').innerHTML=list.map(n=>`<div class="need-item"><strong>${escape(n.title)}</strong><small>${escape(n.id)} · 第 ${n.seq} 个会话</small><div>${escape(n.summary.slice(0,150))}</div><button data-switch-need="${escape(n.id)}" ${n.id===sessions.activeNeed?'disabled':''}>${n.id===sessions.activeNeed?'当前需求':'切换到此需求'}</button></div>`).join('');
 }
 function renderThreadOptions(){
