@@ -23,7 +23,7 @@ try{
   manager.record('case-4','尚未开始修改，等待确认。');store.db.prepare('UPDATE needs SET summary_version=0 WHERE id=?').run(a.needId);
   const isolated=codex.runEphemeral.bind(codex);codex.runEphemeral=async(input,options)=>{if(options.role==='memory')throw new Error('Synthetic unavailable summary');return isolated(input,options);};
   const next=await manager.rollover(manager.needs.get(a.needId));const question=message('fact-check','主色、禁用颜色、预算和验收标识分别是什么？只回答这些信息，不执行项目任务。');
-  const prepared=await manager.prepareInput({needId:a.needId,threadId:next.thread,historyPath:manager.needs.history(a.needId),action:'continue'},[{type:'text',text:'主人指示：'+question.text+'\n允许派发：否'}],question);
+  const prepared=await manager.prepareInput({needId:a.needId,threadId:next.thread,historyPath:manager.needs.history(a.needId),action:'continue'},[{type:'text',text:'用户指示：'+question.text+'\n允许派发：否'}],question);
   const answer=await codex.run(prepared.route.threadId,prepared.input,{resume:false,assistant:true,...await preferences.work(),timeoutMs:90000});
   assert.match(answer.text,/绿色/);assert.match(answer.text,/红色/);assert.match(answer.text,/2000/);assert.match(answer.text,/P7K-4826/);report.sourceFactsRecoveredAfterHandoff=true;
   const catalog=await preferences.catalog(),model=catalog.models.find(m=>m.model===settings.model),tier=model.serviceTiers.find(t=>/fast/i.test(t.name)||['priority','fast'].includes(t.id));

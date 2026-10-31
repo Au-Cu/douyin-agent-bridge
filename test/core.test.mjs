@@ -8,7 +8,7 @@ import { BridgeEngine,parseDispatch,mayDispatch,splitReply } from '../src/engine
 import { isOwnerMessage,safeMediaUrl } from '../src/douyin.mjs';
 const base=fileURLToPath(new URL('../data/test-runs/',import.meta.url));mkdirSync(base,{recursive:true});
 const temp=()=>mkdtempSync(base+'case-');
-const owner={chatKey:'chat-1',peerUid:'owner-uid',displayName:'主人'};
+const owner={chatKey:'chat-1',peerUid:'owner-uid',displayName:'用户'};
 
 test('只接收绑定 UID 的新消息，拒绝旧历史、同名账号、未知方向和其他会话',()=>{
   const now=Date.now(),m={sender:'owner-uid',conversation:'chat-1',direction:'in',created:now,kind:'text'};
@@ -46,9 +46,9 @@ function harness(){
   const media={process:async()=>{throw new Error('视频无法读取');}};
   return {store,codex,adapter,engine:new BridgeEngine({store,codex,adapter,media})};
 }
-test('派任务携带主人原话及学习资料，只接受白名单目标',()=>{
+test('派任务携带用户原话及学习资料，只接受白名单目标',()=>{
   const h=harness();h.store.addKnowledge({id:'vid',title:'讲解',transcript:'具体视频资料',summary:'方法',path:'note.md'});
-  assert.throws(()=>h.engine.dispatch('陌生聊天','做事','主人指示'),/未加入/);
+  assert.throws(()=>h.engine.dispatch('陌生聊天','做事','用户指示'),/未加入/);
   const id=h.engine.dispatch('网站','修改首页','把视频交给网站');const t=h.store.queuedTasks()[0];assert.equal(t.id,id);assert.match(t.prompt,/把视频交给网站/);assert.match(t.prompt,/note\.md/);assert.match(t.prompt,/task-reference\.md/);h.store.close();
 });
 test('发送回执不明时不自动重复发送',async()=>{
@@ -68,7 +68,7 @@ test('派任务成功才报告实际返回结果',async()=>{
   const h=harness();h.engine.dispatch('网站','做事','交给网站');h.codex.run=async(a,b,options)=>{options.onStarted('real-turn');return {text:'修改完成，验证已通过',turnId:'real-turn'};};await h.engine.runTask();
   assert.equal(h.store.snapshot().tasks[0].status,'done');assert.ok(h.store.snapshot().outbox.some(o=>o.body.includes('验证已通过')));h.store.close();
 });
-test('模型等待确认时，主人仍能在抖音批准操作，不被任务处理锁阻塞',async()=>{
+test('模型等待确认时，用户仍能在抖音批准操作，不被任务处理锁阻塞',async()=>{
   const h=harness();let approved=null;h.codex.approve=(id,allow)=>approved={id,allow};h.engine.busy=true;
   h.store.incoming({id:'approval',peer:'chat-1',kind:'text',text:'/同意 42'});
   await h.engine.processNext();assert.deepEqual(approved,{id:'42',allow:true});assert.equal(h.store.snapshot().messages[0].status,'done');h.store.close();

@@ -18,6 +18,6 @@ test('派发保留原视频、完整视觉索引，并给目标聊天附上真�
   codex.run=async(t,i,o)=>{input=i;o.onSubmitted();o.onStarted('turn');return {text:'执行完成',turnId:'turn'};};
   const engine=new BridgeEngine({store,codex,adapter:{},media:{}});engine.dispatch('项目','按视频实现','把这个交给项目实现');
   const task=store.queuedTasks()[0];assert.match(task.prompt,/video\.mp4/);assert.match(task.prompt,/manifest\.json/);assert.match(task.prompt,/先阅读.*task-reference\.md/);assert.match(task.prompt,/video-inspect\.mjs/);
-  assert.doesNotMatch(task.prompt,/不要让主人重新截图|0–2 秒：抽屉/);assert.match(readFileSync(new URL('../prompts/task-reference.md',import.meta.url),'utf8'),/先读索引中的 notePath.*visualPath/);
+  assert.doesNotMatch(task.prompt,/不要让用户重新截图|0–2 秒：抽屉/);assert.match(readFileSync(new URL('../prompts/task-reference.md',import.meta.url),'utf8'),/先读索引中的 notePath.*visualPath/);
   await engine.runTask();assert.equal(input.filter(i=>i.type==='localImage').length,2);assert.equal(input.filter(i=>i.type==='localImage')[0].path,join(folder,key,sheets[0]));assert.equal(store.snapshot().tasks[0].status,'done');store.close();
 });

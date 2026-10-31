@@ -1,4 +1,4 @@
-export const chatReplyInstructions='抖音私信不能渲染 Markdown、LaTeX 或 HTML。给主人看的回复必须是纯文本：标题独占一行，用空行分段，每段只说一件事；步骤用编号，一行一项，编号与正文之间留一个空格。尽量用短句，避免大段文字；不用井号标题、加粗星号、反引号、代码围栏、Markdown 表格或数学定界符。公式用易读文字或普通数学符号表达，链接直接写完整网址。';
+export const chatReplyInstructions='抖音私信不能渲染 Markdown、LaTeX 或 HTML。给用户看的回复必须是纯文本：标题独占一行，用空行分段，每段只说一件事；步骤用编号，一行一项，编号与正文之间留一个空格。尽量用短句，避免大段文字；不用井号标题、加粗星号、反引号、代码围栏、Markdown 表格或数学定界符。公式用易读文字或普通数学符号表达，链接直接写完整网址。';
 
 function plainMath(value){
   let s=value.trim().replace(/\\(?:begin|end)\{[^}]+\}/g,'').replace(/\\(?:left|right)\b/g,'');

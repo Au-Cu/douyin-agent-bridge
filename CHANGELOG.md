@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Track execution and multi-part reply delivery as one persisted operation; mark done only after all work and replies are confirmed.
+- Link duplicate requests to ongoing operations; preserve amendments and explicit redo requests.
+- Add received/active/done reactions to every new message with verified, non-toggling emoji clicks.
+- Keep progress quiet: no periodic or phase text announcements; status is available on request and in the console.
+- Bound active-writer retries, persist blocking reasons and add /重试 for known unsubmitted work only.
+- Run an independent status checker without replaying uncertain execution or delivery.
+- Standardize Chinese interface, rules, docs and outgoing replies to use 用户.
+
 ## 0.3.0
 
 - Route each new message through an isolated lightweight classifier: continue, new need, recall, or ask for clarification.

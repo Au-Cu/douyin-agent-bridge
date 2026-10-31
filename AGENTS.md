@@ -7,7 +7,7 @@
 - Persist task submission before side effects. Never silently retry uncertain task execution, message delivery or reaction clicks.
 - Video learning requires full-duration continuous visual coverage, timestamped observations and resumable segments. Do not substitute a few preview images for full visual learning.
 - Preserve original video and visual references for downstream Codex tasks. The owner should not need to make screenshots or retype the video.
-- Deliver receipt notifications independently of model analysis. Prefer a verified native message reaction; keep readable plain text as fallback.
+- Deliver receipt reactions independently of model analysis. Use verified native reactions for progress; leave unverifiable reactions recorded in the console without sending autonomous fallback text.
 - Douyin replies use plain text, short paragraphs, line breaks and numbering. No Markdown, LaTeX or HTML formatting.
 - Run npm test for regressions and npm run test:portable for clean-instance checks. Live model/account tests are opt-in and do not prove untested accounts or platforms.
 - Route ordinary messages through isolated ephemeral classification with only new input, recent exchanges, current need summary and need directory. A video can supplement a need or introduce a different one.
@@ -15,4 +15,8 @@
 - Check context budgets between turns and preserve a handoff before rotating chats, including when automatic need routing is off. Do not interrupt or replay uncertain execution to rotate.
 - Discover supported models, reasoning efforts and Fast service tiers from the active Codex login. Apply explicit user preferences without silently changing the worker model; keep routing lightweight.
 - Slash commands must be exact, unambiguous and backward compatible. Missing setting arguments inspect state instead of toggling it.
+- An operation remains unfinished until all target tasks and reply segments are confirmed. Coalesce duplicate requests without losing amendments or explicit redo instructions.
+- Progress is reaction-only: received, active, then done. Do not send autonomous periodic/phase status texts; answer explicit status requests with recorded facts.
+- Keep the independent checker outside execution locks. Bound retries for known unsubmitted writer conflicts; never replay submitted uncertain execution.
+- Use 用户 throughout Chinese interfaces, rules, documentation and outgoing replies.
 - Before publication run npm run release:check and npm run release:build. Only the allowlisted files in release-manifest.json may enter the source archive.

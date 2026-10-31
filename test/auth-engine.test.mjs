@@ -18,7 +18,7 @@ test('认证恢复仅续做暂停的视频并复用原片，不重放结果不�
   const task=h.s.createTask('项目','target-chat','已经提交的任务');h.s.taskStatus(task,'uncertain','回执丢失');
   h.visual.analyze=async()=>({status:'complete',notes:'0–10 秒：实际视觉观察'});h.codex.emit('auth-reconnected');await h.engine.processNext();
   assert.equal(h.s.snapshot().messages[0].status,'done');assert.equal(downloads,1);assert.equal(h.s.snapshot().tasks[0].status,'uncertain');
-  assert.equal(h.calls[0].options.assistant,true);assert.match(h.calls[0].input[0].text,/实际视觉观察/);assert.doesNotMatch(h.calls[0].input[0].text,/Markdown|主人明确要求时调用|每段只说一件事/);h.s.close();
+  assert.equal(h.calls[0].options.assistant,true);assert.match(h.calls[0].input[0].text,/实际视觉观察/);assert.doesNotMatch(h.calls[0].input[0].text,/Markdown|用户明确要求时调用|每段只说一件事/);h.s.close();
 });
 
 test('未提交的指令在登录不可用时保留，恢复后发送短输入；不重复发送等待提示',async()=>{
@@ -33,7 +33,7 @@ test('未提交的指令在登录不可用时保留，恢复后发送短输入�
 test('派发在提交前遇到登录失败时保留队列，提交后遇到同类错误时保留待核实状态',async()=>{
   const h=harness();const task=h.engine.dispatch('项目','修改页面','交给项目修改页面');
   h.codex.ensureAuthenticated=async()=>{throw authError();};await h.engine.runTask();assert.equal(h.s.snapshot().tasks[0].status,'queued');assert.equal(h.calls.length,0);
-  h.codex.ensureAuthenticated=async()=>{};let submissions=0;h.codex.run=async(id,input,options)=>{options.onSubmitted();submissions++;throw authError();};
+  h.codex.ensureAuthenticated=async()=>{};h.engine.progress.retry(task);let submissions=0;h.codex.run=async(id,input,options)=>{options.onSubmitted();submissions++;throw authError();};
   await h.engine.runTask();assert.equal(h.s.snapshot().tasks[0].status,'uncertain');assert.equal(h.s.queuedTasks().length,0);
   h.codex.emit('auth-reconnected');await h.engine.runTask();assert.equal(submissions,1);assert.equal(h.s.snapshot().tasks[0].id,task);h.s.close();
 });

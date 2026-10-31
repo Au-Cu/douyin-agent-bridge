@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { resolveCodexCommand } from './codex-command.mjs';
 import {credentialRevision,defaultCodexHome,authFailure,authError} from './codex-auth.mjs';
 import {assistantInstructions,instructionRevision,roleInstructions} from './prompts.mjs';
+import {writerConflict} from './progress.mjs';
 
 export function approvalResponse(request,allow) {
   if(request.method==='item/permissions/requestApproval')return {permissions:allow?(request.params.permissions||{}):{},scope:'turn'};
@@ -68,7 +69,7 @@ export class CodexClient extends EventEmitter {
     this.proc.stderr.on('data',()=>{}); // Do not copy auth diagnostics or credentials to app logs.
     this.lines=createInterface({input:this.proc.stdout});
     this.lines.on('line',line=>{if(proc!==this.proc)return;try { this.#receive(JSON.parse(line)).catch(e=>this.log('Codex 消息处理失败：'+e.message,'error')); } catch(e) { this.log('Codex 消息解析失败：'+e.message,'error'); } });
-    await this.request('initialize',{clientInfo:{name:'douyin_codex_bridge',title:'抖音 Codex 助手',version:'0.3.0'},capabilities:{experimentalApi:true}},20000);
+    await this.request('initialize',{clientInfo:{name:'douyin_codex_bridge',title:'抖音 Codex 助手',version:'0.4.0'},capabilities:{experimentalApi:true}},20000);
     this.send({method:'initialized'}); this.ready=true;
   }
   send(message) { if(!this.proc?.stdin?.writable) throw new Error('Codex 未连接'); this.proc.stdin.write(JSON.stringify(message)+'\n'); }
@@ -76,7 +77,7 @@ export class CodexClient extends EventEmitter {
     const id=++this.seq;
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{this.pending.delete(id); reject(new Error(`${method} 超时`));},timeoutMs);
-      this.pending.set(id,{resolve,reject,timer});
+      this.pending.set(id,{resolve,reject,timer,method});
       try { this.send({id,method,params}); } catch(e) {clearTimeout(timer);this.pending.delete(id);reject(e);}
     });
   }
@@ -92,7 +93,7 @@ export class CodexClient extends EventEmitter {
     if(msg.id!==undefined&&!msg.method) {
       const p=this.pending.get(msg.id); if(!p)return;
       clearTimeout(p.timer);this.pending.delete(msg.id);
-      msg.error?p.reject(this.#noteFailure(Object.assign(new Error(msg.error.message||JSON.stringify(msg.error)),{remote:true,code:msg.error.code}))):p.resolve(msg.result); return;
+      msg.error?p.reject(this.#noteFailure(Object.assign(new Error(msg.error.message||JSON.stringify(msg.error)),{remote:true,code:msg.error.code,rpcMethod:p.method,notSubmitted:writerConflict(msg.error.message)&&['thread/resume','turn/start'].includes(p.method)}))):p.resolve(msg.result); return;
     }
     if(msg.id!==undefined&&msg.method) {
       if(msg.method==='item/tool/call') {
@@ -210,5 +211,5 @@ export class CodexClient extends EventEmitter {
 export const coordinatorTools=[
   {name:'need_context',description:'取得当前需求的简短交接、完整交流记录路径和摘要是否待核对。',inputSchema:{type:'object',properties:{},additionalProperties:false}},
   {name:'knowledge_search',description:'查询此前从抖音视频保存的资料、文字稿和总结。',inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query'],additionalProperties:false}},
-  {name:'dispatch_task',description:'仅在主人明确要求时，把带有视频资料的任务交给已授权的目标 Codex 聊天。返回排队编号，不能把排队说成执行完成。',inputSchema:{type:'object',properties:{alias:{type:'string'},instruction:{type:'string'}},required:['alias','instruction'],additionalProperties:false}}
+  {name:'dispatch_task',description:'仅在用户明确要求时，把带有视频资料的任务交给已授权的目标 Codex 聊天。返回排队编号，不能把排队说成执行完成。',inputSchema:{type:'object',properties:{alias:{type:'string'},instruction:{type:'string'}},required:['alias','instruction'],additionalProperties:false}}
 ];

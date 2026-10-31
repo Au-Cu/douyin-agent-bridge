@@ -100,7 +100,9 @@ export function inspectComposers() {
 // observable labels or a Unicode code point in the actual image URL.
 export function captureMessageMenu(){
   globalThis.__douyinBridgeVisibleBefore=new WeakSet([...document.querySelectorAll('body *')].filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'));
-  const listener=e=>queueMicrotask(()=>{globalThis.__douyinBridgeContextEvent={type:e.type,button:e.button,trusted:e.isTrusted,prevented:e.defaultPrevented,targetClass:String(e.target?.className).slice(0,120)};});
+  // Keep the browser's own context menu from covering Douyin's reaction menu.
+  // Do not stop propagation: the platform still handles its native web menu.
+  const listener=e=>{if(e.target?.closest('[data-bridge-message-id]'))e.preventDefault();queueMicrotask(()=>{globalThis.__douyinBridgeContextEvent={type:e.type,button:e.button,trusted:e.isTrusted,prevented:e.defaultPrevented,targetClass:String(e.target?.className).slice(0,120)};});};
   globalThis.__douyinBridgeContextListener=listener;globalThis.__douyinBridgeContextEvent=null;document.addEventListener('contextmenu',listener,{once:true,capture:true});
 }
 export function inspectReactionChoices(token) {
@@ -108,7 +110,7 @@ export function inspectReactionChoices(token) {
   const before=globalThis.__douyinBridgeVisibleBefore;
   const appeared=before?[...document.querySelectorAll('body *')].filter(e=>!before.has(e)&&visible(e)):[];
   const freshMenus=appeared.filter(e=>{if(e.closest('[class*="messageMessageBoxcontentBox"],[data-bridge-message-id]')&&!e.matches('[role="menu"]'))return false;const text=e.innerText||'';return ['回复','复制','分享','转发','多选','删除','撤回'].filter(word=>text.includes(word)).length>=2;});
-  const roots=[...new Set([...document.querySelectorAll('[role="menu"],[role="dialog"],[class*="contextmenu" i],[class*="context-menu" i],[class*="messageOperation" i],[class*="messageMenu" i],[class*="messageAction" i],[class*="rightClick" i],[class*="floatingPanel" i],[class*="popover" i],[class*="popper" i]'),...freshMenus])]
+  const roots=[...new Set([...document.querySelectorAll('[role="menu"],[role="dialog"],[class*="MessageOperatePopBody"],[class*="contextmenu" i],[class*="context-menu" i],[class*="messageOperation" i],[class*="messageMenu" i],[class*="messageAction" i],[class*="rightClick" i],[class*="floatingPanel" i],[class*="popover" i],[class*="popper" i]'),...freshMenus])]
     .filter(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width<750&&r.height<650;});
   const candidates=[...new Set(roots.flatMap(root=>[...root.querySelectorAll('button,[role="button"],img,[class*="emoji" i],[class*="reaction" i]')]))].filter(visible);
   const choices=[];
@@ -116,7 +118,8 @@ export function inspectReactionChoices(token) {
     const img=e.matches('img')?e:e.querySelector('img');
     const label=[e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('data-title'),e.textContent?.length<30?e.textContent:'',img?.alt,img?.title].filter(Boolean).join(' ').trim();
     const src=img?.getAttribute('src')||'';
-    const emoji=/👌|\[OK\]|(?:^|[\s_/-])ok[_\s.-]?(?:hand)?(?:[\s_.?/-]|$)|(?:^|[^a-f\d])1f44c(?:[^a-f\d]|$)/i.test(label+' '+src)?'👌':/👀|眼睛|围观|(?:^|[^a-f\d])1f440(?:[^a-f\d]|$)/i.test(label+' '+src)?'👀':/👍|\[赞\]|\[强\]|点赞|(?:^|[^a-f\d])1f44d(?:[^a-f\d]|$)/i.test(label+' '+src)?'👍':'';
+    const value=label+' '+src;
+    const emoji=/👌|\[OK\]|(?:^|[\s_/-])ok[_\s.-]?(?:hand)?(?:[\s_.?/-]|$)|(?:^|[^a-f\d])1f44c(?:[^a-f\d]|$)/i.test(value)?'👌':/👀|眼睛|围观|(?:^|[^a-f\d])1f440(?:[^a-f\d]|$)/i.test(value)?'👀':/🎉|庆祝|撒花|(?:^|[^a-f\d])1f389(?:[^a-f\d]|$)/i.test(value)?'🎉':/✅|完成|勾选|2705/i.test(value)?'✅':/💪|加油|肌肉|奋斗|1f4aa/i.test(value)?'💪':/🤠|牛仔|1f920/i.test(value)?'🤠':/👍|\[赞\]|\[强\]|点赞|(?:^|[^a-f\d])1f44d(?:[^a-f\d]|$)/i.test(value)?'👍':'';
     if(!emoji)continue;
     const target=e.closest('button,[role="button"]')||e;
     if(choices.some(c=>c.element===target))continue;
@@ -126,13 +129,23 @@ export function inspectReactionChoices(token) {
   return {choices:choices.map(({element,...c})=>c),contextEvent:globalThis.__douyinBridgeContextEvent||null,menus:roots.map(r=>(r.innerText||'').trim().slice(0,200)).filter(Boolean).slice(0,5),appeared:appeared.filter(e=>!e.closest('[class*="messageMessageBoxcontentBox"],[data-bridge-message-id]')&&(e.matches('img,button,[role="button"]')||e.children.length===0)).slice(0,35).map(e=>({tag:e.tagName,className:String(e.className).slice(0,120),text:(e.innerText||e.getAttribute('aria-label')||e.getAttribute('alt')||e.getAttribute('title')||'').slice(0,60)}))};
 }
 
+export function markMoreReactions(){
+  const roots=[...document.querySelectorAll('[role="menu"],[class*="MessageOperatePopBody"],[class*="contextmenu" i],[class*="messageMenu" i]')].filter(e=>e.getClientRects().length);
+  for(const root of roots){
+    const options=[...root.querySelectorAll('button,[role="button"],[class*="expand" i],[class*="more" i]')].filter(e=>e.getClientRects().length);
+    const more=options.find(e=>/展开|更多|expand|more/i.test([e.getAttribute('aria-label'),e.getAttribute('title'),e.textContent,String(e.className)].join(' ')));
+    if(more){more.setAttribute('data-bridge-more-reactions','true');return true;}
+  }
+  return false;
+}
+
 export function inspectMessageReactions({messageId,emoji}) {
   const row=[...document.querySelectorAll('[data-bridge-message-id]')].find(e=>e.getAttribute('data-bridge-message-id')===messageId);
   if(!row)return {found:false,count:0};
   const visible=e=>!!e.getClientRects().length;
   const containers=[...row.querySelectorAll('[class*="reaction" i],[class*="emojiReply" i],[class*="emojiResponse" i],[class*="MessageBoxContentBottomwrapper"],[data-e2e*="reaction"]')].filter(visible);
   const nodes=[...new Set(containers.flatMap(e=>[e,...e.querySelectorAll('img,[aria-label],[title]')]))];
-  const pattern=emoji==='👌'?/👌|\[OK\]|ok[_-]?hand|1f44c/i:emoji==='👀'?/👀|眼睛|围观|1f440/i:/👍|\[赞\]|\[强\]|点赞|1f44d/i;
+  const pattern=emoji==='👌'?/👌|\[OK\]|ok[_-]?hand|1f44c/i:emoji==='👀'?/👀|眼睛|围观|1f440/i:emoji==='🎉'?/🎉|庆祝|撒花|1f389/i:emoji==='✅'?/✅|完成|勾选|2705/i:emoji==='💪'?/💪|加油|肌肉|奋斗|1f4aa/i:emoji==='🤠'?/🤠|牛仔|1f920/i:/👍|\[赞\]|\[强\]|点赞|1f44d/i;
   return {found:true,count:nodes.filter(e=>pattern.test([e.textContent,e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('alt'),e.getAttribute('src')].filter(Boolean).join(' '))).length};
 }
 
@@ -153,7 +166,7 @@ export class DouyinAdapter {
     this.context.on('close',()=>{this.context=null;this.page=null;this.status='closed';});
     this.page=this.context.pages().find(p=>p.url().startsWith('https://www.douyin.com/chat'))||this.context.pages()[0]||await this.context.newPage();
     await this.page.goto('https://www.douyin.com/chat?isPopup=1',{waitUntil:'domcontentloaded',timeout:60000});this.status='waiting_login';
-    if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回主人会话：'+e.message));
+    if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回用户会话：'+e.message));
   }
   async restoreOwner(owner){
     let clicked=false;
@@ -190,7 +203,7 @@ export class DouyinAdapter {
     this.sending=true;let submitted=false;
     try {
       let scan=await this.scan();
-      if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请先在浏览器选回绑定的主人会话');
+      if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请先在浏览器选回绑定的用户会话');
       const surface=this.chatFrame||this.page;
       const composer=(await surface.evaluate(inspectComposers))[0];
       if(!composer)throw new Error('未找到私信输入框，抖音页面可能已改版');
@@ -211,13 +224,13 @@ export class DouyinAdapter {
       throw new UncertainDelivery('已按下发送，但未能确认回执；不会自动重复发送');
     } catch(e){if(submitted)e.uncertain=true;throw e;} finally {this.sending=false;}
   }
-  async react(owner,messageId,{probeOnly=false}={}) {
+  async react(owner,messageId,{probeOnly=false,emojis=['👌','👀','👍']}={}) {
     if(this.sending)throw new Error('正在发送上一条回复');
     if(!/^\d{5,32}$/.test(messageId||''))return {supported:false,reason:'无法定位原视频消息'};
     this.sending=true;let submitted=false;let surface;let menuSurfaces=[];
     try{
       const scan=await this.scan();
-      if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请选回绑定的主人会话');
+      if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请选回绑定的用户会话');
       this.lastReactionDiagnostic={messageId,stage:'locating'};
       surface=this.chatFrame||this.page;
       if(surface.mainFrame)surface=surface.mainFrame();
@@ -255,10 +268,16 @@ export class DouyinAdapter {
       const bounds=await target.boundingBox();const position=bounds?{x:Math.min(24,bounds.width/4),y:Math.min(24,bounds.height/4)}:undefined;
       await target.click({button:'right',timeout:3500,...(position?{position}:{})});
       await new Promise(r=>setTimeout(r,250));
-      const token=String(Date.now());const menus=await Promise.all(menuSurfaces.map(async(f,i)=>({surface:f,token:token+'f'+i,value:await f.evaluate(inspectReactionChoices,token+'f'+i)})));
+      const token=String(Date.now());let menus=await Promise.all(menuSurfaces.map(async(f,i)=>({surface:f,token:token+'f'+i,value:await f.evaluate(inspectReactionChoices,token+'f'+i)})));
       this.lastReactionDiagnostic={messageId,structure,frames:menus.map((m,i)=>({frame:i,...m.value}))};
       let selected;
-      for(const emoji of ['👌','👀','👍']){selected=menus.map(m=>({menu:m,choice:m.value.choices.find(c=>c.emoji===emoji)})).find(c=>c.choice);if(selected)break;}
+      for(const emoji of emojis){selected=menus.map(m=>({menu:m,choice:m.value.choices.find(c=>c.emoji===emoji)})).find(c=>c.choice);if(selected)break;}
+      if(!selected&&!probeOnly){
+        for(const frame of menuSurfaces){if(await frame.evaluate(markMoreReactions)){await frame.locator('[data-bridge-more-reactions="true"]').first().click({timeout:2500});await new Promise(r=>setTimeout(r,200));break;}}
+        menus=await Promise.all(menuSurfaces.map(async(f,i)=>({surface:f,token:token+'more'+i,value:await f.evaluate(inspectReactionChoices,token+'more'+i)})));
+        this.lastReactionDiagnostic.frames=menus.map((m,i)=>({frame:i,...m.value}));
+        for(const emoji of emojis){selected=menus.map(m=>({menu:m,choice:m.value.choices.find(c=>c.emoji===emoji)})).find(c=>c.choice);if(selected)break;}
+      }
       const choice=selected?.choice;
       if(probeOnly)return {supported:!!choice,probeOnly:true};
       if(!choice)return {supported:false,reason:'此消息菜单没有可核验的贴表情选项'};

@@ -9,7 +9,7 @@ import { Store } from '../src/store.mjs';
 import { BridgeEngine } from '../src/engine.mjs';
 import { DouyinAdapter } from '../src/douyin.mjs';
 const root=fileURLToPath(new URL('../data/test-runs/',import.meta.url));mkdirSync(root,{recursive:true});
-const owner={chatKey:'owner-chat',peerUid:'owner',displayName:'主人'};
+const owner={chatKey:'owner-chat',peerUid:'owner',displayName:'用户'};
 const video={id:'123456789012345',conversation:owner.chatKey,sender:owner.peerUid,direction:'in',created:Date.now(),kind:'video',awemeId:'9000000000000000002',title:'界面演示'};
 const stored={...video,platformId:video.id,id:owner.chatKey+':'+video.id,peer:owner.chatKey};
 const settle=()=>new Promise(r=>setImmediate(r));
@@ -17,22 +17,23 @@ function harness(){
   const s=new Store(mkdtempSync(join(root,'receipt-')));s.saveConfig({owner,coordinator:'coordinator',enabled:true});
   const codex=new EventEmitter();let receipts=[];
   const adapter={scan:async()=>({peer:owner,messages:[{...video,created:Date.now()}]}),send:async()=>{},acknowledge:async(o,p,t)=>{receipts.push({owner:o,payload:p,text:t});return {method:'text'};}};
+  adapter.react=async(o,id,options)=>{receipts.push({owner:o,messageId:id,payload:options});return {verified:true,emoji:options.emojis[0]};};
   const media={process:async()=>{throw new Error('停止测试');}};
   const engine=new BridgeEngine({store:s,adapter,codex,media});engine.armedAt=Date.now();
   return {s,engine,adapter,media,receipts};
 }
 
-test('正在分析别的视频时，新视频也立即获得排队确认；重复扫描不重复回复',async()=>{
+test('正在分析别的视频时，新视频也立即贴收到表情；排队时不贴 active，重复扫描不重复回应',async()=>{
   const h=harness();h.engine.busy=true;
   await h.engine.scan();await settle();
-  assert.equal(h.receipts.length,1);assert.equal(h.receipts[0].payload.phase,'queued');assert.equal(h.receipts[0].payload.mode,'text');assert.match(h.receipts[0].text,/已加入队列/);
+  assert.equal(h.receipts.length,1);assert.deepEqual(h.receipts[0].payload.emojis,['👌']);assert.equal(h.s.snapshot().outbox.some(o=>o.kind==='text'),false);
   h.engine.seen.clear();await h.engine.scan();await settle();assert.equal(h.receipts.length,1);h.s.close();
 });
 
-test('开始分析的确认先于视频下载和模型调用；收到与开始的待发提示合并',async()=>{
-  const h=harness();h.s.incoming(stored);h.engine.notifyVideo(stored,'received');
-  let mediaCalled=false;h.media.process=async()=>{mediaCalled=true;assert.equal(h.receipts.length,1);assert.equal(h.receipts[0].payload.phase,'started');throw new Error('下载测试终止');};
-  await h.engine.processNext();assert.equal(mediaCalled,true);assert.equal(h.receipts.length,1);assert.equal(h.s.snapshot().outbox.filter(o=>o.kind==='video_ack').length,1);h.s.close();
+test('收到表情先于下载；真正开始后才排入 active，失败不贴 done',async()=>{
+  const h=harness();h.s.incoming(stored);
+  let mediaCalled=false;h.media.process=async()=>{mediaCalled=true;assert.equal(h.receipts.length,1);assert.deepEqual(h.receipts[0].payload.emojis,['👌']);throw new Error('下载测试终止');};
+  await h.engine.processNext();assert.equal(mediaCalled,true);await h.engine.deliver();assert.equal(h.receipts.length,2);assert.deepEqual(h.receipts[1].payload.emojis,['👀','💪','🤠']);assert.equal(h.s.snapshot().outbox.some(o=>JSON.parse(o.payload).stage==='done'),false);h.s.close();
 });
 
 test('已经收到排队确认的视频，真正开始分析时再确认一次，重复调用不刷屏',async()=>{

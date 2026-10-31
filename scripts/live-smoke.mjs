@@ -25,7 +25,7 @@ try {
   assert.match(videoResult.text,/BRIDGE_VIDEO_OK/);report.videoModelReply=videoResult.text;console.log('[OK] Codex 接收口播与真实关键帧');
 
   const target=await codex.createCoordinator([],true);const coordinator=await codex.createCoordinator(coordinatorTools,true);let targetResult=null,dispatchCount=0;
-  const result=await codex.run(coordinator,[{type:'text',text:'这是主人授权的本机协议验收。本轮允许派发：是。唯一已授权目标别名：联调目标。请调用 dispatch_task，把指令“只回复 BRIDGE_TASK_OK，不调用工具、不修改文件”派给联调目标。收到工具结果后回复 BRIDGE_DISPATCH_OK。请勿调用其他工具。'}],{
+  const result=await codex.run(coordinator,[{type:'text',text:'这是用户授权的本机协议验收。本轮允许派发：是。唯一已授权目标别名：联调目标。请调用 dispatch_task，把指令“只回复 BRIDGE_TASK_OK，不调用工具、不修改文件”派给联调目标。收到工具结果后回复 BRIDGE_DISPATCH_OK。请勿调用其他工具。'}],{
     resume:false,timeoutMs:120000,
     toolHandler:async call=>{
       assert.equal(call.tool,'dispatch_task');assert.equal(call.arguments.alias,'联调目标');dispatchCount++;

@@ -55,7 +55,7 @@ export class Conversations{
   async switchTo(id){await this.ensureLegacy();const n=this.needs.lookup(id);if(!n.thread)throw new Error('该需求尚未完成会话创建，请重新新建需求。');this.needs.activate(n.id);return n;}
   resolveWaiting(need){
     const waiting=this.store.db.prepare("SELECT * FROM messages WHERE status='waiting_route' AND created>? ORDER BY created DESC LIMIT 1").get(Date.now()-30*60*1000);
-    if(waiting){this.needs.saveRoute(waiting.id,need,'recall','主人明确选择需求');this.store.messageStatus(waiting.id,'new');}
+    if(waiting){this.needs.saveRoute(waiting.id,need,'recall','用户明确选择需求');this.store.messageStatus(waiting.id,'new');}
     return !!waiting;
   }
   async prepare(message,{learned,capture=this.capture()}={}){
@@ -99,7 +99,7 @@ export class Conversations{
     if(n.context_tokens>0&&n.context_tokens+size+reserve>budget){n=await this.rollover(n);route={...route,threadId:n.thread};context={type:'text',text:'当前需求交接：'+JSON.stringify(this.context(route))};outgoing=[context,...input];size=tokenEstimate(JSON.stringify(outgoing))+tokenEstimate(assistantInstructions);}
     if(size+reserve>budget){
       const path=this.needs.json(n.id,'input-'+message.id.replace(/[^\w-]/g,'').slice(-80)+'.json',{ownerMessage:message,input});
-      outgoing=[{type:'text',text:`本轮完整主人指示和资料位于 ${path}。请先读取完整指示再处理，不得根据摘要猜测。\n需求 ID：${n.id}；完整交接记录：${this.needs.history(n.id)}。`}];
+      outgoing=[{type:'text',text:`本轮完整用户指示和资料位于 ${path}。请先读取完整指示再处理，不得根据摘要猜测。\n需求 ID：${n.id}；完整交接记录：${this.needs.history(n.id)}。`}];
     }
     this.store.db.prepare('UPDATE need_turns SET thread=? WHERE message_id=?').run(n.thread,message.id);
     this.needs.saveRoute(message.id,n,route.action,route.reason||'');

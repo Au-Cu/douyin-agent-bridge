@@ -43,7 +43,7 @@ test('文本新需求、补充视频、独立视频、找回旧需求分别路�
   }finally{h.store.close();}
 });
 
-test('关闭自动分聊仍按预算换新会话，交接保留主人约束及完整历史入口',async()=>{
+test('关闭自动分聊仍按预算换新会话，交接保留用户约束及完整历史入口',async()=>{
   const h=setup();try{
     const n=await h.manager.create('网站');h.store.saveConfig({autoRoute:false,contextBudget:4000});
     const first=text('first','不得使用红色；保留原有导航');await h.manager.prepare(first);h.manager.record(first.id,'已确认约束');await h.manager.refreshMemory(n.id);
@@ -98,7 +98,7 @@ test('迁移旧长对话保留原始记录、目标名单和原视频，首次�
   }finally{h.store.close();}
 });
 
-test('模型判断期间主人手动切换需求不会被迟到的自动路由覆盖，实际消息仍回到已捕获的需求',async()=>{
+test('模型判断期间用户手动切换需求不会被迟到的自动路由覆盖，实际消息仍回到已捕获的需求',async()=>{
   const h=setup();try{
     const a=await h.manager.create('网站甲');const msg=text('in-flight','继续调整首页');const captured=h.manager.capture();
     const b=await h.manager.create('网站乙');h.codex.decisions.push(decision('continue',a.id));

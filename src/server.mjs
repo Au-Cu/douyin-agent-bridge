@@ -14,6 +14,7 @@ import { setupAsr,modelName } from '../scripts/setup-asr.mjs';
 import {Preferences} from './preferences.mjs';
 import {Conversations} from './conversations.mjs';
 import {commandHelp} from './commands.mjs';
+import {progressEmoji} from './progress.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const store=new Store(join(project,'data'));
@@ -39,13 +40,13 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.3.0',projectRoot:project,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.4.0',projectRoot:project,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const snapshot=store.snapshot();snapshot.knowledge=await Promise.all(snapshot.knowledge.map(async k=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
-        return json(res,{...snapshot,conversations:conversations.state(),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,conversations:conversations.state(),operations:engine.progress.state(),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models')return json(res,await preferences.catalog());
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state());
@@ -83,19 +84,20 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/browser/editor-state')return json(res,(await adapter.composerState()).map(({text,...c})=>({...c,draftLength:text.length,preview:text.slice(0,60)})));
       if(path==='/api/browser/reaction-probe'){
         const scan=await adapter.scan(),owner=store.config.owner;
-        if(!owner||scan.peer?.peerUid!==owner.peerUid||scan.peer?.chatKey!==owner.chatKey)throw new Error('请选中绑定主人会话');
+        if(!owner||scan.peer?.peerUid!==owner.peerUid||scan.peer?.chatKey!==owner.chatKey)throw new Error('请选中绑定用户会话');
         const candidates=scan.messages.filter(m=>m.direction==='in'&&m.sender===owner.peerUid);
         let message=body.messageId?candidates.find(m=>m.id===String(body.messageId)):candidates.filter(m=>m.kind==='text').at(-1);
         if(!message&&body.messageId){
           const saved=store.db.prepare('SELECT body FROM messages WHERE id=? AND peer=?').get(owner.chatKey+':'+String(body.messageId),owner.chatKey);
           const value=saved?JSON.parse(saved.body):null;if(value?.sender===owner.peerUid)message={...value,id:value.platformId||String(body.messageId)};
         }
-        if(!message)throw new Error('未找到主人的原消息');
-        return json(res,await adapter.react(owner,message.id,{probeOnly:true}));
+        if(!message)throw new Error('未找到用户的原消息');
+        if(body.stage&&!Object.hasOwn(progressEmoji,body.stage))throw new Error('状态必须为 roger、active 或 done');
+        return json(res,await adapter.react(owner,message.id,{probeOnly:true,...(body.stage?{emojis:progressEmoji[body.stage]}:{})}));
       }
       if(path==='/api/receipts/reaction'){
         const item=store.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(body.id));
-        if(!item||item.kind!=='video_ack'||item.status!=='sent'||item.peer!==store.config.owner?.chatKey)throw new Error('只能核验已给绑定主人的视频确认贴表情');
+        if(!item||item.kind!=='video_ack'||item.status!=='sent'||item.peer!==store.config.owner?.chatKey)throw new Error('只能核验已给绑定用户的视频确认贴表情');
         const p=JSON.parse(item.payload);
         if(p.receiptResult?.method==='reaction'||p.reactionRecheck?.status==='verified')return json(res,{alreadyVerified:true});
         if(p.receiptResult?.reactionStatus==='uncertain'||['submitted','uncertain'].includes(p.reactionRecheck?.status))throw new Error('上次表情回执需要人工核实，不会重复点击');
@@ -106,11 +108,11 @@ const server=http.createServer(async(req,res)=>{
         }catch(e){store.mergeOutboxPayload(item.id,{reactionRecheck:{status:e.uncertain?'uncertain':'blocked',error:e.message}});throw e;}
       }
       if(path==='/api/bind'){
-        const scan=await adapter.scan();if(!scan.peer)throw new Error('请先在助手账号中打开主人的私信会话，并由主人发一条消息');
-        if(!scan.messages.some(m=>m.direction==='in'&&m.sender===scan.peer.peerUid&&m.created>0))throw new Error('无法核实发信账号或时间，请让主人再发一条新私信');
+        const scan=await adapter.scan();if(!scan.peer)throw new Error('请先在助手账号中打开用户的私信会话，并由用户发一条消息');
+        if(!scan.messages.some(m=>m.direction==='in'&&m.sender===scan.peer.peerUid&&m.created>0))throw new Error('无法核实发信账号或时间，请让用户再发一条新私信');
         if(store.config.enabled||engine.busy||engine.taskBusy)throw new Error('请先暂停监听并等待当前任务结束，再更换绑定');
         if(store.config.owner&&store.config.owner.peerUid!==scan.peer.peerUid&&store.pendingOutbox().length)throw new Error('旧账号仍有待发送消息，请先处理发件箱');
-        store.saveConfig({owner:scan.peer});store.event('已绑定主人会话：'+scan.peer.displayName);return json(res,{owner:scan.peer});
+        store.saveConfig({owner:scan.peer});store.event('已绑定用户会话：'+scan.peer.displayName);return json(res,{owner:scan.peer});
       }
       if(path==='/api/coordinator'){const id=await engine.createCoordinator();return json(res,{id});}
       if(path==='/api/listen'){await engine.arm(body.enabled===true,{resumeSince:body.resumeSince});return json(res,{enabled:store.config.enabled});}
@@ -133,7 +135,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/outbox/resolve'){
         const item=store.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(body.id));if(!item||item.status!=='uncertain')throw new Error('此回执无需人工处理');
         if(!['sent','pending'].includes(body.status))throw new Error('无效处理方式');
-        store.delivery(item.id,body.status,'主人在本机手动确认');return json(res,{ok:true});
+        store.delivery(item.id,body.status,'用户在本机手动确认');return json(res,{ok:true});
       }
       if(path==='/api/retry/video'){
         const m=store.db.prepare('SELECT * FROM messages WHERE id=?').get(String(body.id));
@@ -141,7 +143,7 @@ const server=http.createServer(async(req,res)=>{
         store.messageStatus(m.id,'new');return json(res,{ok:true});
       }
       if(path==='/api/knowledge/notify-status'){
-        if(!store.config.owner)throw new Error('请先绑定主人');
+        if(!store.config.owner)throw new Error('请先绑定用户');
         const id=engine.notifyVideoStatus(String(body.id));await engine.deliver();return json(res,{id});
       }
       if(path==='/api/knowledge/reanalyze'){
