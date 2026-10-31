@@ -11,6 +11,9 @@ import { MediaProcessor } from './media.mjs';
 import { BridgeEngine } from './engine.mjs';
 import { VisualAnalyzer } from './visual.mjs';
 import { setupAsr,modelName } from '../scripts/setup-asr.mjs';
+import {Preferences} from './preferences.mjs';
+import {Conversations} from './conversations.mjs';
+import {commandHelp} from './commands.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const store=new Store(join(project,'data'));
@@ -18,8 +21,10 @@ const log=(message,level)=>store.event(message,level);
 const adapter=new DouyinAdapter({root:store.root,log});
 const codex=new CodexClient({cwd:project,log});
 const media=new MediaProcessor({root:store.root,adapter,log});
-const visual=new VisualAnalyzer({codex,log});
-const engine=new BridgeEngine({store,adapter,media,codex,visual});
+const preferences=new Preferences({store,codex});
+const conversations=new Conversations({store,codex,preferences});
+const visual=new VisualAnalyzer({codex,log,settings:()=>preferences.work()});
+const engine=new BridgeEngine({store,adapter,media,codex,visual,preferences,conversations});
 const token=randomBytes(32).toString('hex');let asrInstalling=false;let closing=false;
 const {values:args}=parseArgs({options:{port:{type:'string'}}});
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
@@ -34,15 +39,18 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.2.1',projectRoot:project,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.3.0',projectRoot:project,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const snapshot=store.snapshot();snapshot.knowledge=await Promise.all(snapshot.knowledge.map(async k=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
-        return json(res,{...snapshot,runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,conversations:conversations.state(),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
-      if(req.method==='GET'&&path==='/api/threads')return json(res,await codex.threads(url.searchParams.get('q')||''));
+      if(req.method==='GET'&&path==='/api/models')return json(res,await preferences.catalog());
+      if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state());
+      if(req.method==='GET'&&path==='/api/commands')return json(res,{text:commandHelp});
+      if(req.method==='GET'&&path==='/api/threads'){const internal=new Set(store.db.prepare('SELECT thread FROM need_threads').all().map(r=>r.thread));return json(res,(await codex.threads(url.searchParams.get('q')||'')).filter(t=>!internal.has(t.id)));}
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
       if(req.method==='GET'&&path==='/api/browser/reaction-diagnostics')return json(res,{lastReceipt:adapter.lastReceipt||null,menu:adapter.lastReactionDiagnostic||null});
       const visualMatch=path.match(/^\/api\/knowledge\/([^/]+)\/visual$/);
@@ -63,6 +71,9 @@ const server=http.createServer(async(req,res)=>{
       if(req.method!=='POST')return json(res,{error:'未找到接口'},404);
       const body=await jsonBody(req);
       if(path==='/api/codex/reconnect')return json(res,await codex.reconnect());
+      if(path==='/api/preferences'){await preferences.update(body);let effective=null,effectiveError;try{effective=await preferences.work();}catch(e){effectiveError=e.message;}return json(res,{ok:true,config:store.config,effective,effectiveError});}
+      if(path==='/api/needs/new'){const n=await conversations.create(String(body.title||'新需求'));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
+      if(path==='/api/needs/switch'){const n=await conversations.switchTo(String(body.id||''));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
       if(path==='/api/shutdown'){
         if((engine.busy||engine.taskBusy)&&body.force!==true)throw new Error('仍有任务执行中，请先等待任务结束；强制停止会把执行结果标为需要核实');
         json(res,{ok:true});setTimeout(shutdown,100);return;
@@ -108,6 +119,7 @@ const server=http.createServer(async(req,res)=>{
         const targets=body.targets.map(t=>({id:String(t.id||''),alias:String(t.alias||'').trim(),name:String(t.name||'').slice(0,150)}));
         if(targets.some(t=>!/^[\w-]{5,100}$/.test(t.id)||!t.alias||t.alias.length>60)||new Set(targets.map(t=>t.alias)).size!==targets.length)throw new Error('目标 ID 或别名无效，别名不能重复');
         if(targets.some(t=>t.id===store.config.coordinator))throw new Error('调度聊天不能作为派发目标');
+        if(targets.some(t=>store.db.prepare('SELECT 1 FROM need_threads WHERE thread=?').get(t.id)))throw new Error('需求助手会话不能作为派发目标');
         const seconds=Number(body.maxVideoSeconds||1800);if(!Number.isFinite(seconds)||seconds<30||seconds>7200)throw new Error('视频上限必须在 30–7200 秒之间');
         const visualFps=Number(body.visualFps||store.config.visualFps||4);if(![2,4,8].includes(visualFps))throw new Error('视觉读取密度只能是每秒 2、4 或 8 帧');
         const ackMode=body.ackMode||store.config.ackMode||'auto';if(!['auto','text'].includes(ackMode))throw new Error('收到视频的确认方式无效');
@@ -151,7 +163,7 @@ const server=http.createServer(async(req,res)=>{
 });
 server.listen(port,'127.0.0.1',()=>{console.log('抖音 Codex 助手控制台：'+origin);log('控制台已启动，等待账号连接');});
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
-engine.start();codex.startAuthWatcher();codex.connect().then(()=>log('本机 Codex 已连接')).catch(e=>log('Codex 连接失败：'+e.message,'error'));
+engine.start();codex.startAuthWatcher();codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 Codex 已连接');}).catch(e=>log('Codex 连接失败：'+e.message,'error'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);engine.stop();codex.close();await adapter.close();server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

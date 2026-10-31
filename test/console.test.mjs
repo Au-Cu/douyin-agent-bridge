@@ -9,13 +9,20 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   const longName = '研究页面切换与视频视觉效果 '.repeat(160);
   const threads = [{id:'long-thread-id',name:longName},{id:'short-thread-id',name:'其他聊天'}];
   const state = {
-    config:{enabled:false,owner:null,coordinator:'',targets:[],maxVideoSeconds:1800},
+    config:{enabled:false,owner:null,coordinator:'',targets:[],maxVideoSeconds:1800,model:'',reasoningEffort:'',fastMode:false,autoRoute:true,contextBudget:48000},
+    conversations:{activeNeed:'website-1',budget:48000,needs:[{id:'website-1',title:'网站需求',summary:'主色绿色，禁止红色',seq:1,contextTokens:2400}]},
     runtime:{browser:'closed',codex:false},counts:{knowledge:0,runningTasks:0,queuedTasks:0},
     knowledge:[],tasks:[],outbox:[],messages:[],events:[]
   };
+  const catalog={defaults:{model:'fixture-sol',effort:'max'},models:[{model:'fixture-sol',displayName:'Fixture Sol',supportedReasoningEfforts:['low','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority',name:'Fast'}]}]};
+  let preferencesSaved;
   const server=http.createServer(async(req,res)=>{
     if(req.url.startsWith('/api/')){
       res.setHeader('Content-Type','application/json');
+      if(req.url==='/api/preferences'){let text='';for await(const b of req)text+=b;preferencesSaved=JSON.parse(text);Object.assign(state.config,preferencesSaved);res.end(JSON.stringify({ok:true}));return;}
+      if(req.url==='/api/models'){res.end(JSON.stringify(catalog));return;}
+      if(req.url==='/api/needs/new'){let text='';for await(const b of req)text+=b;const title=JSON.parse(text).title;const n={id:'created-need',title,seq:1,contextTokens:0,summary:''};state.conversations.needs.push(n);state.conversations.activeNeed=n.id;res.end(JSON.stringify(n));return;}
+      if(req.url==='/api/needs/switch'){state.conversations.activeNeed='website-1';res.end(JSON.stringify(state.conversations.needs[0]));return;}
       res.end(JSON.stringify(req.url==='/api/state'?state:req.url==='/api/threads'?threads:req.url==='/api/codex/reconnect'?{deferred:false,auth:{status:'ready'}}:[]));return;
     }
     const name=req.url==='/'?'index.html':req.url.slice(1);
@@ -52,6 +59,13 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     assert.equal(await page.locator('#targetList small').textContent(),longName);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     await page.getByRole('button',{name:'重新连接 Codex'}).click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('已读取本机当前 Codex 登录'));
+    await page.waitForFunction(()=>document.querySelectorAll('#defaultModel option').length===2);
+    await page.selectOption('#defaultModel','fixture-sol');await page.selectOption('#defaultEffort','max');await page.locator('#fastMode').check();await page.locator('#autoRoute').uncheck();await page.locator('#contextBudget').fill('16000');await page.getByRole('button',{name:'保存默认配置'}).click();
+    await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('默认配置已保存'));
+    assert.deepEqual(preferencesSaved,{model:'fixture-sol',reasoningEffort:'max',fastMode:true,autoRoute:false,contextBudget:16000});
+    await page.locator('#newNeedTitle').fill('烹饪参考');await page.getByRole('button',{name:'新建并切换对话'}).click();await page.waitForFunction(()=>document.querySelector('#currentNeed').textContent.includes('烹饪参考'));
+    await page.locator('[data-switch-need="website-1"]').click();await page.waitForFunction(()=>document.querySelector('#currentNeed').textContent.includes('网站需求'));
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     assert.deepEqual(errors,[]);
   }finally{
     await browser?.close();await new Promise(resolve=>server.close(resolve));

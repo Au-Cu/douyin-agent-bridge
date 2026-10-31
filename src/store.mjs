@@ -26,7 +26,7 @@ export class Store {
       UPDATE outbox SET status='uncertain' WHERE status='sending';`);
     const file = join(root, 'config.json');
     const saved = existsSync(file) ? JSON.parse(readFileSync(file,'utf8')) : {};
-    this.config = { port: 39361, enabled: false, owner: null, targets: [], coordinator: '', pollMs: 3000, maxVideoSeconds: 1800, visualFps:4, ackMode:'auto', ...saved };
+    this.config = { port: 39361, enabled: false, owner: null, targets: [], coordinator: '', pollMs: 3000, maxVideoSeconds: 1800, visualFps:4, ackMode:'auto',model:'',reasoningEffort:'',fastMode:false,autoRoute:true,contextBudget:48000,activeNeed:'', ...saved };
     // Explicitly re-arm the listener after a restart; old history is not a new command.
     this.config.enabled = false;
     this.saveConfig({});

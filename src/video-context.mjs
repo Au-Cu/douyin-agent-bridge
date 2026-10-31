@@ -28,5 +28,5 @@ export function buildVideoContext(items,{project,node=process.execPath,maxImages
 
 export function videoContextInstructions(context){
   const rules=join(dirname(context.inspector),'..','prompts','task-reference.md');
-  return `执行前先阅读视频参考说明：${rules}\n素材与工具索引：${JSON.stringify({node:context.node,inspector:context.inspector,videos:context.videos.map(({sheets,...v})=>v)})}`;
+  return `执行前先阅读视频参考说明：${rules}\n素材与工具索引：${JSON.stringify({node:context.node,inspector:context.inspector,need:context.need,videos:context.videos.map(({sheets,...v})=>v)})}`;
 }

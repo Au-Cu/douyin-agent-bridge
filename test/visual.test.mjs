@@ -20,8 +20,8 @@ test('局部放大拒绝倒置、超界、过小矩形和原片之外的时间',
 test('部分视觉分析失败不报告完成；重新运行复用已完成片段并覆盖剩余时间',async()=>{
   const folder=mkdtempSync(join(root,'visual-'));const learned={path:join(folder,'note.md'),seconds:11.3,transcript:'引用口播'};
   const prepared={folder,video:join(folder,'video.mp4'),manifest:{cacheKey:'fixture',sheets:['a','b'],finalFrame:join(folder,'end.jpg')},segments:[{index:0,start:0,end:8,sheets:['a']},{index:1,start:8,end:11.3,sheets:['b']}]};
-  let calls=0;const codex={createCoordinator:async()=>String(calls),run:async()=>{if(++calls===2)throw new Error('测试连接中断');return{text:'第一段真实视觉观察'};}};
-  const first=new VisualAnalyzer({codex});first.prepare=async()=>prepared;
+  let calls=0;const codex={createCoordinator:async()=>String(calls),run:async(thread,input,options)=>{assert.equal(options.model,'test-visual');assert.equal(options.effort,'max');assert.equal(options.serviceTier,'priority');if(++calls===2)throw new Error('测试连接中断');return{text:'第一段真实视觉观察'};}};
+  const first=new VisualAnalyzer({codex,settings:async()=>({model:'test-visual',effort:'max',serviceTier:'priority'})});first.prepare=async()=>prepared;
   await assert.rejects(first.analyze(learned),/1\/2 段已保存/);
   const partial=JSON.parse(readFileSync(join(folder,'visual-report.json'),'utf8'));assert.equal(partial.status,'partial');assert.equal(partial.coveredUntil,8);assert.equal(existsSync(join(folder,'visual-analysis.md')),false);
   let resumed=0;const second=new VisualAnalyzer({codex:{createCoordinator:async()=>'',run:async()=>{resumed++;return{text:'第二段真实视觉观察'};}}});second.prepare=async()=>prepared;

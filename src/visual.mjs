@@ -46,7 +46,7 @@ export async function extractVideoInterval({video,folder,start,end,duration,fps=
 }
 
 export class VisualAnalyzer {
-  constructor({codex,log=()=>{}}){Object.assign(this,{codex,log});}
+  constructor({codex,log=()=>{},settings=async()=>({})}){Object.assign(this,{codex,log,settings});}
   async prepare(learned,fps=4) {
     const video=join(dirname(learned.path),'video.mp4');const info=await stat(video);const size=info.size;
     const revision=createHash('sha256').update(`${size}:${info.mtimeMs}:${learned.seconds}`).digest('hex').slice(0,12);
@@ -86,7 +86,8 @@ export class VisualAnalyzer {
         const input=[{type:'text',text:prompt},...segment.sheets.map(path=>({type:'localImage',path}))];
         if(segment.index===segments.length-1)input.push({type:'text',text:'视频最后一帧：'},{type:'localImage',path:manifest.finalFrame});
         let detailedViews=0;
-        const options={resume:false,effort:'medium',timeoutMs:10*60*1000,interruptOnTimeout:true,toolHandler:async call=>{
+        const callSettings=await this.settings();
+        const options={resume:false,effort:'medium',...callSettings,timeoutMs:10*60*1000,interruptOnTimeout:true,toolHandler:async call=>{
           if(++detailedViews>6)throw new Error('本段已完成 6 次细看，请依据已获得画面完成本段观察');
           const args=call.arguments;
           if(call.tool==='video_frame'){
@@ -108,7 +109,7 @@ export class VisualAnalyzer {
           throw new Error('未授权的视觉分析工具');
         }};
         const result=this.codex.runReadOnly?await this.codex.runReadOnly(input,{...options,tools:visualTools}):await this.codex.run(await this.codex.createCoordinator(visualTools,true),input,options);
-        const observation={version:VERSION,start:segment.start,end:segment.end,text:result.text,detailedViews};
+        const observation={version:VERSION,start:segment.start,end:segment.end,text:result.text,detailedViews,settings:callSettings};
         await writeFile(resultPath,JSON.stringify(observation,null,2));results.push(observation);await save('partial');onProgress(results.length,segments.length);
       }
       const report=await save('complete');

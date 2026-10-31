@@ -70,3 +70,14 @@ test('关闭时正在检查登录文件也不能在关闭后启动新的子进�
   await assert.rejects(connecting,e=>e.code==='CODEX_CLIENT_CLOSED');
   await assert.rejects(h.client.connect(),e=>e.code==='CODEX_CLIENT_CLOSED');assert.equal(h.client.generation,0);
 });
+
+test('模型、推理强度、快速档位透传到每轮；临时路由会话使用独立角色且结束后卸载',async()=>{
+  const h=setup();try{
+    await h.client.run('work-chat',input('工作'),{model:'test-sol',effort:'max',serviceTier:'priority'});
+    await h.client.run('work-chat',input('关闭快速'),{model:'test-sol',effort:'high',serviceTier:'default'});
+    await h.client.runEphemeral(input('只做分类'),{role:'router',model:'test-luna',effort:'low',serviceTier:'default',outputSchema:{type:'object'}});
+    const logs=h.logs(),turns=logs.filter(e=>e.method==='turn/start');assert.equal(turns[0].params.model,'test-sol');assert.equal(turns[0].params.effort,'max');assert.equal(turns[0].params.serviceTierForTurn,'priority');assert.equal(turns[1].params.serviceTierForTurn,'default');
+    const start=logs.find(e=>e.method==='thread/start');assert.equal(start.params.ephemeral,true);assert.equal(start.params.sandbox,'read-only');assert.match(start.params.developerInstructions,/只做轻量分类/);assert.doesNotMatch(start.params.developerInstructions,/逐段视觉观察规则/);
+    assert.equal(logs.filter(e=>e.method==='thread/unsubscribe').length,1);assert.equal(h.client.ephemeral.size,0);
+  }finally{h.client.close();}
+});

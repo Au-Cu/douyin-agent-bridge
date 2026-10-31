@@ -1,6 +1,6 @@
 {
   "name": "douyin-codex-bridge",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "抖音私信接入本机 Codex，视频学习与指定聊天任务转发",
@@ -18,7 +18,8 @@
     "codex:login": "codex login",
     "release:check": "node scripts/release-check.mjs",
     "release:build": "node scripts/release-build.mjs",
-    "test:portable": "node --use-env-proxy scripts/portable-smoke.mjs"
+    "test:portable": "node --use-env-proxy scripts/portable-smoke.mjs",
+    "test:routing": "node --use-env-proxy scripts/routing-smoke.mjs"
   },
   "dependencies": {
     "playwright-core": "1.64.1",

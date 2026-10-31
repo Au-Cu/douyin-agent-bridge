@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Route each new message through an isolated lightweight classifier: continue, new need, recall, or ask for clarification.
+- Classify video references using their observed visual content instead of opening a chat per video.
+- Persist per-need memory, exact exchanges, video references and task results; rotate chats with a handoff when their context budget is reached.
+- Migrate the legacy long chat without deleting its original history, owner binding or target list.
+- Discover real Codex models, supported reasoning efforts and Fast service tiers; configure them in the console or concise Douyin commands.
+- Add /帮助, /设置, /模型, /强度, /快, /密度, /分聊, /预算, /新建, /找, /切换, /派, /续看 and /重连, preserving old aliases.
+- Validate source-fact recovery after handoff and keep complete owner instructions when inputs exceed the budget.
+
 ## 0.2.1
 
 - Move target-chat video reading instructions into prompts/task-reference.md.

@@ -1,7 +1,11 @@
 import { createInterface } from 'node:readline';
 const send=v=>process.stdout.write(JSON.stringify(v)+'\n');
+let threadSeq=0;
 createInterface({input:process.stdin}).on('line',raw=>{const m=JSON.parse(raw);if(!m.id)return;
   if(m.method==='initialize')return send({id:m.id,result:{}});
+  if(m.method==='model/list')return send({id:m.id,result:{data:[{id:'fixture-model',model:'fixture-model',displayName:'Fixture model',isDefault:true,defaultReasoningEffort:'low',inputModalities:['text','image'],supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'max'}],serviceTiers:[{id:'priority',name:'Fast'}]}],nextCursor:null}});
+  if(m.method==='config/read')return send({id:m.id,result:{config:{model:'fixture-model',model_reasoning_effort:'low'}}});
+  if(m.method==='thread/start')return send({id:m.id,result:{thread:{id:'fixture-thread-'+(++threadSeq)}}});
   if(m.method==='thread/resume')return send({id:m.id,result:{thread:{id:m.params.threadId}}});
   if(m.method==='turn/start'){
     const turn={id:'turn-test',status:'completed',items:[{type:'agentMessage',text:'模拟正常回复'}]};

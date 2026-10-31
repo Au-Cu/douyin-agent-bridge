@@ -25,6 +25,13 @@ try{
   const reconnected=await (await request('codex/reconnect',{method:'POST',body:{}})).json();assert.equal(typeof reconnected.deferred,'boolean');
   let recovered;for(let i=0;i<40;i++){recovered=await (await request('state')).json();if(recovered.runtime.auth.status==='ready'&&!recovered.runtime.auth.reconnectPending)break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(recovered.runtime.auth.status,'ready');assert.equal(recovered.runtime.auth.reconnectPending,false);assert.equal(recovered.config.owner,null);
+  const catalog=await (await request('models')).json();assert.equal(catalog.models[0].model,'fixture-model');
+  const settings=await request('preferences',{method:'POST',body:{model:'fixture-model',reasoningEffort:'max',fastMode:true,autoRoute:true,contextBudget:16000}});assert.equal(settings.status,200);
+  const current=(await (await request('state')).json()).config;assert.equal(current.reasoningEffort,'max');assert.equal(current.fastMode,true);assert.equal(current.contextBudget,16000);
+  const invalid=await request('preferences',{method:'POST',body:{reasoningEffort:'unavailable-level'}});assert.equal(invalid.status,400);assert.equal((await (await request('state')).json()).config.reasoningEffort,'max');
+  const need=await (await request('needs/new',{method:'POST',body:{title:'合成需求'}})).json();assert.ok(need.thread.startsWith('fixture-thread-'));
+  const needs=await (await request('needs')).json();assert.equal(needs.activeNeed,need.id);assert.equal(needs.needs.length,1);
+  assert.ok((await (await request('commands')).json()).text.includes('/密度 2|4|8'));
   if(process.platform==='win32'){
     const wrong=await new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(projectRoot,'Stop.ps1'),'-Port',String(port)],{cwd:projectRoot,windowsHide:true,stdio:'ignore'});p.on('error',reject);p.on('exit',resolve);});
     assert.notEqual(wrong,0,'another copy must not stop this instance');assert.equal((await request('state')).status,200);

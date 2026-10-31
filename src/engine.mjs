@@ -7,6 +7,8 @@ import { isOwnerMessage } from './douyin.mjs';
 import { buildVideoContext,videoContextInstructions } from './video-context.mjs';
 import { toPlainChatText } from './chat-text.mjs';
 import {authFailure} from './codex-auth.mjs';
+import {parseCommand,onOff,commandHelp} from './commands.mjs';
+import {effortNames} from './preferences.mjs';
 const project=fileURLToPath(new URL('../',import.meta.url));
 
 export function splitReply(text,max=450) {
@@ -24,7 +26,7 @@ export function splitReply(text,max=450) {
   return chunks;
 }
 export function parseDispatch(text,targets) {
-  const match=String(text).match(/^\/(?:派给|dispatch)\s+([\s\S]+)$/i);if(!match)return null;
+  const match=String(text).match(/^\/(?:派|派给|dispatch)\s+([\s\S]+)$/i);if(!match)return null;
   const tail=match[1];
   const target=[...targets].sort((a,b)=>b.alias.length-a.alias.length).find(t=>tail.startsWith(t.alias+' '));
   if(!target)throw new Error('找不到目标别名。格式：/派给 控制台中设置的别名 具体任务');
@@ -33,13 +35,14 @@ export function parseDispatch(text,targets) {
 export function mayDispatch(text) { return /派给|交给|发给|转交|安排|让.+(?:聊天|项目)|转发.*(?:任务|指令)/.test(String(text)); }
 
 export class BridgeEngine {
-  constructor({store,adapter,media,codex,visual}) {
-    Object.assign(this,{store,adapter,media,codex,visual});this.armedAt=0;this.seen=new Set();this.busy=false;this.taskBusy=false;this.outboxBusy=false;this.visualProgress=null;
+  constructor({store,adapter,media,codex,visual,preferences=null,conversations=null}) {
+    Object.assign(this,{store,adapter,media,codex,visual,preferences,conversations});this.armedAt=0;this.seen=new Set();this.busy=false;this.taskBusy=false;this.outboxBusy=false;this.visualProgress=null;
     codex.on('approval',request=>{this.store.event('Codex 有待确认操作，编号 '+request.id,'attention');this.reply('Codex 需要确认一项操作。请在本机控制台查看，或回复 /同意 '+request.id+'、/拒绝 '+request.id+'。');});
     this.authRecoveryPending=true;
     codex.on('auth-reconnected',()=>{this.authRecoveryPending=true;});
   }
   async createCoordinator() {
+    if(this.conversations){const need=await this.conversations.create();return need.thread;}
     const id=await this.codex.createCoordinator(coordinatorTools);this.store.saveConfig({coordinator:id});this.store.event('已建立固定的 Codex 调度聊天');return id;
   }
   async arm(enabled,{resumeSince}={}) {
@@ -97,10 +100,16 @@ export class BridgeEngine {
   }
   handleControl(message) {
     if(message.kind!=='text')return false;
-    const approval=message.text.match(/^\/(同意|拒绝)\s+(\d+)$/);
-    const status=/^\/(状态|status)$/.test(message.text);
-    const resume=message.text.match(/^\/继续视频(?:\s+(\d{12,24}))?\s*$/);
-    const reconnect=/^\/(重新连接|重连|reconnect)\s*$/i.test(message.text);
+    const command=parseCommand(message.text);
+    if(command&&((['approve','decline'].includes(command.name)&&!/^\d+$/.test(command.arg))||(['status','reconnect','help','settings'].includes(command.name)&&command.arg)||(command.name==='resume'&&command.arg&&!/^\d{12,24}$/.test(command.arg))||(command.name==='dispatch'&&!command.arg))){this.reply('命令参数不正确。发送 /帮助 查看用法；批准或拒绝需带操作编号。',{priority:90});this.store.messageStatus(message.id,'failed','命令参数无效');return true;}
+    if(command&&!['status','approve','decline','resume','reconnect','dispatch'].includes(command.name)){
+      this.store.messageStatus(message.id,'processing');
+      this.controlTail=(this.controlTail||Promise.resolve()).catch(()=>{}).then(()=>this.handleSettingCommand(command)).then(text=>{this.reply(text,{priority:90});this.store.messageStatus(message.id,'done',text);}).catch(e=>{this.reply('指令未完成：'+e.message,{priority:90});this.store.messageStatus(message.id,'failed',e.message);});return true;
+    }
+    const approval=command&&['approve','decline'].includes(command.name)?['',command.name==='approve'?'同意':'拒绝',command.arg]:null;
+    const status=command?.name==='status';
+    const resume=command?.name==='resume'?['',command.arg]:null;
+    const reconnect=command?.name==='reconnect';
     if(!approval&&!status&&!resume&&!reconnect)return false;
     try {
       if(approval){this.codex.approve(approval[2],approval[1]==='同意');this.reply('已处理该项确认。');}
@@ -122,12 +131,34 @@ export class BridgeEngine {
       else{
         const {counts}=this.store.snapshot();const v=this.visualProgress,partial=!this.busy&&this.findIncompleteVideo();
         const processing=this.busy?(v?`正在分析视频画面：${v.completed}/${v.total||'…'} 段。\n`:'正在处理视频或指令。\n'):partial?`最近视频尚未完成：${partial.progress.completedSegments}/${partial.progress.totalSegments} 段。发送 /继续视频 可续做。\n`:'';
-        const auth=this.codex.authState;
-        this.reply(`${auth&&auth.status!=='ready'?(auth.message||'Codex 尚未连接')+'。\n':''}${processing}已保存视频 ${counts.knowledge} 条；任务排队 ${counts.queuedTasks} 条；执行中 ${counts.runningTasks} 条。`,{priority:90});
+        const auth=this.codex.authState,need=this.conversations?.needs.get(this.store.config.activeNeed);
+        this.reply(`${need?'当前需求：'+need.title+' ('+need.id+')\n':''}${auth&&auth.status!=='ready'?(auth.message||'Codex 尚未连接')+'。\n':''}${processing}已保存视频 ${counts.knowledge} 条；任务排队 ${counts.queuedTasks} 条；执行中 ${counts.runningTasks} 条。${this.preferences?'\n\n'+this.preferences.describe():''}`,{priority:90});
       }
       this.store.messageStatus(message.id,'done');
     }catch(e){this.store.messageStatus(message.id,'failed',e.message);this.reply('指令未完成：'+e.message);}
     return true;
+  }
+  async handleSettingCommand(command){
+    const {name,arg}=command;if(name==='help')return commandHelp;if(name==='unknown')return '未识别的命令，发送 /帮助 查看完整用法。';
+    if(!this.preferences)throw new Error('此运行入口未启用配置服务');
+    if(name==='settings')return this.preferences.describe();
+    if(name==='find'){
+      await this.conversations.ensureLegacy();const list=this.conversations.needs.directory(arg);
+      return list.length?'需求目录\n'+list.map(n=>`${n.id}  ${n.title}\n${n.summary.slice(0,75)}`).join('\n\n')+'\n\n发送 /切换 需求ID 找回。':'还没有保存的需求。';
+    }
+    if(name==='new'){const n=await this.conversations.create(arg||'新需求'),resolved=this.conversations.resolveWaiting(n);return `已新建并切换：${n.title}\n需求 ID：${n.id}${resolved?'\n刚才待选择的消息会归入新需求继续处理。':''}`;}
+    if(name==='switch'){
+      if(!arg)throw new Error('格式：/切换 需求ID；用 /找 查看目录');const n=await this.conversations.switchTo(arg);
+      const waiting=this.conversations.resolveWaiting(n);
+      return `已切换：${n.title} (${n.id})${waiting?'\n刚才待选择的消息会归入此需求继续处理。':''}`;
+    }
+    if(!arg){
+      if(name==='model'){const c=await this.preferences.catalog();return this.preferences.describe()+'\n\n可用模型\n'+c.models.map(m=>m.model+'  '+m.displayName).join('\n')+'\n\n用 /模型 完整ID 选择；/模型 默认 恢复默认。';}
+      if(name==='effort'){const c=await this.preferences.catalog(),m=c.models.find(m=>m.model===(this.store.config.model||c.defaults.model));return '当前强度：'+(effortNames[this.store.config.reasoningEffort]||this.store.config.reasoningEffort||'Codex 默认')+'\n可用：'+m.supportedReasoningEfforts.map(e=>`${effortNames[e.reasoningEffort]||e.reasoningEffort} (${e.reasoningEffort})`).join('、');}
+      return this.preferences.describe();
+    }
+    const patch=name==='model'?{model:arg,reasoningEffort:''}:name==='effort'?{reasoningEffort:arg}:name==='fast'?{fastMode:onOff(arg)}:name==='density'?{visualFps:Number(arg)}:name==='routing'?{autoRoute:onOff(arg)}:name==='budget'?{contextBudget:Number(arg)}:null;
+    if(!patch)throw new Error('命令格式不正确，发送 /帮助 查看');await this.preferences.update(patch);return '设置已保存，从下一次调用起生效。\n'+this.preferences.describe();
   }
   async processNext() {
     if(!this.store.config.enabled)return;
@@ -136,16 +167,13 @@ export class BridgeEngine {
     if(this.busy)return;
     this.resumeWaitingVideos();
     const row=this.store.pendingMessages()[0];if(!row)return;
-    this.busy=true;let processing=false;
+    this.busy=true;let processing=false,route=null,phase='prepare';
     try {
       await this.codex.ensureAuthenticated?.();
       processing=true;this.store.messageStatus(row.id,'processing');
       const message=JSON.parse(row.body);
-      const approval=message.kind==='text'&&message.text.match(/^\/(同意|拒绝)\s+(\d+)$/);
-      if(approval){this.codex.approve(approval[2],approval[1]==='同意');this.reply('已处理该项确认。');this.store.messageStatus(row.id,'done');return;}
-      if(message.kind==='text'&&/^\/(状态|status)$/.test(message.text)){
-        const s=this.store.snapshot();this.reply(`已保存视频 ${s.knowledge.length} 条；任务排队 ${s.tasks.filter(t=>t.status==='queued').length} 条；执行中 ${s.tasks.filter(t=>t.status==='running').length} 条。`);this.store.messageStatus(row.id,'done');return;
-      }
+      if(this.conversations)await this.conversations.ensureLegacy();
+      const capture=this.conversations?.capture();
       let learned=null;
       if(message.kind==='video') {
         this.notifyVideo(message,'started');
@@ -158,34 +186,44 @@ export class BridgeEngine {
         }
         await this.analyzeVisual(learned);
       }
+      if(this.conversations){
+        phase='routing';route=await this.conversations.prepare(message,{learned,capture});
+        if(route.clarify){this.store.messageStatus(row.id,'waiting_route',route.question);this.reply(route.question+'\n可用 /找 查看目录，再用 /切换 需求ID 明确选择，或 /新建 标题。',{priority:90});return;}
+      }
+      phase='work';
       const direct=message.kind==='text'?parseDispatch(message.text,this.store.config.targets):null;
       if(direct) {
-        const id=this.dispatch(direct.target.alias,direct.instruction,message.text);
-        this.reply('任务已排队给「'+direct.target.alias+'」，编号 '+id.slice(0,8)+'。执行完成后会回到这里。');
+        const id=this.dispatch(direct.target.alias,direct.instruction,message.text,{needId:route?.needId});
+        const queued='任务已排队给「'+direct.target.alias+'」，编号 '+id.slice(0,8)+'。执行完成后会回到这里。';this.reply(queued);
+        if(route){const needId=this.conversations.record(row.id,queued);await this.conversations.refreshMemory(needId);}
         this.store.messageStatus(row.id,'done',id);return;
       }
-      const related=learned?[learned]:this.store.search('',3);
+      const related=learned?[learned]:route?this.conversations.related(route.needId,'',3):this.store.search('',3);
       const instruction=message.kind==='video'?'学习这条视频，综合完整视觉记录与口播。':message.text;
       const allowDispatch=message.kind==='text'&&mayDispatch(message.text);
       const references=related.map(k=>({id:k.id,title:k.title,path:k.path,visualPath:join(dirname(k.path),'visual-analysis.md'),...(learned?{source:k.source,transcript:k.transcript,visualObservations:k.visual?.notes}:{summary:k.summary?.slice(0,1800)})}));
-      const prompt=`主人指示：${instruction}\n允许派发：${allowDispatch?'是':'否'}${allowDispatch?'\n可用目标：'+JSON.stringify(this.store.config.targets.map(t=>t.alias)):''}${references.length?'\n本轮资料：\n'+JSON.stringify(references).slice(0,65000):''}`;
-      const input=[{type:'text',text:prompt}];
-      const result=await this.codex.run(this.store.config.coordinator,input,{assistant:true,effort:learned?'medium':undefined,toolHandler:async call=>{
-        if(call.tool==='knowledge_search')return this.store.search(call.arguments.query).map(k=>({...k,transcript:k.transcript.slice(0,16000),visualAnalysis:this.visualText(k).slice(0,24000),visualPath:join(dirname(k.path),'visual-analysis.md')}));
+      const prompt=`主人指示：${instruction}\n允许派发：${allowDispatch?'是':'否'}${allowDispatch?'\n可用目标：'+JSON.stringify(this.store.config.targets.map(t=>t.alias)):''}${references.length?'\n本轮资料：\n'+JSON.stringify(references):''}`;
+      let input=[{type:'text',text:prompt}],inputTokens=0;
+      if(route){const prepared=await this.conversations.prepareInput(route,input,message);route=prepared.route;input=prepared.input;inputTokens=prepared.inputTokens;}
+      const result=await this.codex.run(route?.threadId||this.store.config.coordinator,input,{assistant:true,...(this.preferences?await this.preferences.work():{effort:learned?'medium':undefined}),toolHandler:async call=>{
+        if(call.tool==='need_context')return route?this.conversations.context(route):{notice:'尚未按需求分组'};
+        if(call.tool==='knowledge_search')return (route?this.conversations.related(route.needId,call.arguments.query):this.store.search(call.arguments.query)).map(k=>({...k,transcript:k.transcript.slice(0,16000),visualAnalysis:this.visualText(k).slice(0,24000),visualPath:join(dirname(k.path),'visual-analysis.md')}));
         if(call.tool==='dispatch_task'){
           if(!allowDispatch)throw new Error('本轮没有主人明确的派发指示');
-          const id=this.dispatch(call.arguments.alias,call.arguments.instruction,message.text);return {status:'queued',taskId:id,alias:call.arguments.alias};
+          const id=this.dispatch(call.arguments.alias,call.arguments.instruction,message.text,{needId:route?.needId});return {status:'queued',taskId:id,alias:call.arguments.alias};
         }
         throw new Error('未知工具');
       }});
       if(learned){this.store.addKnowledge({...learned,summary:result.text});await appendFile(learned.path,'\n## Codex 学习整理\n\n'+result.text+'\n');}
       this.reply(result.text,learned?{payload:{videoId:learned.id,phase:'summary'}}:undefined);this.store.messageStatus(row.id,'done',result.text);
+      if(route){const needId=this.conversations.record(row.id,result.text,result.tokenUsage,inputTokens);await this.conversations.refreshMemory(needId);const n=this.conversations.needs.get(needId);if(n.context_tokens>=this.store.config.contextBudget)await this.conversations.rollover(n).catch(()=>{});}
     } catch(e){
       const auth=authFailure(e);
       if(!processing&&auth){
         const key=row.id+':'+auth;if(this.authNoticeKey!==key){this.authNoticeKey=key;this.reply(this.failureNotice(e,{video:row.kind==='video'}),{priority:90});}
       }else{
-        this.store.messageStatus(row.id,row.kind==='video'&&auth?'waiting_auth':'failed',e.message);
+        this.store.messageStatus(row.id,row.kind==='video'&&auth?'waiting_auth':phase==='routing'&&!auth?'waiting_route':'failed',e.message);
+        if(route?.needId)this.conversations.needs.complete(row.id,e.message,e.uncertain?'uncertain':'failed');
         this.store.event(auth?'Codex 登录或额度暂不可用，进度已保留':e.message,'error');this.reply(this.failureNotice(e,{video:row.kind==='video'}));
       }
     }
@@ -226,24 +264,33 @@ export class BridgeEngine {
   async reanalyze(id,{notify=true,refreshAuth=false}={}){
     if(this.busy)throw new Error('当前仍有视频或指令处理，请稍后重分析');
     const item=this.store.knowledge(id);if(!item)throw new Error('未找到已经保存的视频');
-    this.busy=true;
+    this.busy=true;let resumeRoute=null;
     try{
       if(refreshAuth)await this.codex.reconnect?.();
       const message=this.store.latestVideoMessage(id);
       if(message&&notify){this.notifyVideo(message,'started',{key:'video-reanalysis:'+message.id+':'+Date.now()});await this.deliver();}
       const learned=JSON.parse(await readFile(join(dirname(item.path),'metadata.json'),'utf8'));learned.path=item.path;
       await this.analyzeVisual(learned);
-      const result=await this.codex.run(this.store.config.coordinator,[{type:'text',text:`主人指示：继续学习这条视频，以完整视觉记录为准。\n允许派发：否\n本轮资料：${JSON.stringify({title:learned.title,source:learned.source,transcript:learned.transcript,visualPath:join(dirname(item.path),'visual-analysis.md'),visualObservations:learned.visual.notes}).slice(0,65000)}`}],{assistant:true,effort:'medium'});
+      let input=[{type:'text',text:`主人指示：继续学习这条视频，以完整视觉记录为准。\n允许派发：否\n本轮资料：${JSON.stringify({title:learned.title,source:learned.source,path:item.path,transcript:learned.transcript,visualPath:join(dirname(item.path),'visual-analysis.md'),visualObservations:learned.visual.notes})}`}],inputTokens=0;
+      if(this.conversations&&message){resumeRoute=await this.conversations.resumeRoute(message,learned);if(resumeRoute.clarify)throw new Error(resumeRoute.question);const prepared=await this.conversations.prepareInput(resumeRoute,input,message);resumeRoute=prepared.route;input=prepared.input;inputTokens=prepared.inputTokens;}
+      const result=await this.codex.run(resumeRoute?.threadId||this.store.config.coordinator,input,{assistant:true,...(this.preferences?await this.preferences.work():{effort:'medium'}),toolHandler:async call=>{
+        if(call.tool==='need_context'&&resumeRoute)return this.conversations.context(resumeRoute);
+        if(call.tool==='knowledge_search')return resumeRoute?this.conversations.related(resumeRoute.needId,call.arguments.query):this.store.search(call.arguments.query);
+        throw new Error('本次续看没有授权派发任务');
+      }});
       this.store.addKnowledge({...learned,summary:result.text});await appendFile(item.path,'\n## 全时段视觉重分析 '+new Date().toISOString()+'\n\n'+result.text+'\n');
       if(message)this.store.messageStatus(message.id,'done',result.text);
+      if(resumeRoute&&message){const needId=this.conversations.record(message.id,result.text,result.tokenUsage,inputTokens);await this.conversations.refreshMemory(needId);}
       this.reply(result.text,{payload:{videoId:learned.id,phase:'summary'}});this.store.event('全时段视觉重分析已完成：'+learned.title.slice(0,60));return result.text;
     }catch(e){if(authFailure(e)){const message=this.store.latestVideoMessage(id);if(message)this.store.messageStatus(message.id,'waiting_auth',e.message);}this.store.event(authFailure(e)?'等待 Codex 登录或额度恢复':e.message,'error');this.reply(this.failureNotice(e));throw e;}finally{this.busy=false;}
   }
-  dispatch(alias,instruction,ownerInstruction) {
+  dispatch(alias,instruction,ownerInstruction,{needId=this.store.config.activeNeed}={}) {
     const target=this.store.config.targets.find(t=>t.alias===alias);
     if(!target)throw new Error('该目标聊天未加入授权名单');
     if(target.id===this.store.config.coordinator)throw new Error('不能把任务派回调度聊天本身');
-    const items=this.store.search('',3),context=buildVideoContext(items,{project});
+    if(this.conversations?.needs.db.prepare('SELECT 1 FROM need_threads WHERE thread=?').get(target.id))throw new Error('需求助手会话不能作为派发目标');
+    const items=needId&&this.conversations?this.conversations.related(needId,'',3):this.store.search('',3),context={...buildVideoContext(items,{project}),needId};
+    if(needId&&this.conversations)context.need=this.conversations.context({needId,historyPath:this.conversations.needs.history(needId)});
     const brief=items.map(k=>({id:k.id,title:k.title,summary:k.summary?.slice(0,1000)}));
     const prompt=`主人的原话：${ownerInstruction}\n具体任务：${instruction}\n${videoContextInstructions(context)}${brief.length?'\n资料摘要：'+JSON.stringify(brief):''}`;
     const id=this.store.createTask(alias,target.id,prompt,context);this.store.event('已排队到「'+alias+'」：'+id.slice(0,8));return id;
@@ -260,10 +307,12 @@ export class BridgeEngine {
       const context=JSON.parse(task.context||'{}');const input=[{type:'text',text:task.prompt}];
       for(const image of context.images||[])if(existsSync(image.path))input.push({type:'text',text:`原视频 ${image.videoId}，约 ${image.seconds.toFixed(2)} 秒起的连续画面组（初始定位附件，可回看完整原片）：`},{type:'localImage',path:image.path});
       const result=await this.codex.run(task.thread,input,{
+        ...(this.preferences?await this.preferences.work():{}),
         onSubmitted:()=>{started=true;this.store.taskStatus(task.id,'running');},
         onStarted:id=>{started=true;this.store.taskStatus(task.id,'running','',id);}
       });
       this.store.taskStatus(task.id,'done',result.text,result.turnId);this.store.event('「'+task.alias+'」已返回执行结果');
+      if(context.needId&&this.conversations){const need=this.conversations.needs.get(context.needId);if(need){const message={id:'task-result:'+task.id,kind:'text',text:'已授权任务执行结果，原指令：'+task.prompt,created:Date.now()};this.conversations.needs.reserve(message,need);this.conversations.record(message.id,result.text);await this.conversations.refreshMemory(need.id);}}
       this.reply('「'+task.alias+'」任务 '+task.id.slice(0,8)+' 的执行结果：\n'+result.text);
     } catch(e) {
       if(!started&&authFailure(e)){this.store.taskStatus(task.id,'queued','等待本机 Codex 登录或额度恢复');return;}

@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { resolveCodexCommand } from './codex-command.mjs';
 import {credentialRevision,defaultCodexHome,authFailure,authError} from './codex-auth.mjs';
-import {assistantInstructions,visualInstructions,instructionRevision} from './prompts.mjs';
+import {assistantInstructions,instructionRevision,roleInstructions} from './prompts.mjs';
 
 export function approvalResponse(request,allow) {
   if(request.method==='item/permissions/requestApproval')return {permissions:allow?(request.params.permissions||{}):{},scope:'turn'};
@@ -13,7 +13,7 @@ export function approvalResponse(request,allow) {
 export class CodexClient extends EventEmitter {
   constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome() }={}) {
     super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome}); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
-    this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.auth={status:'unknown',message:''};
+    this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
   }
   async connect() {
     if(this.closed)throw Object.assign(new Error('Codex 客户端已关闭'),{code:'CODEX_CLIENT_CLOSED'});
@@ -27,7 +27,7 @@ export class CodexClient extends EventEmitter {
     if(this.runs.size||this.pending.size)throw authError('pending');
     const recovered=this.generation>0&&(changed||this.needsReconnect);
     const old=this.proc;this.proc=null;this.ready=false;this.lines?.close();old?.kill();
-    this.early.clear();this.approvals.clear();this.profiles.clear();
+    this.early.clear();this.approvals.clear();this.profiles.clear();this.usage.clear();
     this.loadedRevision=revision;this.needsReconnect=false;
     try{
       await this.#connect();
@@ -68,7 +68,7 @@ export class CodexClient extends EventEmitter {
     this.proc.stderr.on('data',()=>{}); // Do not copy auth diagnostics or credentials to app logs.
     this.lines=createInterface({input:this.proc.stdout});
     this.lines.on('line',line=>{if(proc!==this.proc)return;try { this.#receive(JSON.parse(line)).catch(e=>this.log('Codex 消息处理失败：'+e.message,'error')); } catch(e) { this.log('Codex 消息解析失败：'+e.message,'error'); } });
-    await this.request('initialize',{clientInfo:{name:'douyin_codex_bridge',title:'抖音 Codex 助手',version:'0.2.1'},capabilities:{experimentalApi:true}},20000);
+    await this.request('initialize',{clientInfo:{name:'douyin_codex_bridge',title:'抖音 Codex 助手',version:'0.3.0'},capabilities:{experimentalApi:true}},20000);
     this.send({method:'initialized'}); this.ready=true;
   }
   send(message) { if(!this.proc?.stdin?.writable) throw new Error('Codex 未连接'); this.proc.stdin.write(JSON.stringify(message)+'\n'); }
@@ -113,6 +113,10 @@ export class CodexClient extends EventEmitter {
       const p=msg.params; const r=[...this.runs.values()].find(r=>r.threadId===p.threadId);
       if(r)r.text=p.item.text||r.text;
     }
+    if(msg.method==='thread/tokenUsage/updated'){
+      const p=msg.params;this.usage.set(p.threadId,{turnId:p.turnId,...p.tokenUsage});
+      if(this.usage.size>256)this.usage.delete(this.usage.keys().next().value);
+    }
     if(msg.method==='turn/completed') {
       const turn=msg.params?.turn;const r=this.runs.get(turn?.id);
       if(!r){this.early.set(turn?.id,msg.params); if(this.early.size>30)this.early.delete(this.early.keys().next().value);return;}
@@ -126,7 +130,8 @@ export class CodexClient extends EventEmitter {
     if(turn.status!=='completed')r.reject(this.#noteFailure(new Error(turn.error?.message||`Codex 执行状态：${turn.status}`)));
     else {
       const items=(turn.items||[]).filter(i=>i.type==='agentMessage');
-      r.resolve({text:items.at(-1)?.text||r.text||'任务已结束，未返回文字结果。',turnId:turn.id});
+      const usage=this.usage.get(r.threadId);
+      r.resolve({text:items.at(-1)?.text||r.text||'任务已结束，未返回文字结果。',turnId:turn.id,tokenUsage:usage?.turnId===turn.id?usage:undefined});
     }
   }
   approve(id,allow) {
@@ -138,25 +143,39 @@ export class CodexClient extends EventEmitter {
     await this.connect(); const out=await this.request('thread/list',{limit:60,searchTerm:searchTerm||null,archived:false});
     return [...new Map((out.data||[]).map(t=>[t.id,t])).values()].map(t=>({id:t.id,name:t.name||t.preview?.slice(0,60)||t.id,cwd:t.cwd,status:t.status?.type}));
   }
-  async createCoordinator(tools,ephemeral=false,{visual=false}={}) {
+  async models(){
+    await this.connect();if(this.modelCatalog?.generation===this.generation&&Date.now()-this.modelCatalog.loaded<60000)return this.modelCatalog.value;
+    const result=await this.request('model/list',{limit:100,includeHidden:false});
+    const models=(result.data||[]).filter(m=>!m.hidden).map(m=>({id:m.id,model:m.model||m.id,displayName:m.displayName||m.id,inputModalities:m.inputModalities||['text','image'],supportedReasoningEfforts:m.supportedReasoningEfforts||[],defaultReasoningEffort:m.defaultReasoningEffort,serviceTiers:m.serviceTiers||[],isDefault:m.isDefault}));
+    let configured={};try{configured=(await this.request('config/read',{includeLayers:false})).config||{};}catch{}
+    const preferred=models.find(m=>m.isDefault)||models[0];
+    const value={models,defaults:{model:configured.model||preferred?.model,effort:configured.model_reasoning_effort||preferred?.defaultReasoningEffort}};
+    this.modelCatalog={generation:this.generation,loaded:Date.now(),value};return value;
+  }
+  async createCoordinator(tools,ephemeral=false,{visual=false,role=visual?'visual':'assistant',name='抖音视频助手',model,serviceTier}={}) {
     await this.ensureAuthenticated();
     const out=await this.request('thread/start',{cwd:this.cwd,ephemeral,serviceName:'douyin-codex-bridge',dynamicTools:tools,
-      developerInstructions:visual?visualInstructions:assistantInstructions,...(visual?{sandbox:'read-only',approvalPolicy:'never'}:{})});
+      developerInstructions:roleInstructions[role]||assistantInstructions,...(model?{model}:{}),...(serviceTier?{serviceTier:serviceTier==='default'?null:serviceTier}:{}),...(role!=='assistant'?{sandbox:'read-only',approvalPolicy:'never'}:{})});
     if(ephemeral){this.ephemeral.set(out.thread.id,this.generation);if(this.ephemeral.size>128)this.ephemeral.delete(this.ephemeral.keys().next().value);}
     else this.profiles.set(out.thread.id,instructionRevision);
-    if(!ephemeral)await this.request('thread/name/set',{threadId:out.thread.id,name:'抖音视频助手'}).catch(()=>{});
+    if(!ephemeral)await this.request('thread/name/set',{threadId:out.thread.id,name}).catch(()=>{});
     return out.thread.id;
   }
   async runReadOnly(input,{tools=[],...options}={}){
+    return this.runEphemeral(input,{...options,tools,role:'visual'});
+  }
+  async runEphemeral(input,{tools=[],role='router',...options}={}){
     for(let attempt=0;attempt<2;attempt++){
-      try{const thread=await this.createCoordinator(tools,true,{visual:true});return await this.run(thread,input,{...options,resume:false});}
+      let thread,generation;
+      try{thread=await this.createCoordinator(tools,true,{role,model:options.model,serviceTier:options.serviceTier});generation=this.generation;return await this.run(thread,input,{...options,resume:false});}
       catch(e){
         if(attempt||!(authFailure(e)==='login'||e.code==='CODEX_AUTH_CHANGED'))throw e;
         if(e.code!=='CODEX_AUTH_CHANGED'){const result=await this.reconnect();if(result.deferred)throw authError('pending');}
       }
+      finally{if(thread&&generation===this.generation&&this.ready)await this.request('thread/unsubscribe',{threadId:thread},5000).catch(()=>{});if(thread){this.ephemeral.delete(thread);this.usage.delete(thread);}}
     }
   }
-  async run(threadId,input,{toolHandler,onStarted,onSubmitted,timeoutMs=15*60*1000,resume=true,effort,interruptOnTimeout=false,assistant=false}={}) {
+  async run(threadId,input,{toolHandler,onStarted,onSubmitted,timeoutMs=15*60*1000,resume=true,effort,model,serviceTier,outputSchema,interruptOnTimeout=false,assistant=false}={}) {
     await this.ensureAuthenticated();
     if(this.ephemeral.has(threadId)&&this.ephemeral.get(threadId)!==this.generation)throw Object.assign(new Error('登录更新后需重新建立只读分析会话'),{code:'CODEX_AUTH_CHANGED'});
     if([...this.runs.values()].some(r=>r.threadId===threadId))throw new Error('该 Codex 聊天仍在工作，请稍后再试');
@@ -171,7 +190,7 @@ export class CodexClient extends EventEmitter {
     const r={threadId,resolve,reject,text:'',toolHandler,timer:null};const provisional='starting:'+threadId;this.runs.set(provisional,r);
     try {
       onSubmitted?.();
-      const out=await this.request('turn/start',{threadId,input,...(effort?{effort}:{})});const turn=out.turn;
+      const out=await this.request('turn/start',{threadId,input,...(effort?{effort}:{}),...(model?{model}:{}),...(serviceTier?{serviceTierForTurn:serviceTier}:{}),...(outputSchema?{outputSchema}:{})});const turn=out.turn;
       this.runs.delete(provisional);this.runs.set(turn.id,r);r.turnId=turn.id;
       r.timer=setTimeout(()=>{
         this.runs.delete(turn.id);
@@ -189,6 +208,7 @@ export class CodexClient extends EventEmitter {
 }
 
 export const coordinatorTools=[
+  {name:'need_context',description:'取得当前需求的简短交接、完整交流记录路径和摘要是否待核对。',inputSchema:{type:'object',properties:{},additionalProperties:false}},
   {name:'knowledge_search',description:'查询此前从抖音视频保存的资料、文字稿和总结。',inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query'],additionalProperties:false}},
   {name:'dispatch_task',description:'仅在主人明确要求时，把带有视频资料的任务交给已授权的目标 Codex 聊天。返回排队编号，不能把排队说成执行完成。',inputSchema:{type:'object',properties:{alias:{type:'string'},instruction:{type:'string'}},required:['alias','instruction'],additionalProperties:false}}
 ];
