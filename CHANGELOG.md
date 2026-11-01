@@ -9,6 +9,7 @@
 - Harden DSH submission journals, exact-session cancellation, account refresh, MCP callbacks, cross-project cwd restoration, reversible local archives and uncertainty fences. Restore bridge tools after restart without injecting Agent rules into project targets.
 - Pin restricted DSH workers to 0.2.1-rc.5; verify actual native tool catalogs and forged execution refusal. Carry actual continuous and fine-detail image inputs, rejecting non-visual routes before inference instead of claiming file-path-only visual learning.
 - Keep Safari tab indices accurate with empty/reordered tabs; restore only the unique owned tab marker and match complete video paths. Check both platform releases with the pinned native DSH wire tests.
+- Recover the reproduced Chromium internal error-page navigation race with bounded retries, retaining the same browser profile and surfacing persistent failures. Update native macOS AppleScript compile fixtures for ownership preflight and indexed tab URLs.
 
 ## 0.12.1
 

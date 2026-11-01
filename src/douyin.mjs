@@ -250,12 +250,11 @@ export class DouyinAdapter {
     await this.page.bringToFront();
     try{
       const navigate=()=>this.page.goto('https://www.douyin.com/chat?isPopup=1',{waitUntil:'domcontentloaded',timeout:60000});
-      try{await navigate();}catch(e){
-        // Chromium can commit its previous failed navigation's internal error
-        // page after goto has rejected. Only this proven navigation race gets
-        // one reset/retry; ordinary network/login errors still reach the panel.
-        if(!/interrupted by another navigation to ["']chrome-error:\/\/chromewebdata\//.test(e.message))throw e;
-        await this.page.goto('about:blank',{waitUntil:'domcontentloaded',timeout:15000});await navigate();
+      const internalError=e=>/interrupted by another navigation to ["']chrome-error:\/\/chromewebdata\//.test(e.message);
+      for(let attempt=0;attempt<3;attempt++)try{await navigate();break;}catch(e){
+        // An old internal error-page commit can interrupt the next goto.
+        // Retry only that exact race, at most twice. Other errors stay visible.
+        if(attempt===2||!internalError(e))throw e;
       }
       this.openFailed=false;this.status='waiting_login';
     }
