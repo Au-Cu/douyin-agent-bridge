@@ -42,7 +42,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   server.listen(0,'127.0.0.1');await once(server,'listening');
   let browser;
   try{
-    browser=await chromium.launch({channel:'msedge',headless:true});
+    browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||'msedge',headless:true});
     const page=await browser.newPage({viewport:{width:1100,height:900}}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto('http://127.0.0.1:'+server.address().port);

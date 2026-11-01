@@ -88,7 +88,8 @@ async function refresh(){
     const q=new URLSearchParams();for(const [key,id] of [['needs','needScope'],['knowledge','knowledgeScope'],['work','workScope']])if($(id).value!=='current')q.set(key,$(id).value);if($('workStatus').value!=='all')q.set('status',$('workStatus').value);
     state=await api('state'+(q.size?'?'+q:''));const r=state.runtime;
     for(const el of document.querySelectorAll('[data-fold-key]'))if(el.open)openedDetails.add(el.dataset.foldKey);else openedDetails.delete(el.dataset.foldKey);
-    if(state.storage){$('storagePath').textContent='固定数据目录：'+state.storage.dataRoot;$('backupInfo').textContent=(state.storage.recovery?state.storage.recovery+'。':'')+(state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。':'尚未生成状态快照。')+' 原视频、连续画面和登录态保留在上述目录；自动备份配置、需求与任务记录，退出程序时也会生成快照。';}
+    if(state.storage){$('storagePath').textContent='固定数据目录：'+state.storage.dataRoot;$('backupInfo').textContent=(state.storage.recovery?state.storage.recovery+'。':'')+(state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。':'尚未生成状态快照。')+(r.browserEngine==='safari'?' 原视频和连续画面保存在上述目录；Safari 登录态由 Safari 管理。':' 原视频、连续画面和登录态保留在上述目录；')+'自动备份配置、需求与任务记录，退出程序时也会生成快照。';}
+    $('browserInstructions').textContent=r.browserEngine==='safari'?'使用 Safari 登录助手账号；需要时先切换到助手专用的 Safari 个人资料，再与主号互关并发送私信。':'首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。';
     $('liveBadge').textContent=state.config.enabled?'正在监听':'尚未监听';$('liveBadge').className='badge'+(state.config.enabled?' active':'');
     if(state.config.ignoreMessages)$('liveBadge').textContent='忽略新消息 · /结束忽略 恢复';
     $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接',blocked:'被弹层遮挡'})[r.browser]||r.browser;
@@ -117,7 +118,7 @@ async function refresh(){
   }catch(e){notice(e.message,true);}finally{busy=false;if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
 }
 action('openBrowser',async()=>{notice('正在恢复已保存的抖音登录态和绑定会话。只有平台要求重新验证时才需登录。');await api('browser/open',{});});
-action('backupNow',async()=>{await api('storage/backup',{});notice('配置、需求记忆和任务记录已生成状态快照。原视频和登录态保留在固定数据目录。');});
+action('backupNow',async()=>{await api('storage/backup',{});notice(state?.runtime?.browserEngine==='safari'?'配置、需求记忆和任务记录已生成状态快照。原视频保留在固定数据目录；登录态由 Safari 管理。':'配置、需求记忆和任务记录已生成状态快照。原视频和登录态保留在固定数据目录。');});
 action('bindOwner',async()=>{const r=await api('bind',{});notice('已绑定：'+r.owner.displayName);});
 action('createCoordinator',async()=>{await api('coordinator',{});notice('固定调度聊天已建立。');});
 action('reconnectCodex',async()=>{const r=await api('codex/reconnect',{});notice(r.deferred?'当前任务仍在执行，结束后会重新连接。':r.auth.status==='ready'?'已读取本机当前 Codex 登录，视频进度和目标名单已保留。':r.auth.message,!r.deferred&&r.auth.status!=='ready');});

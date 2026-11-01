@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util';
 import { Store } from './store.mjs';
 import { CodexClient } from './codex.mjs';
 import { DouyinAdapter } from './douyin.mjs';
+import { SafariDouyinAdapter } from './safari.mjs';
 import { MediaProcessor } from './media.mjs';
 import { BridgeEngine } from './engine.mjs';
 import { VisualAnalyzer } from './visual.mjs';
@@ -26,7 +27,7 @@ const {values:args}=parseArgs({options:{port:{type:'string'},'data-dir':{type:'s
 if(args['data-dir'])process.env.BRIDGE_DATA_DIR=args['data-dir'];
 const dataRoot=await prepareDataRoot(project),store=new Store(dataRoot);
 const log=(message,level)=>store.event(message,level);
-const adapter=new DouyinAdapter({root:store.root,log});
+const adapter=process.platform==='darwin'?new SafariDouyinAdapter({root:store.root,log}):new DouyinAdapter({root:store.root,log});
 const codex=new CodexClient({cwd:project,log});
 const media=new MediaProcessor({root:store.root,adapter,log});
 const preferences=new Preferences({store,codex});
@@ -46,7 +47,7 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.8.0',projectRoot:project,dataRoot,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:JSON.parse(await readFile(join(project,'package.json'),'utf8')).version,projectRoot:project,dataRoot,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const needScope=archiveScope(url.searchParams.get('needs')),knowledgeScope=archiveScope(url.searchParams.get('knowledge')),workScope=archiveScope(url.searchParams.get('work')),status=url.searchParams.get('status')||'all';if(!taskStatuses.has(status))throw new Error('未知任务状态');
@@ -55,7 +56,7 @@ const server=http.createServer(async(req,res)=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
         const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codexThreadUrl(n.thread)}));
-        return json(res,{...snapshot,storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models')return json(res,await preferences.catalog());
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));

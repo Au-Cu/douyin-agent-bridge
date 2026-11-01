@@ -25,7 +25,7 @@ export const visualTools=[
   {name:'video_crop',description:'放大指定时间的一处画面细节。box 为显示画面上 0–1000 坐标的 [左,上,右,下]，无需其他模型或 API。',inputSchema:{type:'object',properties:{seconds:{type:'number'},box:{type:'array',items:{type:'number',minimum:0,maximum:1000},minItems:4,maxItems:4}},required:['seconds','box'],additionalProperties:false}},
   {name:'video_interval',description:'以 8、12 或 16 fps 连续细看当前视频内最多 3 秒的片段，用于分辨快速过渡、手势、动画前后状态。',inputSchema:{type:'object',properties:{start:{type:'number'},end:{type:'number'},fps:{type:'integer',enum:[8,12,16]}},required:['start','end'],additionalProperties:false}}
 ];
-function timelineFilter(fps,width){return `fps=${fps}:round=up,scale=${width}:-2,drawtext=fontfile='C\\:/Windows/Fonts/consola.ttf':text='%{pts\\:hms}':x=6:y=6:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.75,tile=2x2:padding=4:margin=4`;}
+function timelineFilter(fps,width){const font=process.platform==='darwin'?'/System/Library/Fonts/Menlo.ttc':'C\\:/Windows/Fonts/consola.ttf';return `fps=${fps}:round=up,scale=${width}:-2,drawtext=fontfile='${font}':text='%{pts\\:hms}':x=6:y=6:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.75,tile=2x2:padding=4:margin=4`;}
 // Current ChatGPT-authenticated app-server does not reliably expose images embedded
 // in a dynamic tool result. Native view_image can read these same local files.
 const imageOutput=async(paths,text)=>({success:true,contentItems:[{type:'inputText',text:text+'\n图片已保存到本机。请调用原生 view_image 工具查看下面的图片路径后再判断，不能只根据文件名推断：\n'+paths.join('\n')}]});

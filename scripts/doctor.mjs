@@ -1,10 +1,10 @@
 import { stat } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn,spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { CodexClient } from '../src/codex.mjs';
-import { runFfmpeg,transcribe } from '../src/media.mjs';
+import { runFfmpeg,transcribe,localAsrEnv } from '../src/media.mjs';
 import { modelName } from './setup-asr.mjs';
 import {resolveDataRoot} from '../src/data-root.mjs';
 import {existsSync} from 'node:fs';
@@ -12,7 +12,7 @@ const project=fileURLToPath(new URL('../',import.meta.url));const stable=resolve
 function check(label,ok,detail=''){console.log(`[${ok?'OK':'待完成'}] ${label}${detail?'：'+detail:''}`);if(!ok)missing=true;}
 const [nodeMajor,nodeMinor]=process.versions.node.split('.').map(Number);
 check('Node.js',nodeMajor>24||nodeMajor===24&&nodeMinor>=5,process.version+' / '+process.arch);
-try{const s=createRequire(import.meta.url)('sherpa-onnx-node');check('本地转写引擎',typeof s.OfflineRecognizer==='function');}catch(e){check('本地转写引擎',false,e.message);}
+try{if(process.platform==='darwin'){const result=spawnSync(process.execPath,['-e',"const s=require('sherpa-onnx-node');process.exit(typeof s.OfflineRecognizer==='function'?0:1)"],{cwd:project,env:localAsrEnv(),encoding:'utf8',timeout:30000});check('本地转写引擎',result.status===0,result.status===0?'':'请检查本地原生语音库');}else{const s=createRequire(import.meta.url)('sherpa-onnx-node');check('本地转写引擎',typeof s.OfflineRecognizer==='function');}}catch(e){check('本地转写引擎',false,e.message);}
 try{await runFfmpeg(['-version']);check('视频解码工具',true);}catch(e){check('视频解码工具',false,e.message);}
 const model=join(data,'models',modelName);
 try{check('本地口播模型',(await stat(join(model,'model.int8.onnx'))).size>200000000);}catch{check('本地口播模型',false,'运行 npm run setup:asr');}

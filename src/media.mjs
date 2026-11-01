@@ -7,12 +7,13 @@ import {resolveDataRoot} from './data-root.mjs';
 import {durableJson,durableWrite} from './durable.mjs';
 import { modelName } from '../scripts/setup-asr.mjs';
 import {operationContext,checkWork,workSignal,trackStop,interruptedError} from './execution.mjs';
-const legacyFfmpeg=fileURLToPath(new URL('../data/runtime/ffmpeg.exe',import.meta.url));
+export function ffmpegPath(){const name=process.platform==='win32'?'ffmpeg.exe':'ffmpeg',stable=join(resolveDataRoot(),'runtime',name),legacy=fileURLToPath(new URL('../data/runtime/'+name,import.meta.url));return existsSync(stable)?stable:legacy;}
+export function localAsrEnv(env=process.env){if(process.platform!=='darwin')return {...env};const native=fileURLToPath(new URL('../node_modules/sherpa-onnx-darwin-arm64',import.meta.url));return {...env,DYLD_LIBRARY_PATH:[native,env.DYLD_LIBRARY_PATH].filter(Boolean).join(':')};}
 
 export function runFfmpeg(args,timeout=180000) {
   checkWork();const signal=workSignal(),scope=operationContext.getStore();
   return new Promise((resolve,reject)=>{
-    const stable=join(resolveDataRoot(),'runtime','ffmpeg.exe'),ffmpeg=existsSync(stable)?stable:legacyFfmpeg;
+    const ffmpeg=ffmpegPath();
     const child=spawn(ffmpeg,args,{windowsHide:true});let stderr='';const timer=setTimeout(()=>{child.kill();reject(new Error('音视频处理超时'));},timeout);
     if(scope){scope.processes||=new Set();scope.processes.add(child);}
     const abort=()=>{trackStop(new Promise(done=>child.once('exit',()=>done({confirmed:true}))),scope);child.kill();reject(signal.reason||interruptedError());};signal?.addEventListener('abort',abort,{once:true});
@@ -25,7 +26,7 @@ export async function transcribe(wav,model,progress=()=>{}) {
   try{await stat(join(model,'model.int8.onnx'));}catch{throw new Error('本地口播转写模型尚未安装，请在控制台点击“安装转写模型”');}
   return new Promise((resolve,reject)=>{
     checkWork();
-    const worker=fork(new URL('./asr-worker.mjs',import.meta.url),[],{windowsHide:true,stdio:['ignore','ignore','ignore','ipc']});
+    const worker=fork(new URL('./asr-worker.mjs',import.meta.url),[],{env:localAsrEnv(),windowsHide:true,stdio:['ignore','ignore','ignore','ipc']});
     const scope=operationContext.getStore();if(scope){scope.processes||=new Set();scope.processes.add(worker);}
     const abort=()=>{trackStop(new Promise(done=>worker.once('exit',()=>done({confirmed:true}))),scope);worker.kill();reject(signal.reason||interruptedError());};signal?.addEventListener('abort',abort,{once:true});
     const timer=setTimeout(()=>{worker.kill();reject(new Error('本地口播转写超时'));},12*60*1000);

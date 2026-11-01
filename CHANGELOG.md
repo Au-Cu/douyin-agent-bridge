@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+- Add an Apple Silicon macOS installation, launcher, native FFmpeg and local speech runtime. Keep Mac and Windows release artifacts paired and verified on their respective CI machines.
+- Add a native Safari adapter using a bridge-owned, validated window and the user's Safari profile; require explicit Apple Events permission and preserve uncertain delivery or reaction results.
+- Use platform-native fonts for timestamped continuous video sheets. Existing Windows account data and browser profiles remain unchanged.
+
 ## 0.8.0
 
 - Resolve native Douyin reply pointers to verified outgoing messages, the complete reply group, original need and original video evidence. Persist exact platform IDs and use a unique exact-text fallback for older deliveries.

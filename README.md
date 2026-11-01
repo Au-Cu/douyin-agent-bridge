@@ -7,12 +7,12 @@
 
 你不需要先截图、摘字幕或手动概括视频。把视频当作图片参考一样转发，随后直接说“按这个做”“比较刚才两个视频”或“把这个交给网站项目”。
 
-这是运行在个人电脑上的社区项目，依赖抖音网页版结构。当前安装入口支持 Windows x64 / ARM64；ARM64 已做真实账号验收，x64 由 Windows CI 检查。macOS/Linux 暂未提供安装适配。不是抖音或 OpenAI 官方连接器。
+这是运行在个人电脑上的社区项目，依赖抖音网页版结构。提供 Windows x64 / ARM64 和 macOS Apple 芯片版本；Windows ARM64 已做真实账号验收。Mac Safari 版为新适配，真实抖音账号收发及视频获取仍需在自己的 Mac 上核验；无法获取原片时会停止并报告，不会假装完成视觉学习。Linux 尚未提供安装入口。不是抖音或 OpenAI 官方连接器。
 
 ## 需要准备
 
 - Node.js 24.5.0 或以上：[官方下载](https://nodejs.org/)。安装后重新打开终端。
-- Microsoft Edge、正常联网的 Windows 电脑，使用期间保持开机。
+- 正常联网并在使用期间保持开机的电脑：Windows 使用 Microsoft Edge；Apple 芯片 Mac 默认使用系统 Safari。
 - 自己已开通 Codex 使用权限的 ChatGPT 账号。项目会安装固定版本的官方 Codex CLI，复用本机 Codex 登录与聊天数据，无需单独配置模型 API Key。
 - 一个用来接收视频的抖音助手账号；主号和助手账号互关。手机可以是 iPhone 或安卓。
 
@@ -20,13 +20,23 @@
 
 ## 下载与首次安装
 
+Windows：
+
 ```powershell
 git clone https://github.com/Au-Cu/douyin-codex-bridge.git
 cd douyin-codex-bridge
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
 ```
 
-也可以下载 [Release ZIP](https://github.com/Au-Cu/douyin-codex-bridge/releases/latest)，解压后双击 `install.cmd`。这是源码安装包，首次安装需要联网；不包含 Node、账号信息、浏览器登录资料或模型权重。
+Mac（Apple 芯片，原生 ARM64 Node.js）：
+
+```bash
+git clone https://github.com/Au-Cu/douyin-codex-bridge.git
+cd douyin-codex-bridge
+./install-mac.command
+```
+
+也可以从 [Release](https://github.com/Au-Cu/douyin-codex-bridge/releases/latest) 下载对应系统的源码 ZIP：Windows 选择 `windows-source.zip`，Mac 选择 `macos-arm64-source.zip`。解压后分别双击 `install.cmd` 或 `install-mac.command`；macOS 首次打开未签名脚本时可能需要在 Finder 中右键选择“打开”。安装包不包含 Node、账号信息、浏览器登录资料或模型权重。
 
 安装器执行 npm ci，准备视频工具和本地转写模型。模型压缩包约 163 MB，解压后约 239 MB。下载会校验完整性，完成后直接复用。
 
@@ -36,12 +46,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
 npm run codex:login
 ```
 
-选择用自己的 ChatGPT 账号登录，完成官方浏览器流程。已有可用登录通常会直接复用。登录后运行 `start.cmd`；如果助手已运行，先执行 `stop.cmd` 再启动。官方登录说明：[Codex Authentication](https://learn.chatgpt.com/docs/auth)。
+选择用自己的 ChatGPT 账号登录，完成官方浏览器流程。已有可用登录通常会直接复用。Windows 登录后运行 `start.cmd`；Mac 运行 `start-mac.command`。官方登录说明：[Codex Authentication](https://learn.chatgpt.com/docs/auth)。
+
+Mac 首次连接 Safari 前，在 Safari“设置 → 高级”中显示开发者功能，然后在“设置 → 开发者 → 自动化”启用“允许来自 Apple 事件的 JavaScript”，并在 macOS 弹窗中允许终端控制 Safari。设置位置见 [Apple 开发者说明](https://developer.apple.com/documentation/safari-developer-tools/developer-settings)。
+
+Mac 使用普通 Safari 窗口及其当前个人资料的登录状态，而非独立的 Playwright 登录目录。若主号和助手号需要隔离，请先在 Safari 中切换到助手专用个人资料，再打开抖音窗口并登录助手号；不要使用退出后即丢弃登录态的隐私浏览窗口。程序只控制自己创建或核验过的窗口，不操作其他 Safari 标签页。
 
 ## 连接自己的抖音
 
-1. 双击 `start.cmd`（也保留了 `启动助手.cmd`），打开 http://127.0.0.1:39361。
-2. 点“打开抖音窗口”，首次在专用 Edge 窗口登录自己的助手账号。它与日常浏览器使用独立资料目录；后续启动会恢复保存的登录态。
+1. Windows 双击 `start.cmd`（也保留了 `启动助手.cmd`）；Mac 双击 `start-mac.command`，打开 http://127.0.0.1:39361。
+2. 点“打开抖音窗口”，登录自己的助手账号。Windows 使用独立 Edge 资料目录；Mac 使用上面选定的 Safari 个人资料。
 3. 从手机主号给助手发一条消息。在项目窗口打开主号私信，点控制台“绑定当前会话”。绑定核验账号 ID，不靠昵称。
 4. 点“创建调度聊天”，建立首个需求会话；之后会自动按需求继续、新建或找回。
 5. 若需要派任务，点“读取本机聊天”，选择允许接收任务的聊天，填别名、加入名单并保存。可先留空，只使用视频学习。
@@ -167,9 +181,11 @@ npm run codex:login
 
 启动和停止脚本会核验数据目录。同一 Windows 用户的不同代码副本默认读取同一套资料，已经启动时会打开已有面板；独立数据配置不会互相停止。`-Force` 仅用于确实需要中断的情况；结果不明的任务和发送操作不会自动重放。
 
+Mac 使用 `start-mac.command` 和 `stop-mac.command`；终端中可运行 `node scripts/mac-launcher.mjs start --port 39362` 或 `node scripts/mac-launcher.mjs stop`。Mac 默认数据目录为 `~/.local/share/douyin-codex-bridge/data`；Safari 的登录数据由 Safari 自己管理，不包含在桥接快照中。Mac 启停同样会核验数据目录，避免误停其他资料实例。
+
 从 0.5.0 起，Windows 默认使用固定目录 `%LOCALAPPDATA%\DouyinCodexBridge\data`。它与源码、ZIP 解压位置和“启动助手.cmd”所在目录分开，因此更新代码、换启动入口、退出和重启不会换成一套空资料。面板“数据与恢复”显示实际位置。旧版首次升级会在新目录没有账号或记忆时迁移当前副本的 `data/`，保留旧目录，并修正视频与视觉证据的路径；请先停止旧程序。若有多个旧目录，应先选择包含完整资料的一份迁移，不自动覆盖已存在的记忆。
 
-设置和记录即时写入采用 FULL 同步的 SQLite；配置另有原子写入的 JSON 镜像与上次有效副本。程序启动、正常停止和运行中每 30 分钟生成状态快照，保留最近 32 份，也可点“备份配置与记录”。快照包含配置、需求、学习索引和任务记录；原片、画面和登录态保存在固定目录内。需要完整离线备份时，正常停止后复制整个固定数据目录。数据库损坏时停止启动，不用空库替代，也不静默回滚到旧快照重放任务。
+设置和记录即时写入采用 FULL 同步的 SQLite；配置另有原子写入的 JSON 镜像与上次有效副本。程序启动、正常停止和运行中每 30 分钟生成状态快照，保留最近 32 份，也可点“备份配置与记录”。快照包含配置、需求、学习索引和任务记录；原片和画面保存在固定目录内，Windows 登录资料也在其中，Mac 登录资料由 Safari 管理。需要完整离线备份时，正常停止后复制整个固定数据目录。数据库损坏时停止启动，不用空库替代，也不静默回滚到旧快照重放任务。
 
 重启会恢复抖音窗口、绑定会话和此前开启的监听；此前手动暂停的监听保持暂停。启动前的历史消息不会作为新指令重放。平台若主动使登录失效，仍需重新登录，但保存的模型、需求、名单与学习资料不受影响。Codex 使用本机自己的登录，不复制认证令牌。
 
@@ -178,7 +194,7 @@ npm run codex:login
 | 位置 | 用途 |
 | --- | --- |
 | `data/config.json`、`config.json.bak` | 用户绑定、目标名单与偏好的可读恢复副本；权威版本在数据库 |
-| `data/browser-profile/` | 自己的抖音登录资料 |
+| `data/browser-profile/` | Windows 的抖音登录资料；Mac 只保存专用 Safari 窗口的识别信息 |
 | `data/bridge.sqlite` | 配置、需求、消息、发件箱、任务和知识索引 |
 | `data/knowledge/` | 原视频、文字稿、连续画面、视觉记录和笔记 |
 | `data/needs/` | 私人的需求交接、完整交流导出和超长输入 |
@@ -207,6 +223,6 @@ npm run test:visual
 npm run test:routing
 ```
 
-这些真实模型检查会使用自己的 Codex 额度；组件测试通过不等于每个抖音账号的真实收发都已验收。跨聊天正在被桌面端占用时，桥接不会强抢；不明执行结果不会自动重做。
+CI 分别在 Windows 和 Apple 芯片 Mac 上构建，并核对两份发布包版本、源码清单和校验值一致。这些真实模型检查会使用自己的 Codex 额度；组件测试通过不等于每个抖音账号的真实收发都已验收。跨聊天正在被桌面端占用时，桥接不会强抢；不明执行结果不会自动重做。
 
 仓库源码采用 MIT；依赖、模型和视频工具保留各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

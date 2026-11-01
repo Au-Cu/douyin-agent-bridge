@@ -7,6 +7,7 @@ import { toPlainChatText,comparableChatText } from './chat-text.mjs';
 // Share-card extraction follows the publicly documented React message shape used by
 // Aaron-gx/douyin-fire-desktop; this module is an independent, receive-only-first adapter.
 export function scanConversation() {
+  const scope=this?.document?this:globalThis,document=scope.document,location=scope.location,innerWidth=scope.innerWidth,innerHeight=scope.innerHeight,getComputedStyle=scope.getComputedStyle.bind(scope);
   const visible=e=>!!(e&&e.getClientRects().length);
   const clean=v=>String(v??'').replace(/\s+/g,' ').trim();
   const id=v=>v==null?'':typeof v==='object'?(v.toString?.()!=='[object Object]'?String(v):''):String(v);
@@ -103,6 +104,7 @@ export function safeMediaUrl(value) {
 }
 
 export function inspectComposers() {
+  const scope=this?.document?this:globalThis,document=scope.document,innerWidth=scope.innerWidth,getComputedStyle=scope.getComputedStyle.bind(scope);
   return [...document.querySelectorAll('[contenteditable="true"],textarea')].map((el,index)=>{
     const rect=el.getBoundingClientRect();const clone=el.cloneNode(true);
     // Slate / Draft editors render their prompt inside the editable surface.
@@ -127,15 +129,17 @@ export function inspectChatSurface(){
 // Inspect only a visible message context menu. Emoji identity must come from
 // observable labels or a Unicode code point in the actual image URL.
 export function captureMessageMenu(){
-  globalThis.__douyinBridgeVisibleBefore=new WeakSet([...document.querySelectorAll('body *')].filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'));
+  const scope=this?.document?this:globalThis,document=scope.document,getComputedStyle=scope.getComputedStyle.bind(scope);
+  scope.__douyinBridgeVisibleBefore=new WeakSet([...document.querySelectorAll('body *')].filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'));
   // Keep the browser's own context menu from covering Douyin's reaction menu.
   // Do not stop propagation: the platform still handles its native web menu.
-  const listener=e=>{if(e.target?.closest('[data-bridge-message-id]'))e.preventDefault();queueMicrotask(()=>{globalThis.__douyinBridgeContextEvent={type:e.type,button:e.button,trusted:e.isTrusted,prevented:e.defaultPrevented,targetClass:String(e.target?.className).slice(0,120)};});};
-  globalThis.__douyinBridgeContextListener=listener;globalThis.__douyinBridgeContextEvent=null;document.addEventListener('contextmenu',listener,{once:true,capture:true});
+  const listener=e=>{if(e.target?.closest('[data-bridge-message-id]'))e.preventDefault();queueMicrotask(()=>{scope.__douyinBridgeContextEvent={type:e.type,button:e.button,trusted:e.isTrusted,prevented:e.defaultPrevented,targetClass:String(e.target?.className).slice(0,120)};});};
+  scope.__douyinBridgeContextListener=listener;scope.__douyinBridgeContextEvent=null;document.addEventListener('contextmenu',listener,{once:true,capture:true});
 }
 export function inspectReactionChoices(token) {
+  const scope=this?.document?this:globalThis,document=scope.document,getComputedStyle=scope.getComputedStyle.bind(scope);
   const visible=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(e).visibility!=='hidden';};
-  const before=globalThis.__douyinBridgeVisibleBefore;
+  const before=scope.__douyinBridgeVisibleBefore;
   const appeared=before?[...document.querySelectorAll('body *')].filter(e=>!before.has(e)&&visible(e)):[];
   const freshMenus=appeared.filter(e=>{if(e.closest('[class*="messageMessageBoxcontentBox"],[data-bridge-message-id]')&&!e.matches('[role="menu"]'))return false;const text=e.innerText||'';return ['回复','复制','分享','转发','多选','删除','撤回'].filter(word=>text.includes(word)).length>=2;});
   const roots=[...new Set([...document.querySelectorAll('[role="menu"],[role="dialog"],[class*="MessageOperatePopBody"],[class*="contextmenu" i],[class*="context-menu" i],[class*="messageOperation" i],[class*="messageMenu" i],[class*="messageAction" i],[class*="rightClick" i],[class*="floatingPanel" i],[class*="popover" i],[class*="popper" i]'),...freshMenus])]
@@ -156,10 +160,11 @@ export function inspectReactionChoices(token) {
     const index=choices.length;target.setAttribute('data-bridge-reaction-choice',token+'-'+index);
     choices.push({element:target,index,emoji,label:label.slice(0,80),selected:target.getAttribute('aria-pressed')==='true'||target.getAttribute('data-state')==='checked'});
   }
-  return {choices:choices.map(({element,...c})=>c),contextEvent:globalThis.__douyinBridgeContextEvent||null,menus:roots.map(r=>(r.innerText||'').trim().slice(0,200)).filter(Boolean).slice(0,5),appeared:appeared.filter(e=>!e.closest('[class*="messageMessageBoxcontentBox"],[data-bridge-message-id]')&&(e.matches('img,button,[role="button"]')||e.children.length===0)).slice(0,35).map(e=>({tag:e.tagName,className:String(e.className).slice(0,120),text:(e.innerText||e.getAttribute('aria-label')||e.getAttribute('alt')||e.getAttribute('title')||'').slice(0,60)}))};
+  return {choices:choices.map(({element,...c})=>c),contextEvent:scope.__douyinBridgeContextEvent||null,menus:roots.map(r=>(r.innerText||'').trim().slice(0,200)).filter(Boolean).slice(0,5),appeared:appeared.filter(e=>!e.closest('[class*="messageMessageBoxcontentBox"],[data-bridge-message-id]')&&(e.matches('img,button,[role="button"]')||e.children.length===0)).slice(0,35).map(e=>({tag:e.tagName,className:String(e.className).slice(0,120),text:(e.innerText||e.getAttribute('aria-label')||e.getAttribute('alt')||e.getAttribute('title')||'').slice(0,60)}))};
 }
 
 export function markMoreReactions(){
+  const scope=this?.document?this:globalThis,document=scope.document;
   const roots=[...document.querySelectorAll('[role="menu"],[class*="MessageOperatePopBody"],[class*="contextmenu" i],[class*="messageMenu" i]')].filter(e=>e.getClientRects().length);
   for(const root of roots){
     const options=[...root.querySelectorAll('button,[role="button"],[class*="expand" i],[class*="more" i]')].filter(e=>e.getClientRects().length);
@@ -181,6 +186,7 @@ export function markMoreReactions(){
 }
 
 export function inspectMessageReactions({messageId,emoji}) {
+  const scope=this?.document?this:globalThis,document=scope.document;
   const row=[...document.querySelectorAll('[data-bridge-message-id]')].find(e=>e.getAttribute('data-bridge-message-id')===messageId);
   if(!row)return {found:false,count:0};
   const visible=e=>!!e.getClientRects().length;
@@ -191,6 +197,7 @@ export function inspectMessageReactions({messageId,emoji}) {
 }
 
 export function markOwnerConversation(name){
+  const scope=this?.document?this:globalThis,document=scope.document;
   document.querySelectorAll('[data-bridge-owner-choice]').forEach(e=>e.removeAttribute('data-bridge-owner-choice'));
   const rows=[...document.querySelectorAll('[class*="conversationConversationItemwrapper"]')].filter(e=>e.getClientRects().length);
   const matches=rows.filter(e=>(e.innerText||'').split(/\n+/)[0].trim()===name);

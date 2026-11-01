@@ -1,4 +1,4 @@
-name: Windows source checks
+name: Windows and macOS source checks
 on:
   push:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -28,5 +28,73 @@ jobs:
           name: windows-source
           path: |
             dist/*-windows-source.zip
+            dist/SHA256SUMS-windows.txt
+            dist/source-manifest-windows.json
+          if-no-files-found: error
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      BRIDGE_TEST_BROWSER: chrome
+      BRIDGE_DATA_DIR: ${{ runner.temp }}/douyin-bridge-ci
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          architecture: arm64
+          cache: npm
+      - run: node -e "if(process.platform!=='darwin'||process.arch!=='arm64')process.exit(1)"
+      - run: npm ci --no-audit --no-fund
+      - run: node node_modules/@openai/codex/bin/codex.js --version
+      - run: npm run setup:runtime
+      - run: npm run setup:asr
+      - run: node scripts/mac-native-smoke.mjs
+      - run: node --test --test-concurrency=2 test/*.test.mjs
+      - run: npm run test:portable
+      - run: npm run release:check
+      - run: npm run release:build
+      - name: Verify macOS archive executable entry points
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/mac-source-check"
+          /usr/bin/ditto -x -k dist/*-macos-arm64-source.zip "$RUNNER_TEMP/mac-source-check"
+          test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/start-mac.command"
+          test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/install-mac.command"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: macos-arm64-source
+          path: |
+            dist/*-macos-arm64-source.zip
+            dist/SHA256SUMS-macos-arm64.txt
+            dist/source-manifest-macos-arm64.json
+          if-no-files-found: error
+  paired-release:
+    needs: [windows, macos-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v8.0.0
+        with:
+          name: windows-source
+          path: dist
+      - uses: actions/download-artifact@v8.0.0
+        with:
+          name: macos-arm64-source
+          path: dist
+      - run: node scripts/verify-release-pair.mjs dist
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: paired-source-release
+          path: |
+            dist/*.zip
             dist/SHA256SUMS.txt
+            dist/source-manifest-*.json
           if-no-files-found: error
