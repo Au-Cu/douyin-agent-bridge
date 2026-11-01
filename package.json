@@ -1,6 +1,6 @@
 {
   "name": "douyin-codex-bridge",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "private": true,
   "type": "module",
   "description": "抖音私信接入本机 Codex，视频学习与指定聊天任务转发",
