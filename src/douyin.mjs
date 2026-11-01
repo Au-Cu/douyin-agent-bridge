@@ -235,21 +235,23 @@ export class DouyinAdapter {
     }return {opened:true,frames};
   }
   async send(owner,text,{plainText=false}={}) {
+    checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');
-    this.sending=true;let submitted=false;
+    this.sending=true;let submitted=false,editor,surface,body;
     try {
       let scan=await this.scan();
       if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请先在浏览器选回绑定的用户会话');
-      const surface=this.chatFrame||this.page;
+      surface=this.chatFrame||this.page;
       const composer=(await surface.evaluate(inspectComposers))[0];
       if(!composer)throw new Error('未找到私信输入框，抖音页面可能已改版');
-      const editor=surface.locator('[contenteditable="true"],textarea').nth(composer.index);
+      editor=surface.locator('[contenteditable="true"],textarea').nth(composer.index);
       if(composer.text)throw new Error('私信输入框有未发送的草稿，请先处理草稿');
-      const body=plainText?String(text).trim():toPlainChatText(text);
-      await editor.click();await this.page.keyboard.insertText(body);
+      body=plainText?String(text).trim():toPlainChatText(text);
+      checkWork();await editor.click();checkWork();await this.page.keyboard.insertText(body);
       scan=await this.scan();
       if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
       const before=new Set(scan.messages.map(m=>m.id));
+      checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;
       submitted=true;
       await this.page.keyboard.press('Enter');
       for(let i=0;i<15;i++) {
@@ -258,7 +260,7 @@ export class DouyinAdapter {
         if(after.messages.some(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body)))return;
       }
       throw new UncertainDelivery('已按下发送，但未能确认回执；不会自动重复发送');
-    } catch(e){if(submitted)e.uncertain=true;throw e;} finally {this.sending=false;}
+    } catch(e){if(submitted)e.uncertain=true;else if(workSignal()?.aborted&&editor&&surface&&body){try{const scan=await this.scan(),draft=(await surface.evaluate(inspectComposers))[0];if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid&&draft?.text===body)await editor.fill('');}catch{}}throw e;} finally {this.sending=false;}
   }
   async react(owner,messageId,{probeOnly=false,emojis=['👌','👀','👍']}={}) {
     if(this.sending)throw new Error('正在发送上一条回复');
@@ -361,18 +363,21 @@ export class DouyinAdapter {
   }
   async composerState(){await this.scan();return this.chatFrame?this.chatFrame.evaluate(inspectComposers):[];}
   async resolveVideo(message) {
+    checkWork();const signal=workSignal();
     if(!/^\d{12,24}$/.test(message.awemeId))throw new Error('分享卡片没有有效的视频 ID，暂未读到视频正文');
     if(!this.context)throw new Error('请先登录抖音助手账号');
     const tab=await this.context.newPage();let found=null;
+    const abort=()=>tab.close().catch(()=>{});signal?.addEventListener('abort',abort,{once:true});
     const capture=async response=>{
       if(!/\/aweme\/(v\d+\/)?web\/aweme\/detail|\/aweme\/detail/.test(response.url()))return;
       try{const j=await response.json();const a=j.aweme_detail||j.data?.aweme_detail;if(String(a?.aweme_id)===message.awemeId)found=a;}catch{}
     };
     tab.on('response',capture);
     try {
-      await tab.goto('https://www.douyin.com/video/'+message.awemeId,{waitUntil:'domcontentloaded',timeout:60000});
+      await raceWork(tab.goto('https://www.douyin.com/video/'+message.awemeId,{waitUntil:'domcontentloaded',timeout:60000}));
       let src='';
       for(let i=0;i<30;i++) {
+        checkWork();
         if(found?.video?.play_addr?.url_list?.length)break;
         src=await tab.evaluate(()=>document.querySelector('video')?.currentSrc||'');
         if(safeMediaUrl(src))break;
@@ -382,18 +387,19 @@ export class DouyinAdapter {
       const url=[found?.video?.play_addr?.url_list?.[0],...urls,src,message.mediaUrl].find(safeMediaUrl);
       if(!url)throw new Error('视频正文获取失败：可能需要重新登录、处理验证，或该视频已不可访问');
       return {url,title:found?.desc||message.title||'抖音视频 '+message.awemeId,author:found?.author?.nickname||'',seconds:(found?.video?.duration||0)/1000,source:'https://www.douyin.com/video/'+message.awemeId};
-    } finally {await tab.close();}
+    } finally {signal?.removeEventListener('abort',abort);await tab.close();}
   }
   async download(url,destination,maxBytes=300*1024*1024) {
+    checkWork();const signal=workSignal();
     if(!safeMediaUrl(url))throw new Error('拒绝非抖音媒体地址');
     const cookies=await this.context.cookies(url);
-    const response=await fetch(url,{headers:{Referer:'https://www.douyin.com/', 'User-Agent':await this.page.evaluate(()=>navigator.userAgent),Cookie:cookies.map(c=>c.name+'='+c.value).join('; ')},signal:AbortSignal.timeout(180000)});
+    const response=await fetch(url,{headers:{Referer:'https://www.douyin.com/', 'User-Agent':await this.page.evaluate(()=>navigator.userAgent),Cookie:cookies.map(c=>c.name+'='+c.value).join('; ')},signal:AbortSignal.any([AbortSignal.timeout(180000),...(signal?[signal]:[])])});
     if(!response.ok)throw new Error('视频下载失败 HTTP '+response.status);
     if(!safeMediaUrl(response.url))throw new Error('视频下载跳转到了不支持的域名');
     if(Number(response.headers.get('content-length'))>maxBytes)throw new Error('视频超过本机处理上限 300 MB');
     const {open}=await import('node:fs/promises');const file=await open(destination+'.part','w');let size=0,head=Buffer.alloc(0);
     try {
-      for await(const chunk of response.body){size+=chunk.length;if(size>maxBytes)throw new Error('视频超过本机处理上限 300 MB');if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}
+      for await(const chunk of response.body){checkWork();size+=chunk.length;if(size>maxBytes)throw new Error('视频超过本机处理上限 300 MB');if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}
       if(!head.includes(Buffer.from('ftyp')))throw new Error('下载结果不是有效 MP4，未进行视频学习');
       await file.close();await rename(destination+'.part',destination);return size;
     } catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
@@ -401,3 +407,4 @@ export class DouyinAdapter {
   async close(){await this.context?.close();}
 }
 export class UncertainDelivery extends Error {constructor(message){super(message);this.uncertain=true;}}
+import {operationContext,checkWork,workSignal,raceWork} from './execution.mjs';

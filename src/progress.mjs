@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {parseCommand} from './commands.mjs';
 import {codexThreadUrl} from './archive.mjs';
+import {checkWork} from './execution.mjs';
 
 export const progressEmoji={roger:['👌'],active:['[奋斗]'],done:['🎉','✅','👍']};
 export const writerConflict=e=>e?.code==='THREAD_BUSY'||/\bactive writer\b|\bthread\b[^.\n]{0,100}\b(?:already (?:active|running)|busy)\b/i.test(String(e?.message||e||''));
@@ -9,7 +10,7 @@ export const explicitRedo=text=>{
   return /^(?:(?:请|麻烦你?|帮我|我要你?|我要求你?|现在|这次|给我|把.{0,20})\s*){0,3}(?:重新(?:做|执行|生成|分析)|重做|再做一遍|从头(?:做|来))/.test(s)||/(?:请|要求你|帮我|给我|麻烦你).{0,10}(?:重新(?:做|执行|生成|分析)|重做|再做一遍|从头(?:做|来))/.test(s);
 };
 export const requestKey=m=>m.kind==='video'?'video:'+m.awemeId:'text:'+String(m.text||'').normalize('NFKC').replace(/\s+/g,' ').trim().replace(/[。！!]+$/,'');
-const unfinished="'queued','running','sending','waiting','blocked','uncertain','failed_delivery'";
+const unfinished="'queued','running','sending','waiting','blocked','uncertain','failed_delivery','stopping'";
 const opColumns='id,peer,request,fingerprint,kind,need_id,status,phase,detail,created,started,changed,last_notice,ended,outcome,parent,thread,turn,submitted';
 export function operationTitle(value){const raw=String(value||'').replace(/\s+/g,' ').trim(),specific=String(value||'').match(/(?:具体任务|用户(?:的)?(?:原话|指示|指令))[:：]\s*([^\n]+)/)?.[1];const text=(specific||raw).replace(/^\/(?:派给|派|dispatch)\s+(\S+)\s+/,'$1：').replace(/^转发视频[:：]/,'学习视频：');const chars=Array.from(text||'未命名任务');return chars.slice(0,36).join('')+(chars.length>36?'…':'');}
 const followupSchema={type:'object',properties:{relation:{type:'string',enum:['duplicate','supplement','independent']},operationId:{type:'string'}},required:['relation','operationId'],additionalProperties:false};
@@ -35,6 +36,7 @@ export class Progress{
     for(const row of this.db.prepare("SELECT id,payload FROM outbox WHERE kind='progress_reaction' AND status='pending' AND json_extract(payload,'$.stage')='active'").all())this.store.mergeOutboxPayload(row.id,{emojis:progressEmoji.active});
     for(const row of this.db.prepare("SELECT id FROM operations WHERE kind<>'control' AND status<>'merged' AND number IS NULL ORDER BY created,rowid").all())this.identify(row.id);
     for(const row of this.db.prepare("SELECT id FROM operations WHERE status='done'").all())this.store.autoArchiveTask(row.id);
+    this.detachArchivedParents();
     codex.on('notification',m=>{
       if(!m.params?.threadId)return;const id=this.db.prepare("SELECT id FROM operations WHERE thread=? AND status='running' ORDER BY created DESC LIMIT 1").get(m.params.threadId)?.id;
       if(id)this.db.prepare('UPDATE operations SET changed=? WHERE id=?').run(this.now(),id);
@@ -44,6 +46,17 @@ export class Progress{
     });
   }
   get(id){return id?this.db.prepare('SELECT * FROM operations WHERE id=?').get(id):null;}
+  stopped(id){return !!id&&!!this.db.prepare('SELECT 1 FROM interruptions WHERE operation_id=?').get(id);}
+  detachArchivedParents(parentId){
+    const rows=this.db.prepare("SELECT o.id,o.parent,o.status,a.reason,p.status AS parent_status FROM operations o JOIN archive_records a ON a.kind='task' AND a.id=o.parent AND a.archived=1 JOIN operations p ON p.id=o.parent WHERE o.submitted=0 AND o.parent<>'' AND o.status IN ('queued','blocked','waiting')").all().filter(row=>!parentId||row.parent===parentId);if(!rows.length)return;
+    this.db.exec('BEGIN IMMEDIATE');try{for(const row of rows){
+      if(row.reason==='completed'&&row.parent_status==='done'){
+        this.db.prepare("UPDATE operations SET parent='',phase='原任务已完成，已有补充独立续做' WHERE id=?").run(row.id);this.db.prepare("UPDATE operation_messages SET relation='accepted' WHERE operation_id=? AND relation='supplement'").run(row.id);continue;
+      }
+      this.db.prepare("UPDATE operations SET parent='',status='blocked',phase='原任务已归档，补充已独立保存并暂停' WHERE id=?").run(row.id);this.db.prepare("UPDATE operation_messages SET relation='accepted' WHERE operation_id=? AND relation='supplement'").run(row.id);
+      this.store.messageStatus(row.id,'blocked','原任务已归档，补充已独立保存并暂停');this.db.prepare('INSERT OR REPLACE INTO task_waits VALUES(?,?,?,?,?,?,1)').run('message:'+row.id,row.id,'原任务已归档，补充已独立保存并暂停',this.now(),0,0);
+    }this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
+  }
   forMessage(id){const link=this.db.prepare('SELECT operation_id FROM operation_messages WHERE message_id=?').get(id);return link?this.get(link.operation_id):null;}
   open({includeArchived=false}={}){return this.db.prepare(`SELECT * FROM operations WHERE status IN (${unfinished}) ORDER BY created`).all().filter(o=>includeArchived||!this.store.isArchived('task',o.id));}
   identify(id,{announce=false}={}){
@@ -63,10 +76,11 @@ export class Progress{
   reaction(messageId,stage){
     const link=this.db.prepare('SELECT * FROM operation_messages WHERE message_id=?').get(messageId);if(!link||!/^\d{5,32}$/.test(link.platform_id))return;
     const op=this.get(link.operation_id);if(!op?.peer)return;
-    this.store.enqueueReply(op.peer,`进度：${stage==='roger'?'已收到':stage==='active'?'正在处理':'本项任务及回复均已完成'}`,{kind:'progress_reaction',priority:stage==='roger'?160:stage==='active'?150:110,dedupe:'progress:'+messageId+':'+stage,payload:{operationId:op.id,messageId:link.platform_id,stage,emojis:progressEmoji[stage],notification:true}});
+    this.store.enqueueReply(op.peer,`进度：${stage==='roger'?'已收到':stage==='active'?'正在处理':'本项任务及回复均已完成'}`,{kind:'progress_reaction',priority:(stage==='roger'?160:stage==='active'?150:110)+(parseCommand(op.request)?.name==='interrupt'?1000:0),dedupe:'progress:'+messageId+':'+stage,payload:{operationId:op.id,messageId:link.platform_id,stage,emojis:progressEmoji[stage],notification:true}});
   }
   reactAll(id,stage){for(const l of this.db.prepare('SELECT message_id FROM operation_messages WHERE operation_id=?').all(id))this.reaction(l.message_id,stage);}
   stage(id,phase,detail='',{running=false,thread,turn,submitted}={}){
+    if(this.stopped(id))return;
     const op=this.get(id);if(!op)return;
     const changed=phase!==op.phase||detail!==op.detail,now=this.now();
     this.db.prepare('UPDATE operations SET phase=?,detail=?,status=?,started=?,changed=?,thread=?,turn=?,submitted=? WHERE id=?').run(phase,String(detail).slice(0,500),running?'running':op.status,op.started||(running?now:0),now,thread||op.thread,turn||op.turn,submitted===undefined?op.submitted:Number(submitted),id);
@@ -75,7 +89,7 @@ export class Progress{
   }
   bind(id,needId,thread){this.db.prepare('UPDATE operations SET need_id=?,thread=? WHERE id=?').run(needId||'',thread||'',id);}
   finish(id,outcome='done'){
-    if(!id)return;const state=outcome==='done'?'sending':outcome==='waiting'?'waiting':outcome==='uncertain'?'uncertain':'failed';
+    if(!id||this.stopped(id))return;const state=outcome==='done'?'sending':outcome==='waiting'?'waiting':outcome==='uncertain'?'uncertain':'failed';
     this.db.prepare('UPDATE operations SET ended=1,outcome=?,status=?,changed=? WHERE id=?').run(outcome,state,this.now(),id);
     this.sync(id);
   }
@@ -85,6 +99,7 @@ export class Progress{
   }
   tasks(id){return this.db.prepare("SELECT * FROM tasks WHERE json_extract(context,'$.operationId')=? ORDER BY created").all(id);}
   sync(id){
+    if(this.stopped(id))return;
     const op=this.get(id);if(!op||['merged','done'].includes(op.status))return;
     const parts=this.resultParts(id),tasks=this.tasks(id);
     const noticesPending=this.db.prepare("SELECT 1 FROM outbox WHERE json_extract(payload,'$.operationId')=? AND kind='text' AND status IN ('pending','sending','uncertain') LIMIT 1").get(id);
@@ -94,16 +109,19 @@ export class Progress{
     if(op.outcome==='done'&&!tasks.some(t=>t.status==='failed')&&!parts.pending&&!noticesPending){
       this.db.prepare("UPDATE operations SET status='done',phase='任务及回复全部完成',changed=? WHERE id=?").run(this.now(),id);this.reactAll(id,'done');
       this.store.autoArchiveTask(id);
+      this.detachArchivedParents(id);
     }else if(parts.pending&&op.outcome==='done')this.db.prepare("UPDATE operations SET status='sending',phase='结果已生成，正在分段发送' WHERE id=?").run(id);
   }
   status(id){
     const op=this.get(id);if(!op)return '暂无可核验的任务记录';
+    const stop=this.db.prepare('SELECT * FROM interruptions WHERE operation_id=?').get(id);if(stop)return stop.state==='stopped'?'用户已中断，后续执行及未发送的回复已停止。':stop.state==='stopping'?'正在强制中断对应任务，核对 Codex 与本地工作是否停止。':'本地处理已切断，Codex 停止结果暂时无法确认；保留现场，不会自动重跑。';
     const parts=this.resultParts(id),tasks=this.tasks(id),wait=tasks.map(t=>this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(t.id)).find(Boolean)||this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get('message:'+id);
     if(parts.uncertain)return '回复已生成，但有分段送达结果不明，需要核实；不会自动重发。';
     if(tasks.some(t=>t.status==='uncertain')||op.status==='uncertain')return '暂时无法确认运行状态。已经提交的任务不会自动重跑。';
     if(wait){const retryId=op.number||(wait.task_id.startsWith('message:')?createHash('sha256').update(op.id).digest('hex').slice(0,8):wait.task_id.slice(0,8));return `${wait.paused?'调度已暂停':'排队受阻'}：${wait.reason}。${wait.paused?'处理冲突后用 /重试 '+retryId+' 恢复；尚未提交执行。':'尚未提交，稍后按退避间隔重试。'}`;}
     if(this.codex.ready===false&&op.submitted&&(!op.ended||tasks.some(t=>t.status==='running')))return '暂时无法确认运行状态；Codex 连接不可用。';
     if(op.submitted&&(!op.ended||tasks.some(t=>t.status==='running'))&&this.now()-op.changed>=this.stallAfter)return this.checks.get(id)?.state==='active'?`Codex 报告仍在运行，较长时间没有新结果。最近阶段：${op.phase}。`:'暂时无法确认运行状态；已提交的执行保留现场，不会自动重跑。';
+    if(op.parent&&this.stopped(op.parent))return '原任务已中断，补充要求已保留并暂停；需明确重试此补充或发起新的独立要求。';
     if(op.parent&&this.get(op.parent)?.status!=='done')return '补充要求已保存，正在等待原要求执行及全部回复结束；原要求若需核实，补充也保持等待。';
     if(parts.pending&&op.ended&&tasks.every(t=>t.status==='done')){const next=parts.rows.find(r=>['pending','sending'].includes(r.status)),p=JSON.parse(next?.payload||'{}');return `结果已生成，正在发送第 ${p.segment||Math.min(parts.total,parts.sent+1)}/${p.totalSegments||parts.total} 段。`;}
     if(tasks.some(t=>t.status==='running'))return op.phase+(op.detail?'，'+op.detail:'')+'；其余 '+tasks.filter(t=>t.status==='queued').length+' 项待处理。';
@@ -119,15 +137,17 @@ export class Progress{
     this.db.prepare('UPDATE operations SET last_notice=? WHERE id=?').run(this.now(),id);
   }
   async triage(message){
+    checkWork();this.detachArchivedParents();
     const previous=this.db.prepare('SELECT * FROM operation_messages WHERE message_id=?').get(message.id);
     if(previous&&['accepted','supplement','duplicate'].includes(previous.relation))return {relation:previous.relation,operationId:previous.operation_id,parent:this.get(previous.operation_id)?.parent};
     const own=this.receive(message);if(explicitRedo(message.text)){this.identify(own.id,{announce:true});return {relation:'new',operationId:own.id};}
-    const candidates=this.open({includeArchived:true}).filter(o=>o.kind!=='control'&&o.id!==own.id&&o.peer===own.peer&&(!o.need_id||!own.need_id||o.need_id===own.need_id)&&o.parent!==own.id);
+    const candidates=this.open().filter(o=>!this.stopped(o.id)&&o.kind!=='control'&&o.id!==own.id&&o.peer===own.peer&&(!o.need_id||!own.need_id||o.need_id===own.need_id)&&o.parent!==own.id);
     let match=candidates.find(o=>o.fingerprint===own.fingerprint),relation=match?'duplicate':'independent';
     if(!match&&candidates.length===1&&/^(怎么(?:还|一直)|为什么(?:还|一直)|还没(?:好|完成|执行)|进度(?:呢|如何)|做到哪|处理完了吗|快点|继续处理|催一下)[\s\S]{0,22}[？?！!。]*$/.test(message.text||'')){match=candidates[0];relation='duplicate';}
     if(!match&&candidates.length&&this.classify&&message.kind==='text'){
       try{const result=JSON.parse((await this.classify({newMessage:message.text,activeRequests:candidates.slice(-4).map(o=>({id:o.id,request:o.request.slice(0,1500),state:this.status(o.id)}))},followupSchema)).text);match=candidates.find(o=>o.id===result.operationId);if(match&&['duplicate','supplement'].includes(result.relation))relation=result.relation;else match=null;}catch{match=null;}
     }
+    checkWork();if(match&&(this.store.isArchived('task',match.id)||this.stopped(match.id)))match=null;
     if(match&&relation==='duplicate'){
       this.db.prepare("UPDATE operation_messages SET operation_id=?,relation='duplicate' WHERE message_id=?").run(match.id,message.id);
       this.db.prepare("UPDATE operations SET status='merged',ended=1 WHERE id=?").run(own.id);
@@ -142,7 +162,7 @@ export class Progress{
     this.identify(own.id,{announce:true});
     return {relation:match?relation:'independent',operationId:own.id,parent:match?.id};
   }
-  canRun(id){if(this.store.isArchived('task',id))return false;const op=this.get(id);if(!op?.parent)return true;const parent=this.get(op.parent);return parent?.status==='done';}
+  canRun(id){if(this.store.isArchived('task',id)||this.stopped(id))return false;this.detachArchivedParents();if(!this.mayAttempt({id:'message:'+id}))return false;const op=this.get(id);if(!op?.parent)return true;const parent=this.get(op.parent);return !this.stopped(parent?.id)&&parent?.status==='done';}
   taskBlocked(task,reason){
     const context=JSON.parse(task.context||'{}'),id=context.operationId,old=this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(task.id),now=this.now(),attempts=(old?.attempts||0)+1,since=old?.since||now,paused=now-since>=this.writerLimit||attempts>=6;
     this.db.prepare('INSERT OR REPLACE INTO task_waits VALUES(?,?,?,?,?,?,?)').run(task.id,id||'',reason,since,attempts,now+Math.min(60000,10000*2**(attempts-1)),Number(paused));
@@ -155,9 +175,11 @@ export class Progress{
   retry(value){
     const numeric=String(value).trim().replace(/^任务\s*/,'').replace(/^#/,'');
     const archived=/^\d+$/.test(numeric)?this.db.prepare('SELECT id FROM operations WHERE number=?').get(Number(numeric)):this.get(numeric);if(archived&&this.store.isArchived('task',archived.id))throw new Error('任务已归档，请先 /恢复任务 '+numeric+'，再明确重试。');
+    if(archived&&this.stopped(archived.id))throw new Error('任务已中断，不能恢复旧执行；需要时请明确发送新的要求。');
     if(/^\d+$/.test(numeric)){
       const op=this.db.prepare('SELECT * FROM operations WHERE number=?').get(Number(numeric));
       if(op){const tasks=this.tasks(op.id);if(op.status==='uncertain'||op.status==='failed_delivery'||tasks.some(t=>t.status==='uncertain'))throw new Error('任务 '+op.number+' 的执行或送达结果不明，需先核实，不能自动重跑。');
+        if(op.parent&&this.stopped(op.parent)&&!op.submitted)this.db.prepare("UPDATE operations SET parent='' WHERE id=?").run(op.id);
         if(this.db.prepare('SELECT 1 FROM task_waits WHERE task_id=?').get('message:'+op.id)&&!op.submitted){this.clearWait('message:'+op.id);this.store.messageStatus(op.id,'new');this.db.prepare("UPDATE operations SET status='queued',phase='恢复未提交要求的调度' WHERE id=?").run(op.id);return op.id;}
         const pending=tasks.filter(t=>['queued','blocked'].includes(t.status)&&!t.turn);if(!pending.length)throw new Error('任务 '+op.number+' 没有可安全重试的未提交工作。');for(const t of pending){this.clearWait(t.id);this.store.taskStatus(t.id,'queued','用户要求恢复未提交任务');}return op.id;
       }if(numeric.length<8)throw new Error('没有找到任务 '+numeric+'，发送 /状态 查看编号与标题。');
@@ -205,7 +227,7 @@ export class Progress{
       const receipts=['roger','active','done'].map(stage=>{const group=rows.filter(r=>r.kind==='progress_reaction'&&JSON.parse(r.payload||'{}').stage===stage);return {stage,total:group.length,sent:group.filter(r=>r.status==='sent').length,pending:group.filter(r=>['pending','sending'].includes(r.status)).length,uncertain:group.filter(r=>r.status==='uncertain').length,unavailable:group.filter(r=>r.status==='unavailable').length,errors:[...new Set(group.filter(r=>r.error&&r.status!=='sent').map(r=>r.error))]};});
       const tasks=this.tasks(op.id),parent=this.get(op.parent),needId=op.need_id||parent?.need_id,links=new Map(),assistant=needId&&this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='needs'").get()?this.db.prepare('SELECT thread FROM needs WHERE id=?').get(needId)?.thread:null;
       for(const [id,label] of [[assistant,'需求对话'],[parent?.thread,'原任务对话'],...this.tasks(parent?.id||'').map(t=>[t.thread,'原任务目标：'+t.alias]),[op.thread,'本轮对话'],...tasks.map(t=>[t.thread,'目标：'+t.alias])])if(codexThreadUrl(id))links.set(id,{label,url:codexThreadUrl(id)});
-      return {id:op.id,number:op.number,title:op.title||operationTitle(op.request),kind:op.kind,status:op.status,archived:!!op.archived,links:[...links.values()],detail:this.status(op.id),receipts,replies:rows.filter(r=>r.kind==='text').map(r=>({id:r.id,status:r.status,error:r.error,notification:!!JSON.parse(r.payload||'{}').notification})),targets:tasks.map(t=>({alias:t.alias,status:t.status,result:t.result?.slice(0,300)}))};
+      return {id:op.id,number:op.number,title:op.title||operationTitle(op.request),kind:op.kind,status:op.status,canInterrupt:op.kind!=='control'&&!this.stopped(op.id)&&['queued','running','sending','waiting','blocked','uncertain','failed_delivery'].includes(op.status),archived:!!op.archived,links:[...links.values()],detail:this.status(op.id),receipts,replies:rows.filter(r=>r.kind==='text').map(r=>({id:r.id,status:r.status,error:r.error,notification:!!JSON.parse(r.payload||'{}').notification})),targets:tasks.map(t=>({alias:t.alias,status:t.status,result:t.result?.slice(0,300)}))};
     });
   }
 }

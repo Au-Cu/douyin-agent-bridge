@@ -46,7 +46,7 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.6.0',projectRoot:project,dataRoot,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.7.0',projectRoot:project,dataRoot,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const needScope=archiveScope(url.searchParams.get('needs')),knowledgeScope=archiveScope(url.searchParams.get('knowledge')),workScope=archiveScope(url.searchParams.get('work')),status=url.searchParams.get('status')||'all';if(!taskStatuses.has(status))throw new Error('未知任务状态');
@@ -81,6 +81,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(req.method!=='POST')return json(res,{error:'未找到接口'},404);
       const body=await jsonBody(req);
+      if(path==='/api/tasks/interrupt')return json(res,await engine.interrupts.request(String(body.id||'')));
       if(path==='/api/ui/panels')return json(res,{panels:updatePanels(store,body)});
       if(path==='/api/archive'){
         if(typeof body.archived!=='boolean')throw new Error('请明确指定归档或恢复');
@@ -194,5 +195,5 @@ if(store.config.owner&&existsSync(join(store.root,'browser-profile')))adapter.op
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
-async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();codex.close();await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
+async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();codex.close();await Promise.allSettled([...engine.interrupts.requests.values()]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

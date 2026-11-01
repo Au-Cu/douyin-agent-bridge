@@ -4,6 +4,7 @@ import {assistantInstructions} from './prompts.mjs';
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {authFailure} from './codex-auth.mjs';
+import {checkWork,raceWork} from './execution.mjs';
 const schema=(properties)=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str={type:'string'},strings={type:'array',items:str};
 export const routeSchema=schema({action:{type:'string',enum:['continue','new','recall','clarify']},needId:str,title:str,reason:str,question:str});
@@ -19,6 +20,7 @@ export class Conversations{
   }
   capture(){return {needId:this.store.config.activeNeed,epoch:this.store.config.needEpoch||0,recent:this.needs.recent(null,4).map(r=>({owner:r.owner_text.slice(0,500),assistant:r.reply.slice(0,700)}))};}
   async lightCall(role,payload,outputSchema){
+    checkWork();
     const input=[{type:'text',text:JSON.stringify(payload)}],settings=await this.preferences.light();
     try{return await this.codex.runEphemeral(input,{role,...settings,outputSchema,timeoutMs:60000,interruptOnTimeout:true});}
     catch(e){
@@ -48,8 +50,10 @@ export class Conversations{
     this.needs.activate(n.id);
   }
   async create(title='新需求',{activate=true}={}){
+    checkWork();
     const settings=await this.preferences.work(),n=this.needs.create(String(title||'新需求').slice(0,60));
     const thread=await this.codex.createCoordinator(coordinatorTools,false,{name:'抖音 · '+n.title,...settings});
+    checkWork();
     const result=this.needs.bindThread(n.id,thread);if(activate)this.needs.activate(n.id);return result;
   }
   async switchTo(id){await this.ensureLegacy();const n=this.needs.lookup(id);if(!n.thread)throw new Error('该需求尚未完成会话创建，请重新新建需求。');this.needs.activate(n.id);return n;}
@@ -70,6 +74,7 @@ export class Conversations{
       const newMessage=message.kind==='video'?{kind:'video',title:learned?.title||message.title,videoId:message.awemeId,visualCoverage:learned?.visual?{status:learned.visual.status,seconds:learned.seconds,fps:learned.visual.fps}:null,observedContent:indices.length?indices.map(i=>({start:segments[i].start,end:segments[i].end,observation:segments[i].text.slice(0,160)})):learned?.visual?.notes?.slice(0,2200),narration:learned?.transcript?.slice(0,500)}:{kind:'text',text:message.text};
       const payload={newMessage,recentExchanges:capture.recent,currentNeed:current?{id:current.id,title:current.title,summary:memoryText(current.memory).slice(0,1800),summaryIncomplete:current.version!==current.summary_version}:null,needDirectory:directory};
       const result=await this.lightCall('router',payload,routeSchema);
+      checkWork();
       decision=parse(result.text);
       if(!['continue','new','recall','clarify'].includes(decision.action))throw new Error('需求路由类型无效，暂不执行。');
       if(decision.action==='clarify')return {clarify:true,question:String(decision.question||'请用 /切换 需求ID 指定要继续的需求，或 /新建 标题 开始独立需求。').slice(0,350)};
@@ -81,7 +86,7 @@ export class Conversations{
       if(need&&need.version===0&&!this.needs.knowledge(need.id).length){this.needs.rename(need.id,decision.title||'新需求');need=this.needs.get(need.id);}
       else need=await this.create(decision.title||message.title||'新需求',{activate:false});
     }
-    if((this.store.config.needEpoch||0)===capture.epoch||!this.store.config.activeNeed)this.needs.activate(need.id);
+    checkWork();if((this.store.config.needEpoch||0)===capture.epoch||!this.store.config.activeNeed)this.needs.activate(need.id);
     this.needs.attach(need.id,learned?.id);this.needs.saveRoute(message.id,need,decision.action,decision.reason||'');
     this.store.event(`需求路由：${decision.action} → ${need.title.slice(0,40)} (${need.id})`);
     return this.ready(message,need,decision.action,decision.reason);
@@ -115,7 +120,7 @@ export class Conversations{
     const thread=await this.codex.createCoordinator(coordinatorTools,false,{name:`抖音 · ${need.title} · ${need.seq+1}`,...await this.preferences.work()});
     const next=this.needs.bindThread(need.id,thread,handoff);await this.codex.request('thread/unsubscribe',{threadId:need.thread},5000).catch(()=>{});this.store.event('上下文预算触发交接：'+need.title.slice(0,40));return next;
   }
-  context(route){const n=this.needs.get(route.needId),thread=this.store.db.prepare('SELECT handoff FROM need_threads WHERE thread=?').get(n.thread),legacy=join(this.needs.root,n.id,'legacy-thread.json'),hasOperations=this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'").get(),requests=hasOperations?this.store.db.prepare("SELECT number,title,status,phase FROM operations WHERE need_id=? AND kind<>'control' AND status<>'merged' ORDER BY number DESC LIMIT 8").all(n.id):[];return {needId:n.id,needNumber:n.number,title:n.title,memory:n.memory,summaryIncomplete:n.version!==n.summary_version,historyPath:route.historyPath,handoffPath:thread?.handoff||undefined,requests,tasks:this.needs.taskState(n.id).map(t=>({...t,result:t.result.slice(0,1000)})),...(existsSync(legacy)?{legacyHistoryPath:legacy,legacySummaryScope:'较早要求请核对完整历史记录'}:{})};}
+  context(route){const n=this.needs.get(route.needId),thread=this.store.db.prepare('SELECT handoff FROM need_threads WHERE thread=?').get(n.thread),legacy=join(this.needs.root,n.id,'legacy-thread.json'),hasOperations=this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'").get(),requests=hasOperations?this.store.db.prepare("SELECT number,title,status,phase FROM operations WHERE need_id=? AND kind<>'control' AND status<>'merged' AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=operations.id AND a.archived=1) AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=operations.id) ORDER BY number DESC LIMIT 8").all(n.id):[];return {needId:n.id,needNumber:n.number,title:n.title,memory:n.memory,summaryIncomplete:n.version!==n.summary_version,historyPath:route.historyPath,handoffPath:thread?.handoff||undefined,requests,tasks:this.needs.taskState(n.id,8,{activeOnly:true}).map(t=>({...t,result:t.result.slice(0,1000)})),...(existsSync(legacy)?{legacyHistoryPath:legacy,legacySummaryScope:'较早要求请核对完整历史记录'}:{})};}
   related(id,query='',limit=6){return this.needs.knowledge(id,query,limit);}
   record(messageId,reply,usage,inputTokens=0){
     const n=this.needs.complete(messageId,reply);if(!n)return;
@@ -129,6 +134,7 @@ export class Conversations{
       const n=this.needs.get(id),recent=this.store.db.prepare('SELECT * FROM need_turns WHERE need_id=? AND revision>? ORDER BY revision LIMIT 3').all(id,n.summary_version);if(!recent.length)return;
       const payload={previous:n.memory,exchanges:recent.map(r=>({owner:r.owner_text,assistant:r.reply,status:r.status})),references:this.related(id,'',12).map(k=>({id:k.id,title:k.title,path:k.path}))};
       const result=await this.lightCall('memory',payload,memorySchema);const memory=parse(result.text);if(!validMemory(memory))throw new Error('交接摘要格式或长度无效');
+      checkWork();
       if(!this.needs.saveMemory(id,memory,recent.at(-1).revision,n.version))return;
     }}
     catch(e){this.store.event('需求摘要未更新，完整原文已保留，续接时会标记待核对','attention');}

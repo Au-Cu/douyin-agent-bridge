@@ -1,5 +1,5 @@
 export const archiveScopes=new Set(['current','archived','all']);
-export const taskStatuses=new Set(['all','queued','running','blocked','uncertain','done','cancelled','failed','waiting','sending','failed_delivery']);
+export const taskStatuses=new Set(['all','queued','running','blocked','uncertain','done','cancelled','failed','waiting','sending','failed_delivery','stopping']);
 export const archiveScope=value=>{const scope=value||'current';if(!archiveScopes.has(scope))throw new Error('归档范围必须为 current、archived 或 all');return scope;};
 export const codexThreadUrl=id=>/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(String(id||''))?'codex://threads/'+encodeURIComponent(id):null;
 
@@ -11,7 +11,7 @@ export class Archives{
   }
   task(value){const raw=String(value).trim().replace(/^任务\s*/,'');const op=/^\d+$/.test(raw)?this.db.prepare('SELECT * FROM operations WHERE number=?').get(Number(raw)):this.progress.get(raw);if(!op)throw new Error('未找到该任务，请使用任务编号。');return op;}
   archiveTask(value,{reason='manual'}={}){
-    const op=this.task(value);if(this.store.isArchived('task',op.id))return op;
+    const op=this.task(value);if(this.store.isArchived('task',op.id)){this.progress.detachArchivedParents(op.id);return op;}
     const meta={status:op.status,phase:op.phase};this.db.exec('BEGIN IMMEDIATE');
     try{
       this.store.setArchived('task',op.id,true,{reason,meta});
@@ -26,7 +26,7 @@ export class Archives{
         this.db.prepare("UPDATE operations SET status='blocked',phase='已归档，未提交工作暂停' WHERE id=?").run(op.id);
       }
       this.db.exec('COMMIT');
-    }catch(e){this.db.exec('ROLLBACK');throw e;}return this.progress.get(op.id);
+    }catch(e){this.db.exec('ROLLBACK');throw e;}this.progress.detachArchivedParents(op.id);return this.progress.get(op.id);
   }
   restoreTask(value){const op=this.task(value);this.store.setArchived('task',op.id,false,{reason:'restored'});return op;}
   knowledge(id,archived){const item=this.store.knowledge(String(id));if(!item)throw new Error('学习资料不存在');this.store.setArchived('knowledge',item.id,archived,{reason:archived?'manual':'restored'});return item;}

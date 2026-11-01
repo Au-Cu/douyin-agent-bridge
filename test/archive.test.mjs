@@ -73,7 +73,7 @@ test('学习资料归档保留原片笔记和原需求引用；恢复不改变�
 });
 test('配置首次保存折叠；手动展开优先并跨重启保留，未配置卡片保持展开',()=>{
   const h=fixture(),root=h.s.root;try{
-    assert.equal(!!h.s.config.uiPanels.setup,false);configurePanel(h.s,'model');configurePanel(h.s,'targets');configurePanel(h.s,'setup');assert.deepEqual(h.s.config.uiPanels,{model:true,targets:true,setup:true});
+    assert.equal(!!h.s.config.uiPanels.setup,false);assert.equal(h.s.config.uiPanels.storage,true);configurePanel(h.s,'model');configurePanel(h.s,'targets');configurePanel(h.s,'setup');assert.deepEqual(h.s.config.uiPanels,{model:true,targets:true,setup:true,storage:true});
     updatePanels(h.s,{model:false,targets:false});configurePanel(h.s,'model');configurePanel(h.s,'targets');assert.equal(h.s.config.uiPanels.model,false);assert.throws(()=>updatePanels(h.s,{bogus:true}),/无效/);
     h.s.close();const restored=fixture(root);try{assert.equal(restored.s.config.uiPanels.model,false);assert.equal(restored.s.config.uiPanels.setup,true);}finally{restored.s.close();}
   }finally{if(h.s.db.isOpen)h.s.close();}
@@ -86,5 +86,12 @@ test('归档命令指明对象；快捷链接只使用实际合法 Codex 聊天 
     const card=h.e.progress.cards()[0];assert.ok(card.links.some(l=>l.url===codexThreadUrl(target)));assert.ok(card.links.some(l=>l.url===codexThreadUrl(n.thread)));
     const follow=h.message('补充修改');h.e.progress.db.prepare('UPDATE operations SET parent=? WHERE id=?').run(m.id,follow.id);assert.ok(h.e.progress.cards().find(w=>w.id===follow.id).links.some(l=>l.url===codexThreadUrl(target)&&l.label.startsWith('原任务目标')));
     assert.match(await h.e.handleSettingCommand(parseCommand('/归档任务 1')),/已归档/);assert.match(await h.e.handleSettingCommand(parseCommand('/恢复任务 1')),/已恢复/);assert.equal(h.s.queuedTasks().length,0);
+  }finally{h.s.close();}
+});
+
+test('归档任务移出模型的活跃清单，完整历史证据仍保留',async()=>{
+  const h=fixture();try{
+    const need=await h.manager.create('历史边界'),message=h.message('旧任务'),target=await h.c.createCoordinator();const task=h.s.createTask('目标',target,'旧授权',{needId:need.id,operationId:message.id});h.e.archives.archiveTask('1');
+    const context=h.manager.context({needId:need.id,historyPath:h.manager.needs.history(need.id)});assert.equal(context.requests.some(r=>r.number===1),false);assert.equal(context.tasks.some(t=>t.id===task),false);const history=JSON.parse(readFileSync(h.manager.needs.history(need.id),'utf8'));assert.ok(history.tasks.some(t=>t.id===task));
   }finally{h.s.close();}
 });

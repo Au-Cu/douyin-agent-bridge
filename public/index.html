@@ -3,7 +3,7 @@
 <body><main>
   <header><div><span class="eyebrow">LOCAL BRIDGE</span><h1>抖音 × Codex</h1><p>把视频交给助手，让学习接着变成行动。</p></div><span id="liveBadge" class="badge">正在连接</span></header>
   <div id="notice" role="status"></div>
-  <section class="panel"><div class="section-title"><h2>数据与恢复</h2><button id="backupNow" class="secondary">备份配置与记录</button></div><p id="storagePath" class="hint">正在读取固定数据目录…</p><p id="backupInfo" class="hint">已保存的设置即时写入磁盘，无需等退出程序；原视频、画面、需求记忆和抖音登录态保存在同一固定目录。</p></section>
+  <details class="panel config-panel" id="storagePanel" data-panel="storage"><summary><span>数据与恢复</span><small>配置与资料自动保存 · 展开查看备份</small></summary><div class="button-row panel-tools"><button id="backupNow" class="secondary">备份配置与记录</button></div><p id="storagePath" class="hint">正在读取固定数据目录…</p><p id="backupInfo" class="hint">已保存的设置即时写入磁盘，无需等退出程序；原视频、画面、需求记忆和抖音登录态保存在同一固定目录。</p></details>
   <section class="status-grid"><article><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录助手账号，再选中你的会话</small></article><article><span>Codex</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small></article><article><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
   <details class="panel setup config-panel" id="setupPanel" data-panel="setup" open><summary><span>连接助手</span><small id="setupSummary">首次连接完成这三步</small></summary>
     <div class="steps"><div><b>01</b><h3>连接抖音助手账号</h3><p>首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。</p><button id="openBrowser">打开抖音窗口</button></div>

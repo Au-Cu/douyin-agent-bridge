@@ -1,4 +1,4 @@
-const panels=new Set(['setup','model','targets']);
+const panels=new Set(['setup','model','targets','storage']);
 export function configurePanel(store,key){
   if(!panels.has(key))throw new Error('未知配置卡片');
   if(!store.config.uiConfigured?.[key])store.saveConfig({uiConfigured:{...store.config.uiConfigured,[key]:true},uiPanels:{...store.config.uiPanels,[key]:true}});

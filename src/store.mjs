@@ -18,6 +18,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS archive_records(kind TEXT,id TEXT,archived INTEGER NOT NULL DEFAULT 0,desired INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'done',error TEXT NOT NULL DEFAULT '',reason TEXT NOT NULL DEFAULT '',meta TEXT NOT NULL DEFAULT '{}',changed INTEGER NOT NULL,PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS archive_jobs(need_id TEXT,thread TEXT,direction INTEGER,status TEXT,error TEXT,changed INTEGER,PRIMARY KEY(need_id,thread,direction));
+      CREATE TABLE IF NOT EXISTS interruptions(operation_id TEXT PRIMARY KEY,state TEXT,requested INTEGER,updated INTEGER,error TEXT);
       CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, peer TEXT, kind TEXT, body TEXT, status TEXT, result TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS knowledge(id TEXT PRIMARY KEY, title TEXT, transcript TEXT, summary TEXT, path TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, alias TEXT, thread TEXT, prompt TEXT, status TEXT, turn TEXT, result TEXT, created INTEGER);
@@ -44,6 +45,8 @@ export class Store {
     if(!this.config.uiPanels)this.config.uiPanels={model:!!(saved.model||saved.reasoningEffort||saved.fastMode||saved.autoRoute===false||saved.contextBudget&&saved.contextBudget!==48000),targets:!!saved.targets?.length};
     if(!this.config.uiConfigured)this.config.uiConfigured={model:!!(saved.model||saved.reasoningEffort||saved.fastMode||saved.autoRoute===false||saved.contextBudget&&saved.contextBudget!==48000),targets:!!saved.targets?.length};
     for(const key of ['model','targets'])if(this.config.uiConfigured[key]&&!(key in this.config.uiPanels))this.config.uiPanels[key]=true;
+    if(!('storage' in this.config.uiPanels))this.config.uiPanels.storage=true;
+    if(typeof this.config.ignoreMessages!=='boolean')this.config.ignoreMessages=false;
     this.saveConfig({});
     if(this.recovery)this.event(this.recovery,'attention');
     }catch(e){try{this.db?.close();}catch{}this.unlock();throw e;}
@@ -65,7 +68,7 @@ export class Store {
       .run(message.id,message.peer,message.kind,JSON.stringify(message),'new','',Date.now()).changes > 0;
   }
   messageStatus(id,status,result='') { this.db.prepare('UPDATE messages SET status=?,result=? WHERE id=?').run(status,result,id); }
-  pendingMessages() { return this.db.prepare("SELECT m.* FROM messages m WHERE m.status='new' AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=m.id AND a.archived=1) ORDER BY m.created LIMIT 20").all(); }
+  pendingMessages() { return this.db.prepare("SELECT m.* FROM messages m WHERE m.status='new' AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=m.id) AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=m.id AND a.archived=1) ORDER BY m.created LIMIT 20").all(); }
   addKnowledge(item) {
     this.db.prepare('INSERT OR REPLACE INTO knowledge VALUES(?,?,?,?,?,?)').run(item.id,item.title,item.transcript||'',item.summary||'',item.path,Date.now());
   }
@@ -84,7 +87,7 @@ export class Store {
     return id;
   }
   taskStatus(id,status,result='',turn='') { this.db.prepare('UPDATE tasks SET status=?,result=?,turn=CASE WHEN ?=\'\' THEN turn ELSE ? END WHERE id=?').run(status,result,turn,turn,id); }
-  queuedTasks() { return this.db.prepare("SELECT t.* FROM tasks t WHERE t.status='queued' AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=json_extract(t.context,'$.operationId') AND a.archived=1) ORDER BY t.created LIMIT 20").all(); }
+  queuedTasks() { return this.db.prepare("SELECT t.* FROM tasks t WHERE t.status='queued' AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=json_extract(t.context,'$.operationId')) AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=json_extract(t.context,'$.operationId') AND a.archived=1) ORDER BY t.created LIMIT 20").all(); }
   knowledgeList({scope='current',limit=100}={}){const where=scope==='all'?'1=1':scope==='archived'?'COALESCE(a.archived,0)=1':'COALESCE(a.archived,0)=0';return this.db.prepare("SELECT k.*,COALESCE(a.archived,0) AS archived FROM knowledge k LEFT JOIN archive_records a ON a.kind='knowledge' AND a.id=k.id WHERE "+where+' ORDER BY k.created DESC LIMIT ?').all(limit);}
   enqueueReply(peer,body,{kind='text',payload={},priority=0,dedupe=''}={}) {
     const id=randomUUID();

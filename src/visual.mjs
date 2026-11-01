@@ -3,6 +3,7 @@ import { join,dirname } from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
 import { runFfmpeg } from './media.mjs';
 import {durableJson,durableWrite} from './durable.mjs';
+import {checkWork} from './execution.mjs';
 
 const VERSION='continuous-v2';
 export function planVisualSegments(sheets,duration,fps,maxSheets=8) {
@@ -49,6 +50,7 @@ export async function extractVideoInterval({video,folder,start,end,duration,fps=
 export class VisualAnalyzer {
   constructor({codex,log=()=>{},settings=async()=>({})}){Object.assign(this,{codex,log,settings});}
   async prepare(learned,fps=4) {
+    checkWork();
     const video=join(dirname(learned.path),'video.mp4');const info=await stat(video);const size=info.size;
     let mtime=info.mtimeMs;try{const origin=JSON.parse(await readFile(join(dirname(video),'video-storage.json'),'utf8'));if(origin.bytes===size&&origin.storedMtimeMs===mtime&&Number.isFinite(origin.originalMtimeMs))mtime=origin.originalMtimeMs;}catch{}
     const revision=createHash('sha256').update(`${size}:${mtime}:${learned.seconds}`).digest('hex').slice(0,12);
@@ -80,6 +82,7 @@ export class VisualAnalyzer {
     };
     try{
       for(const segment of segments){
+        checkWork();
         const resultPath=join(folder,`segment-${String(segment.index+1).padStart(3,'0')}.json`);let cached=null;
         try{cached=JSON.parse(await readFile(resultPath,'utf8'));}catch{}
         if(cached?.version===VERSION&&cached.start===segment.start&&cached.end===segment.end&&cached.text){results.push(cached);onProgress(results.length,segments.length);continue;}
@@ -111,12 +114,13 @@ export class VisualAnalyzer {
           throw new Error('未授权的视觉分析工具');
         }};
         const result=this.codex.runReadOnly?await this.codex.runReadOnly(input,{...options,tools:visualTools}):await this.codex.run(await this.codex.createCoordinator(visualTools,true),input,options);
+        checkWork();
         const observation={version:VERSION,start:segment.start,end:segment.end,text:result.text,detailedViews,settings:callSettings};
         durableJson(resultPath,observation);results.push(observation);await save('partial');onProgress(results.length,segments.length);
       }
       const report=await save('complete');
       const notes=`# 全时段视觉观察\n\n采样：${fps} fps；覆盖 0–${learned.seconds.toFixed(2)} 秒；${manifest.sheets.length} 张连续画面组；${results.length} 段。每组 2×2 连续画面，保留时间顺序。\n\n${results.map(r=>`## ${r.start.toFixed(1)}–${r.end.toFixed(1)} 秒\n\n${r.text}`).join('\n\n')}`;
       durableWrite(join(dirname(learned.path),'visual-analysis.md'),notes);return {...report,notes};
-    }catch(e){await save('partial',e.message);throw new Error(`全时段视觉分析尚未完成（${results.length}/${segments.length} 段已保存，可续做）：${e.message}`,{cause:e});}
+    }catch(e){await save('partial',e.message);if(e.code==='TASK_INTERRUPTED')throw e;throw new Error(`全时段视觉分析尚未完成（${results.length}/${segments.length} 段已保存，可续做）：${e.message}`,{cause:e});}
   }
 }

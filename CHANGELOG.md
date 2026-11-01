@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- Add immediate per-operation interruption through task cards and /中断. Persist stop intent, interrupt owned Codex turns, terminate local decoding/transcription, fence late results and stop unsent reply segments without blocking unrelated chats.
+- Handle the startup cancellation race with bounded retries only after definitive rejection; retain unknown stop/delivery results for reconciliation.
+- Exclude archived/interrupted parents from classification and revalidate asynchronous decisions; detach pending supplements from archived parents.
+- Add persistent silent /忽略 and /结束忽略 gates, discarding ignored content before inference, dispatch, reactions and model history.
+- Preserve receipt/detail expansion across dashboard refreshes, fold data/recovery by default and remove the legacy-alias footer from command help.
+
 ## 0.6.0
 
 - Archive and restore needs, learning materials and task cards without deleting memory, media or delivery records. Need archiving synchronizes the assistant's Codex continuation chats through a persisted, reconciled archive journal; shared dispatch targets are preserved.
