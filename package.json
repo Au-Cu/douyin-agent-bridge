@@ -1,9 +1,9 @@
 {
-  "name": "douyin-codex-bridge",
-  "version": "0.12.1",
+  "name": "douyin-agent-bridge",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
-  "description": "抖音私信接入本机 Codex，视频学习与指定聊天任务转发",
+  "description": "抖音私信接入本机 Codex 或 DeepSeek Harness，视频学习与授权任务转发",
   "engines": {
     "node": ">=24.5.0"
   },
@@ -23,7 +23,8 @@
     "test:chat:live": "node scripts/chat-safety-smoke.mjs",
     "setup:sandbox": "node scripts/setup-sandbox.mjs",
     "setup:desktop": "node scripts/setup-desktop.mjs",
-    "test:desktop:live": "node --use-env-proxy scripts/shared-codex-smoke.mjs"
+    "test:desktop:live": "node --use-env-proxy scripts/shared-codex-smoke.mjs",
+    "test:dsh": "node --use-env-proxy scripts/dsh-smoke.mjs"
   },
   "dependencies": {
     "@openai/codex": "0.166.0",

@@ -1,7 +1,7 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {chromium} from 'playwright-core';
+import test from 'node:test';import assert from 'node:assert/strict';import {launchTestBrowser} from './browser.mjs';
 import {scanConversation,matchesPeer} from '../src/douyin.mjs';import {SafariDouyinAdapter} from '../src/safari.mjs';
-test('actual browser extraction keeps group identity stable and reads only native mention UIDs; Safari uses the same group guard',async()=>{
-  const browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||'msedge',headless:true});try{
+test('actual browser extraction keeps group identity stable and reads only native mention UIDs; Safari uses the same group guard',async t=>{
+  const browser=await launchTestBrowser(t);if(!browser)return;try{
     const page=await browser.newPage({viewport:{width:1000,height:800}});await page.setContent('<div class="RightPanelHeadertitle">测试群</div>');
     await page.evaluate(()=>{const add=(message,direction)=>{const e=document.createElement('div');e.className='messageMessageBoxcontentBox';e.style='height:60px';e.dataset.direction=direction;e.textContent='fixture';e.__reactProps$fixture={message};document.body.append(e);};
       const common={conversationId:'0:2:300000:400000',conversationType:2,createTime:Date.now()};

@@ -16,6 +16,7 @@ import {ReplyReferences} from './reply-reference.mjs';
 import {randomUUID} from 'node:crypto';
 import {Progress,writerConflict} from './progress.mjs';
 import {Archives} from './archive.mjs';
+import {modelSettings} from './harness-settings.mjs';
 const project=fileURLToPath(new URL('../',import.meta.url));
 
 export function splitReply(text,max=450) {
@@ -163,7 +164,7 @@ export class BridgeEngine {
   _handleControl(message) {
     if(message.kind!=='text')return false;
     const command=parseCommand(message.text);
-    if(command&&((['approve','decline'].includes(command.name)&&!/^\d+$/.test(command.arg))||(['status','reconnect','help','settings'].includes(command.name)&&command.arg)||(command.name==='resume'&&command.arg&&!/^\d{12,24}$/.test(command.arg))||(command.name==='dispatch'&&!command.arg))){this.reply('命令参数不正确。发送 /帮助 查看用法；批准或拒绝需带操作编号。',{priority:90});this.store.messageStatus(message.id,'failed','命令参数无效');return true;}
+    if(command&&((['approve','decline'].includes(command.name)&&!/^(?:(?:codex|codex-task|dsh):)?\d+$/.test(command.arg))||(['status','reconnect','help','settings'].includes(command.name)&&command.arg)||(command.name==='resume'&&command.arg&&!/^\d{12,24}$/.test(command.arg))||(command.name==='dispatch'&&!command.arg))){this.reply('命令参数不正确。发送 /帮助 查看用法；批准或拒绝需带操作编号。',{priority:90});this.store.messageStatus(message.id,'failed','命令参数无效');return true;}
     if(command&&!['status','approve','decline','resume','reconnect','dispatch'].includes(command.name)){
       this.store.messageStatus(message.id,'processing');
       const operationId=this.context.getStore()?.operationId;
@@ -208,10 +209,18 @@ export class BridgeEngine {
     if(['archive_need','restore_need','archive_task','restore_task'].includes(name)){
       if(!(name.endsWith('_task')?/^\d+(?:-\d+)?$/:/^\d+$/).test(arg))throw new Error('请填写明确编号，例如 /归档需求 2 或 /归档任务 5-1。');
       const archive=name.startsWith('archive_');
-      if(name.endsWith('_need')){const n=await this.archives.need(arg,archive);return `需求 ${n.number}：${n.title}\n${archive?'已归档，对应的 Codex 需求对话也已归档。':'已恢复显示及对应 Codex 对话；用 /切换 '+n.number+' 继续。'}`;}
+      if(name.endsWith('_need')){const n=await this.archives.need(arg,archive);return `需求 ${n.number}：${n.title}\n${n.localOnlyThreads?archive?'已本地归档，可手动恢复；DSH 不支持原生归档。':'已恢复显示；用 /切换 '+n.number+' 继续。':archive?'已归档，对应的 Codex 需求对话也已归档。':'已恢复显示及对应 Codex 对话；用 /切换 '+n.number+' 继续。'}`;}
       const op=archive?this.archives.archiveTask(arg):this.archives.restoreTask(arg);return this.progress.label(op.id)+'\n'+(archive?'已归档，未提交的工作暂停；已提交的执行与回复保留现场。':'已恢复显示。已完成或结果不明的工作不会重跑；确定未提交的暂停任务需另用 /重试 '+op.number+'。');
     }
     if(!this.preferences)throw new Error('此运行入口未启用配置服务');
+    if(name==='harness'){
+      const current=this.codex.harnessName||this.store.config.harness||'codex';
+      if(!arg)return '当前助手：'+current+'\n可用：codex、dsh\n用 /助手 codex 或 /助手 dsh 切换，保存后需重启助手生效。';
+      const value=arg.toLowerCase();
+      if(!['codex','dsh'].includes(value))throw new Error('助手只能是 codex 或 dsh。');
+      this.store.saveConfig({harness:value});
+      return '已保存助手：'+value+'\n'+(process.env.BRIDGE_HARNESS?'BRIDGE_HARNESS 环境变量优先，请修改该变量并重启。':'重启助手后生效；旧需求和目标聊天保持各自后端。');
+    }
     if(name==='settings')return this.preferences.describe();
     if(name==='retry'){if(!arg)throw new Error('格式：/重试 任务编号，例如 /重试 5');const id=this.progress.retry(arg);return this.progress.get(id)?this.progress.label(id)+'\n已恢复确定尚未提交的工作，已有执行不会重跑。':'已恢复确定尚未提交的工作。';}
     if(name==='find'){
@@ -226,7 +235,7 @@ export class BridgeEngine {
     }
     if(!arg){
       if(name==='model'){const c=await this.preferences.catalog();return this.preferences.describe()+'\n\n可用模型\n'+c.models.map(m=>m.model+'  '+m.displayName).join('\n')+'\n\n用 /模型 完整ID 选择；/模型 默认 恢复默认。';}
-      if(name==='effort'){const c=await this.preferences.catalog(),m=c.models.find(m=>m.model===(this.store.config.model||c.defaults.model));return '当前强度：'+(effortNames[this.store.config.reasoningEffort]||this.store.config.reasoningEffort||'Codex 默认')+'\n可用：'+m.supportedReasoningEfforts.map(e=>`${effortNames[e.reasoningEffort]||e.reasoningEffort} (${e.reasoningEffort})`).join('、');}
+      if(name==='effort'){const c=await this.preferences.catalog(),settings=modelSettings(this.store.config,this.codex.harnessName||'codex'),m=c.models.find(m=>m.model===(settings.model||c.defaults.model));if(!m)throw new Error('所选模型不在当前助手目录，请用 /模型 重新选择');return '当前强度：'+(effortNames[settings.reasoningEffort]||settings.reasoningEffort||'模型默认')+'\n可用：'+(m.supportedReasoningEfforts.map(e=>`${effortNames[e.reasoningEffort]||e.reasoningEffort} (${e.reasoningEffort})`).join('、')||'模型未提供可调档位');}
       return this.preferences.describe();
     }
     const patch=name==='model'?{model:arg,reasoningEffort:''}:name==='effort'?{reasoningEffort:arg}:name==='fast'?{fastMode:onOff(arg)}:name==='density'?{visualFps:Number(arg)}:name==='routing'?{autoRoute:onOff(arg)}:name==='budget'?{contextBudget:Number(arg)}:null;
@@ -316,7 +325,7 @@ export class BridgeEngine {
       if(route){const prepared=await this.conversations.prepareInput(route,input,message);route=prepared.route;input=prepared.input;inputTokens=prepared.inputTokens;}
       const workThread=route?.threadId||this.store.config.coordinator;
       this.progress.stage(operationId,'生成答复','',{thread:workThread});
-      const result=await this.codex.run(workThread,input,{assistant:true,...(this.preferences?await this.preferences.work():{effort:learned?'medium':undefined}),onSubmitted:()=>{this.assertNotArchived(operationId);this.progress.stage(operationId,'提交本轮需求','',{thread:workThread,submitted:true});},onStarted:turn=>{this.progress.clearWait('message:'+row.id,{outcome:'started',reason:'已开始执行'});this.progress.stage(operationId,'生成答复','',{running:true,thread:workThread,turn,submitted:true});},toolHandler:async call=>{
+      const result=await this.codex.run(workThread,input,{assistant:true,...(this.preferences?await (this.preferences.workFor?this.preferences.workFor(workThread):this.preferences.work()):{effort:learned?'medium':undefined}),onSubmitted:()=>{this.assertNotArchived(operationId);this.progress.stage(operationId,'提交本轮需求','',{thread:workThread,submitted:true});},onStarted:turn=>{this.progress.clearWait('message:'+row.id,{outcome:'started',reason:'已开始执行'});this.progress.stage(operationId,'生成答复','',{running:true,thread:workThread,turn,submitted:true});},toolHandler:async call=>{
         if(call.tool==='need_context')return route?this.conversations.context(route):{notice:'尚未按需求分组'};
         if(call.tool==='knowledge_search')return (route?this.conversations.related(route.needId,call.arguments.query):this.store.search(call.arguments.query)).map(k=>({...k,transcript:k.transcript.slice(0,16000),visualAnalysis:this.visualText(k).slice(0,24000),visualPath:join(dirname(k.path),'visual-analysis.md')}));
         if(call.tool==='dispatch_task'){
@@ -396,7 +405,7 @@ export class BridgeEngine {
       await this.analyzeVisual(learned);
       let input=[{type:'text',text:`用户指示：继续学习这条视频，以完整视觉记录为准。\n允许派发：否\n本轮资料：${JSON.stringify({title:learned.title,source:learned.source,path:item.path,transcript:learned.transcript,visualPath:join(dirname(item.path),'visual-analysis.md'),visualObservations:learned.visual.notes})}`}],inputTokens=0;
       if(this.conversations&&message){resumeRoute=await this.conversations.resumeRoute(message,learned);if(resumeRoute.clarify)throw new Error(resumeRoute.question);const prepared=await this.conversations.prepareInput(resumeRoute,input,message);resumeRoute=prepared.route;input=prepared.input;inputTokens=prepared.inputTokens;}
-      const result=await this.codex.run(resumeRoute?.threadId||this.store.config.coordinator,input,{assistant:true,...(this.preferences?await this.preferences.work():{effort:'medium'}),toolHandler:async call=>{
+      const result=await this.codex.run(resumeRoute?.threadId||this.store.config.coordinator,input,{assistant:true,...(this.preferences?await (this.preferences.workFor?this.preferences.workFor(resumeRoute?.threadId||this.store.config.coordinator):this.preferences.work()):{effort:'medium'}),toolHandler:async call=>{
         if(call.tool==='need_context'&&resumeRoute)return this.conversations.context(resumeRoute);
         if(call.tool==='knowledge_search')return resumeRoute?this.conversations.related(resumeRoute.needId,call.arguments.query):this.store.search(call.arguments.query);
         throw new Error('本次续看没有授权派发任务');
@@ -433,7 +442,7 @@ export class BridgeEngine {
     let started=false;
     try {
       const operationId=JSON.parse(task.context||'{}').operationId;this.assertNotArchived(operationId,{taskId:task.id});
-      const executor=this.taskCodex;
+      const executor=this.taskCodex.forThread?this.taskCodex.forThread(task.thread):this.taskCodex;
       if(executor.ensureAuthenticated)await executor.ensureAuthenticated();else await executor.connect();
       // Never forcibly take over a live writer from the desktop app.
       const read=await executor.request('thread/read',{threadId:task.thread});
@@ -441,7 +450,7 @@ export class BridgeEngine {
       const context=JSON.parse(task.context||'{}');const input=[{type:'text',text:task.prompt}];
       for(const image of context.images||[])if(existsSync(image.path))input.push({type:'text',text:`原视频 ${image.videoId}，约 ${image.seconds.toFixed(2)} 秒起的连续画面组（初始定位附件，可回看完整原片）：`},{type:'localImage',path:image.path});
       const result=await executor.run(task.thread,input,{
-        ...(this.preferences?await this.preferences.work():{}),
+        ...(this.preferences?await (this.preferences.workFor?this.preferences.workFor(task.thread):this.preferences.work()):{}),
         onSubmitted:()=>{this.assertNotArchived(context.operationId,{taskId:task.id});started=true;this.store.taskStatus(task.id,'running');this.progress.stage(context.operationId,'提交目标任务',task.alias,{thread:task.thread,submitted:true});},
         onStarted:id=>{started=true;this.progress.clearWait(task.id,{outcome:'started',reason:'已开始执行'});this.store.taskStatus(task.id,'running','',id);this.progress.stage(context.operationId,'执行目标任务',task.alias,{running:true,thread:task.thread,turn:id,submitted:true});}
       });
@@ -455,7 +464,7 @@ export class BridgeEngine {
       if(e.code==='ARCHIVED_TASK'){this.store.taskStatus(task.id,'blocked','用户已归档，未提交工作暂停');return;}
       if(e.code==='DESKTOP_NOT_CONNECTED'&&(!started||e.notSubmitted)){const id=JSON.parse(task.context||'{}').operationId;if(id)this.progress.db.prepare("UPDATE operations SET submitted=0,turn='' WHERE id=?").run(id);this.progress.taskBlocked(task,'桌面共享连接尚未就绪，请通过项目入口启动桌面 Codex；尚未提交执行');return;}
       if(!started&&authFailure(e)){this.progress.taskBlocked(task,'等待本机 Codex 登录或额度恢复');return;}
-      if(writerConflict(e)&&(!started||e.notSubmitted)){const id=JSON.parse(task.context||'{}').operationId;if(id)this.progress.db.prepare("UPDATE operations SET submitted=0,turn='' WHERE id=?").run(id);this.progress.taskBlocked(task,'Codex 拒绝写入：already has an active writer；尚未提交执行');return;}
+      if(writerConflict(e)&&(!started||e.notSubmitted)){const id=JSON.parse(task.context||'{}').operationId;if(id)this.progress.db.prepare("UPDATE operations SET submitted=0,turn='' WHERE id=?").run(id);this.progress.taskBlocked(task,(task.thread.startsWith('dsh:')?'DSH 会话暂未取得写入权':'Codex 拒绝写入：already has an active writer')+'；尚未提交执行');return;}
       this.progress.clearWait(task.id,{outcome:started||e.uncertain?'uncertain':'failed',reason:e.message});
       this.store.taskStatus(task.id,started||e.uncertain?'uncertain':'failed',e.message);this.store.event('任务未完成：'+e.message,'error');
       this.reply('「'+task.alias+'」任务暂未完成：'+e.message+(started?'。执行可能已经开始，请在原聊天查看；不会自动重做。':''));

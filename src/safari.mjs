@@ -20,26 +20,65 @@ function osa(script){
 // The bridge acts only in the window it created. A per-tab marker prevents an
 // old numeric window id from accidentally selecting someone else's window.
 export class SafariDouyinAdapter {
-  constructor({root,log=()=>{},executeAppleScript=osa}){Object.assign(this,{root,log,executeAppleScript});this.status='closed';this.sending=false;this.windowId=0;this.marker='';this.page=null;this.tail=Promise.resolve();}
+  constructor({root,log=()=>{},executeAppleScript=osa}){Object.assign(this,{root,log,executeAppleScript});this.status='closed';this.sending=false;this.windowId=0;this.tabIndex=0;this.marker='';this.page=null;this.tail=Promise.resolve();}
   async apple(script){const task=this.tail.catch(()=>{}).then(()=>this.executeAppleScript(script));this.tail=task;return task;}
-  async inTab(code,index=1){
+  // Safari's AppleScript resolves a tab index unreliably when the index or
+  // the window comes from a loop variable, so the whole tab list is fetched
+  // in one call and the tab is located here by its URL.
+  async tabUrls(windowId=this.windowId){
+    const raw=await this.apple(`tell application "Safari"\nset parts to ""\nset urls to URL of every tab of window id ${Number(windowId)}\nrepeat with i from 1 to count of urls\nset parts to parts & (i as text) & tab & ((item i of urls) as text) & linefeed\nend repeat\nreturn parts\nend tell`);
+    const urls=[];for(const line of String(raw||'').split('\n')){const m=line.match(/^(\d+)\t(.*)$/);if(m)urls[Number(m[1])-1]=m[2].trim();}return Array.from({length:urls.length},(_,i)=>urls[i]||'');
+  }
+  async findChatTab(windowId=this.windowId){
+    const urls=await this.tabUrls(windowId);
+    for(let i=urls.length-1;i>=0;i--)if(urls[i].startsWith(allowed+'chat'))return i+1;
+    for(let i=urls.length-1;i>=0;i--)if(urls[i].startsWith(allowed)&&!urls[i].startsWith(allowed+'video/'))return i+1;
+    return 0;
+  }
+  async findTabByUrl(url,windowId=this.windowId){
+    const urls=await this.tabUrls(windowId);
+    const same=value=>{try{const a=new URL(value),b=new URL(url);return a.origin===b.origin&&a.pathname===b.pathname;}catch{return false;}};
+    for(let i=urls.length-1;i>=0;i--)if(same(urls[i]))return i+1;
+    return 0;
+  }
+  saveWindow(){durableJson(join(this.root,'browser-profile','safari-window.json'),{id:this.windowId,marker:this.marker,tab:this.tabIndex});}
+  async locateOwned(marker=this.marker){
+    const urls=await this.tabUrls(),matches=[];
+    for(let i=0;i<urls.length;i++)if(urls[i].startsWith(allowed)&&!urls[i].startsWith(allowed+'video/')){
+      try{if(await this.evalTab('return sessionStorage.getItem("douyin-codex-bridge-window");',i+1)===marker)matches.push(i+1);}catch(e){if(['SAFARI_PERMISSION','SAFARI_TIMEOUT'].includes(e.code))throw e;}
+    }
+    if(matches.length!==1)throw new Error('未找到唯一的助手 Safari 标签，请重新打开并核验窗口');this.tabIndex=matches[0];this.marker=marker;this.saveWindow();return this.tabIndex;
+  }
+  async inTab(code,index){
+    const owned=index===undefined;index??=this.tabIndex;
+    // Relocation is a read-only preflight. Never retry the submitted script:
+    // it may already have clicked a reaction or sent a message.
+    if(owned&&this.marker){let valid=false;try{valid=await this.evalTab('return sessionStorage.getItem("douyin-codex-bridge-window");',index)===this.marker;}catch(e){if(['SAFARI_PERMISSION','SAFARI_TIMEOUT'].includes(e.code))throw e;}if(!valid)index=await this.locateOwned();}
+    return this.evalTab(code,index,owned?this.marker:'');
+  }
+  async evalTab(code,index,marker=''){
     if(!Number.isInteger(this.windowId)||this.windowId<=0||!Number.isInteger(index)||index<1)throw new Error('请先打开项目的 Safari 抖音窗口');
-    const markerCheck=index===1&&this.marker?`if(sessionStorage.getItem('douyin-codex-bridge-window')!==${JSON.stringify(this.marker)})throw new Error('助手窗口已变化，请重新打开');`:'';
+    const markerCheck=marker?`if(sessionStorage.getItem('douyin-codex-bridge-window')!==${JSON.stringify(marker)})throw new Error('助手窗口已变化，请重新打开');`:'';
     const wrapper=`(()=>{try{${markerCheck}return JSON.stringify({ok:true,value:(()=>{${code}})()})}catch(e){return JSON.stringify({ok:false,error:String(e&&e.message||e)})}})()`;
     const result=await this.apple(`tell application "Safari"\nif not (exists window id ${this.windowId}) then error "window unavailable"\nset t to tab ${index} of window id ${this.windowId}\nif URL of t does not start with ${quote(allowed)} then error "wrong origin"\nreturn do JavaScript ${quote(wrapper)} in t\nend tell`);
     let parsed;try{parsed=JSON.parse(result);}catch{throw new Error('Safari 未返回可核验的页面结果');}if(!parsed.ok)throw new Error(parsed.error||'Safari 页面操作失败');return parsed.value;
   }
   async open(owner){
-    if(this.page){try{await this.inTab('return true;');return;}catch(e){if(['SAFARI_PERMISSION','SAFARI_TIMEOUT'].includes(e.code))throw e;this.page=null;this.windowId=0;this.marker='';}}
+    if(this.page){try{await this.inTab('return true;');return;}catch(e){if(['SAFARI_PERMISSION','SAFARI_TIMEOUT'].includes(e.code))throw e;this.page=null;this.windowId=0;this.tabIndex=0;this.marker='';}}
     await mkdir(join(this.root,'browser-profile'),{recursive:true});const saved=join(this.root,'browser-profile','safari-window.json');let prior;
     try{prior=JSON.parse(await readFile(saved,'utf8'));if(!Number.isInteger(prior.id)||typeof prior.marker!=='string')prior=null;}catch{}
-    if(prior){this.windowId=prior.id;try{if(await this.inTab('return sessionStorage.getItem("douyin-codex-bridge-window");')!==prior.marker)this.windowId=0;else this.marker=prior.marker;}catch(e){this.windowId=0;if(['SAFARI_PERMISSION','SAFARI_TIMEOUT'].includes(e.code))throw e;}}
+    if(prior){this.windowId=prior.id;this.tabIndex=0;try{await this.locateOwned(prior.marker);}catch(e){if(['SAFARI_PERMISSION','SAFARI_TIMEOUT'].includes(e.code))throw e;this.windowId=0;this.marker='';}}
     if(!this.windowId){
       const id=Number(await this.apple(`tell application "Safari"\nactivate\nmake new document with properties {URL:${quote(allowed+'chat?isPopup=1')}}\nreturn id of front window\nend tell`));
-      if(!Number.isInteger(id)||id<=0)throw new Error('无法创建 Safari 窗口');this.windowId=id;const marker=randomUUID();let marked=false;
+      if(!Number.isInteger(id)||id<=0)throw new Error('无法创建 Safari 窗口');this.windowId=id;this.tabIndex=0;
+      // Safari may open the page as a new tab in the current window, so the
+      // tab is found by its URL instead of assuming it is the first one.
+      for(let i=0;i<40;i++){this.tabIndex=await this.findChatTab(id);if(this.tabIndex)break;await sleep(500);}
+      if(!this.tabIndex){this.windowId=0;throw new Error('未能在 Safari 中找到抖音私信页面，请检查该窗口是否被关闭。');}
+      const marker=randomUUID();let marked=false;
       for(let i=0;i<40;i++){try{await this.inTab('sessionStorage.setItem("douyin-codex-bridge-window",'+JSON.stringify(marker)+');return true;');marked=true;break;}catch(e){if(['SAFARI_PERMISSION','SAFARI_TIMEOUT'].includes(e.code)){this.windowId=0;throw e;}await sleep(500);}}
       if(!marked){this.windowId=0;throw new Error('请在 Safari 设置中允许来自 Apple 事件的 JavaScript，并在系统设置中允许终端控制 Safari。');}
-      this.marker=marker;durableJson(saved,{id,marker});
+      this.marker=marker;durableJson(saved,{id,marker,tab:this.tabIndex});
     }
     this.page={};this.status='waiting_login';if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在 Safari 选回用户会话：'+e.message));
   }
@@ -91,7 +130,7 @@ export class SafariDouyinAdapter {
   }
   async resolveVideo(message){
     checkWork();if(!/^\d{12,24}$/.test(message.awemeId||''))throw new Error('分享卡片没有有效的视频 ID');if(!this.page)throw new Error('请先登录抖音助手账号');
-    const url=allowed+'video/'+message.awemeId,marker=randomUUID(),index=Number(await this.apple(`tell application "Safari"\ntell window id ${this.windowId}\nmake new tab with properties {URL:${quote(url)}}\nreturn count of tabs\nend tell\nend tell`));if(!Number.isInteger(index)||index<2)throw new Error('无法打开视频标签页');let marked=false;
+    const url=allowed+'video/'+message.awemeId,marker=randomUUID();await this.apple(`tell application "Safari"\ntell window id ${this.windowId}\nmake new tab with properties {URL:${quote(url)}}\nend tell\nend tell`);let index=0;for(let i=0;i<40;i++){index=await this.findTabByUrl(url);if(index)break;await sleep(500);}if(!index)throw new Error('无法打开视频标签页');let marked=false;
     try{for(let i=0;i<35;i++){checkWork();let value;try{value=await this.inTab(`const id=${JSON.stringify(message.awemeId)};if(location.pathname!=='/video/'+id)throw new Error('视频标签页已变化');${marked?`if(sessionStorage.getItem('douyin-codex-bridge-video')!==${JSON.stringify(marker)})throw new Error('视频标签页已变化');`:`sessionStorage.setItem('douyin-codex-bridge-video',${JSON.stringify(marker)});`}const video=document.querySelector('video');let found=null;const roots=[window._ROUTER_DATA,window.__NEXT_DATA__,window.SIGI_STATE];for(const s of document.querySelectorAll('script[type="application/json"],script#RENDER_DATA'))try{roots.push(JSON.parse(decodeURIComponent(s.textContent)))}catch{}const seen=new WeakSet(),stack=roots.filter(x=>x&&typeof x==='object');let left=30000;while(stack.length&&left--){const x=stack.pop();if(!x||typeof x!=='object'||seen.has(x))continue;seen.add(x);if(String(x.aweme_id||x.awemeId||x.itemId||'')===id&&x.video){found=x;break;}for(const v of Object.values(x))if(v&&typeof v==='object')stack.push(v);}return {id:String(found?.aweme_id||found?.awemeId||found?.itemId||''),url:found?.video?.play_addr?.url_list?.[0]||found?.video?.playAddr?.url_list?.[0]||video?.currentSrc||'',title:found?.desc||document.title||'',author:found?.author?.nickname||'',seconds:Number(found?.video?.duration||0)/1000||(Number.isFinite(video?.duration)?video.duration:0)};`,index);marked=true;}catch{}const candidate=[value?.url,message.mediaUrl].find(safeMediaUrl);if(value&&candidate)return {url:candidate,title:value?.title||message.title||'抖音视频 '+message.awemeId,author:value?.author||'',seconds:value?.seconds||0,source:url};await sleep(500);}
       throw new Error('Safari 未能取得原视频地址；请检查该视频的访问权限或重新登录。');
     }finally{if(marked)await this.apple(`tell application "Safari"\nif exists window id ${this.windowId} then\nset t to tab ${index} of window id ${this.windowId}\nif URL of t starts with ${quote(url)} then\nif (do JavaScript ${quote("sessionStorage.getItem('douyin-codex-bridge-video')")} in t) is ${quote(marker)} then close t\nend if\nend if\nend tell`).catch(()=>{});}

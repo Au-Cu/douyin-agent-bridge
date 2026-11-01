@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { chromium } from 'playwright-core';
+import { launchTestBrowser } from './browser.mjs';
 
-test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入名单后不溢出、不丢失目标 ID', async () => {
+test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入名单后不溢出、不丢失目标 ID', async t => {
   const longName = '研究页面切换与视频视觉效果 '.repeat(160);
   const threads = [{id:'long-thread-id',name:longName},{id:'short-thread-id',name:'其他聊天'}];
   const state = {
@@ -30,10 +30,10 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
       if(req.url==='/api/archive'){let text='';for await(const b of req)text+=b;const b=JSON.parse(text);state.work.find(w=>w.id===b.id).archived=b.archived;res.end(JSON.stringify({ok:true}));return;}
       if(req.url==='/api/tasks/interrupt'){let text='';for await(const b of req)text+=b;interrupted=JSON.parse(text).id;const w=state.work.find(w=>w.id===interrupted);w.status='cancelled';w.canInterrupt=false;res.end(JSON.stringify({state:'stopped',number:w.number}));return;}
       if(requestUrl.pathname==='/api/state'){const scope=requestUrl.searchParams.get('work')||'current',status=requestUrl.searchParams.get('status')||'all';res.end(JSON.stringify({...state,work:state.work.filter(w=>(scope==='all'||(scope==='archived'?!!w.archived:!w.archived))&&(status==='all'||w.status===status))}));return;}
-      if(req.url==='/api/models'){res.end(JSON.stringify(catalog));return;}
+      if(requestUrl.pathname==='/api/models'){res.end(JSON.stringify(catalog));return;}
       if(req.url==='/api/needs/new'){let text='';for await(const b of req)text+=b;const title=JSON.parse(text).title;const n={id:'created-need',title,seq:1,contextTokens:0,summary:''};state.conversations.needs.push(n);state.conversations.activeNeed=n.id;res.end(JSON.stringify(n));return;}
       if(req.url==='/api/needs/switch'){state.conversations.activeNeed='website-1';res.end(JSON.stringify(state.conversations.needs[0]));return;}
-      res.end(JSON.stringify(req.url==='/api/state'?state:req.url==='/api/threads'?threads:req.url==='/api/codex/reconnect'?{deferred:false,auth:{status:'ready'}}:[]));return;
+      res.end(JSON.stringify(req.url==='/api/state'?state:requestUrl.pathname==='/api/threads'?threads:req.url==='/api/codex/reconnect'?{deferred:false,auth:{status:'ready'}}:[]));return;
     }
     const name=req.url==='/'?'index.html':req.url.slice(1);
     if(!['index.html','app.js','style.css'].includes(name)){res.writeHead(404).end();return;}
@@ -43,7 +43,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   await listenBrowserFixture(server);
   let browser;
   try{
-    browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||'msedge',headless:true});
+    browser=await launchTestBrowser(t);if(!browser)return;
     const page=await browser.newPage({viewport:{width:1100,height:900}}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto('http://127.0.0.1:'+server.address().port);
@@ -72,7 +72,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     assert.equal(await page.locator('#targetList small').textContent(),longName);
     assert.equal(state.config.targets[0].id,'long-thread-id');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-    await page.getByRole('button',{name:'重新连接 Codex'}).click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('已读取本机当前 Codex 登录'));
+    await page.getByRole('button',{name:'重新连接助手'}).click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('已读取本机当前助手登录'));
     await page.waitForFunction(()=>document.querySelectorAll('#defaultModel option').length===2);
     await page.selectOption('#defaultModel','fixture-sol');await page.selectOption('#defaultEffort','max');await page.locator('#fastMode').check();await page.locator('#autoRoute').uncheck();await page.locator('#contextBudget').fill('16000');await page.getByRole('button',{name:'保存默认配置'}).click();
     await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('默认配置已保存'));

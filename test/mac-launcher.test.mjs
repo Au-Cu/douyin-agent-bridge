@@ -15,13 +15,14 @@ test('Mac 启动器复用同一实例，拒绝其他资料停止，并正常恢�
 });
 
 test('Mac 版 Safari AppleScript 可以由系统编译，不依赖读取其他窗口',{skip:process.platform!=='darwin'},async()=>{
-  const {SafariDouyinAdapter}=await import('../src/safari.mjs'),{scanConversation}=await import('../src/douyin.mjs');const sources=[];const adapter=new SafariDouyinAdapter({root:'unused',executeAppleScript:async text=>{sources.push(text);return JSON.stringify({ok:true,value:true});}});adapter.windowId=123;adapter.marker='fixture';await adapter.inTab('return true;');await adapter.inTab(`const f=(${scanConversation.toString()});return f.call(window);`);await adapter.inTab(`return ${JSON.stringify('第一段\n第二段 👌')};`);
+  const {SafariDouyinAdapter}=await import('../src/safari.mjs'),{scanConversation}=await import('../src/douyin.mjs');const sources=[];const adapter=new SafariDouyinAdapter({root:'unused',executeAppleScript:async text=>{sources.push(text);return JSON.stringify({ok:true,value:true});}});adapter.windowId=123;adapter.tabIndex=1;adapter.marker='fixture';await adapter.inTab('return true;');await adapter.inTab(`const f=(${scanConversation.toString()});return f.call(window);`);await adapter.inTab(`return ${JSON.stringify('第一段\n第二段 👌')};`);
   const folder=mkdtempSync(join(project,'data','mac-osa-'));for(let i=0;i<sources.length;i++){const file=join(folder,`test-${i}.scpt`),result=spawnSync('/usr/bin/osacompile',['-o',file,'-'],{input:sources[i],encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);}
 });
 
 test('Mac 版 Safari 的新建窗口、视频页和清理脚本可由系统编译',{skip:process.platform!=='darwin'},async()=>{
   const {SafariDouyinAdapter}=await import('../src/safari.mjs'),sources=[],root=mkdtempSync(join(project,'data','mac-safari-'));
-  const adapter=new SafariDouyinAdapter({root,executeAppleScript:async script=>{sources.push(script);if(script.includes('make new document'))return '246';if(script.includes('make new tab with properties'))return '2';if(script.includes('then close t'))return '';if(script.includes('const id='))return JSON.stringify({ok:true,value:{url:'https://v.douyinvod.com/example.mp4',title:'样例',seconds:2}});return JSON.stringify({ok:true,value:true});}});
-  await adapter.open();const video=await adapter.resolveVideo({awemeId:'1234567890123'});assert.equal(video.seconds,2);assert.equal(sources.length,5);
+  const tabs=[];
+  const adapter=new SafariDouyinAdapter({root,executeAppleScript:async script=>{sources.push(script);if(script.includes('make new document')){tabs.push('https://www.douyin.com/chat?isPopup=1');return '246';}if(script.includes('URL of every tab of window id'))return tabs.join('\n')+'\n';if(script.includes('make new tab with properties')){tabs.push('https://www.douyin.com/video/1234567890123');return '';}if(script.includes('then close t'))return '';if(script.includes('const id='))return JSON.stringify({ok:true,value:{url:'https://v.douyinvod.com/example.mp4',title:'样例',seconds:2}});return JSON.stringify({ok:true,value:true});}});
+  await adapter.open();const video=await adapter.resolveVideo({awemeId:'1234567890123'});assert.equal(video.seconds,2);assert.ok(sources.length>=5,'新建窗口、视频页和清理脚本都要经过系统编译');
   const folder=mkdtempSync(join(project,'data','mac-osa-all-'));for(let i=0;i<sources.length;i++){const result=spawnSync('/usr/bin/osacompile',['-o',join(folder,`test-${i}.scpt`),'-'],{input:sources[i],encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);}
 });

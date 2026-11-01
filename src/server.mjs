@@ -18,7 +18,7 @@ import {commandHelp} from './commands.mjs';
 import {progressEmoji} from './progress.mjs';
 import {prepareDataRoot} from './data-root.mjs';
 import {existsSync} from 'node:fs';
-import {archiveScope,taskStatuses,codexThreadUrl} from './archive.mjs';
+import {archiveScope,taskStatuses} from './archive.mjs';
 import {configurePanel,updatePanels} from './ui-state.mjs';
 import {PeerBrowser} from './peer-browser.mjs';
 import {Chats} from './chats.mjs';
@@ -26,6 +26,11 @@ import {ChatSandbox} from './chat-sandbox.mjs';
 import {CodeSandbox} from './code-sandbox.mjs';
 import {reconcileQuotedReply} from './reconcile-reply.mjs';
 import {prepareDesktopShared} from './desktop-shared-setup.mjs';
+import {runtimeClients} from './runtime-clients.mjs';
+import {DshChatSandbox} from './dsh/chat-sandbox.mjs';
+import {ChatRuntime} from './chat-runtime.mjs';
+import {harnessValue} from './harness.mjs';
+import {visibleSettings} from './harness-settings.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const startupSince=Date.now();
@@ -34,14 +39,14 @@ if(args['data-dir'])process.env.BRIDGE_DATA_DIR=args['data-dir'];
 const dataRoot=await prepareDataRoot(project),store=new Store(dataRoot);
 const log=(message,level)=>store.event(message,level);
 const adapter=new PeerBrowser(process.platform==='darwin'?new SafariDouyinAdapter({root:store.root,log}):new DouyinAdapter({root:store.root,log}));
-const codex=new CodexClient({cwd:project,log});
-const taskCodex=new CodexClient({cwd:project,log,sharedRoot:store.root});
+const {codex,taskCodex,localCodex,desktopCodex,dsh,active}=runtimeClients({store,cwd:project,log});
 const media=new MediaProcessor({root:store.root,adapter,log});
 const preferences=new Preferences({store,codex});
 const conversations=new Conversations({store,codex,preferences});
 const visual=new VisualAnalyzer({codex,log,settings:()=>preferences.work()});
 const engine=new BridgeEngine({store,adapter,media,codex,taskCodex,visual,preferences,conversations});
-const codeSandbox=new CodeSandbox({root:store.root}),chatSandbox=new ChatSandbox({root:store.root,codex,log,codeSandbox,capabilities:()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox})}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
+const codeSandbox=new CodeSandbox({root:store.root}),chatCapabilities=()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox}),chatSandbox=new ChatRuntime({store,sandboxes:{codex:new ChatSandbox({root:store.root,codex:localCodex,log,codeSandbox,capabilities:chatCapabilities}),dsh:new DshChatSandbox({root:store.root,dsh,log,codeSandbox,capabilities:chatCapabilities})}}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
+preferences.chatCatalogProvider=harness=>harness==='dsh'?chatSandbox.catalog(harness):codex.models('codex');
 let sandboxPreparing=false;
 const token=randomBytes(32).toString('hex');let asrInstalling=false;let closing=false;
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
@@ -61,16 +66,16 @@ const server=http.createServer(async(req,res)=>{
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const needScope=archiveScope(url.searchParams.get('needs')),knowledgeScope=archiveScope(url.searchParams.get('knowledge')),workScope=archiveScope(url.searchParams.get('work')),status=url.searchParams.get('status')||'all';if(!taskStatuses.has(status))throw new Error('未知任务状态');
         if(store.config.enabled&&store.config.owner&&adapter.status==='ready'&&codex.ready&&codex.authState?.status==='ready'&&asrReady)configurePanel(store,'setup');
-        const snapshot=store.snapshot();snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(async k=>{
+        const snapshot=store.snapshot();snapshot.config=visibleSettings(store.config,active);snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(async k=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
-        const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codexThreadUrl(n.thread)}));
-        return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{taskCodex:{ready:taskCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
+        return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
-      if(req.method==='GET'&&path==='/api/models')return json(res,await preferences.catalog());
+      if(req.method==='GET'&&path==='/api/models'){const chat=url.searchParams.get('mode')==='chat',harness=chat?store.config.chatHarness||'codex':active,data=await (chat?preferences.chatCatalog(harness):preferences.catalog(harness));return json(res,{...data,harness});}
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
       if(req.method==='GET'&&path==='/api/commands')return json(res,{text:commandHelp});
-      if(req.method==='GET'&&path==='/api/threads'){const internal=new Set(store.db.prepare('SELECT thread FROM need_threads').all().map(r=>r.thread));return json(res,(await codex.threads(url.searchParams.get('q')||'')).filter(t=>!internal.has(t.id)));}
+      if(req.method==='GET'&&path==='/api/threads'){const internal=new Set(store.db.prepare('SELECT thread FROM need_threads').all().map(r=>r.thread));return json(res,(await codex.threads(url.searchParams.get('q')||'',harnessValue(url.searchParams.get('harness')||active))).filter(t=>!internal.has(t.id)));}
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries(),...taskCodex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
       if(req.method==='GET'&&path==='/api/browser/reaction-diagnostics')return json(res,{lastReceipt:adapter.lastReceipt||null,menu:adapter.lastReactionDiagnostic||null});
       if(req.method==='GET'&&path==='/api/browser/ui-diagnostics')return json(res,await adapter.uiDiagnostics());
@@ -98,8 +103,10 @@ const server=http.createServer(async(req,res)=>{
       const body=await jsonBody(req);
       if(path==='/api/code-sandbox/check')return json(res,await codeSandbox.check());
       if(path==='/api/desktop/prepare')return json(res,await prepareDesktopShared(store.root));
-      if(path==='/api/desktop/recover'){await taskCodex.connect();await taskCodex.request('thread/loaded/list',{},5000);let recovered=0;for(const task of store.db.prepare("SELECT t.*,w.reason FROM tasks t JOIN task_waits w ON w.task_id=t.id WHERE t.status IN ('queued','blocked') AND t.turn=''").all()){const op=JSON.parse(task.context||'{}').operationId;if(!/active writer|桌面共享连接尚未就绪/.test(task.reason)||engine.interrupts.record(op)||store.isArchived('task',op))continue;engine.progress.retry(task.id);recovered++;}return json(res,{recovered});}
-      if(path==='/api/desktop/check'){try{await taskCodex.connect();const loaded=await taskCodex.request('thread/loaded/list',{},5000);return json(res,{ready:true,message:'已连接桌面共用服务；派发与中断使用原聊天',loadedThreads:loaded.data?.length||0});}catch(e){return json(res,{ready:false,message:e.code==='DESKTOP_NOT_CONNECTED'?e.message:'桌面共享连接暂不可用，保留未提交任务'});}}
+      if(path==='/api/desktop/recover'){await desktopCodex.connect();await desktopCodex.request('thread/loaded/list',{},5000);let recovered=0;for(const task of store.db.prepare("SELECT t.*,w.reason FROM tasks t JOIN task_waits w ON w.task_id=t.id WHERE t.status IN ('queued','blocked') AND t.turn=''").all()){const op=JSON.parse(task.context||'{}').operationId;if(task.thread.startsWith('dsh:')||!/active writer|桌面共享连接尚未就绪/.test(task.reason)||engine.interrupts.record(op)||store.isArchived('task',op))continue;engine.progress.retry(task.id);recovered++;}return json(res,{recovered});}
+      if(path==='/api/desktop/check'){try{await desktopCodex.connect();const loaded=await desktopCodex.request('thread/loaded/list',{},5000);return json(res,{ready:true,message:'已连接桌面共用服务；派发与中断使用原聊天',loadedThreads:loaded.data?.length||0});}catch(e){return json(res,{ready:false,message:e.code==='DESKTOP_NOT_CONNECTED'?e.message:'桌面共享连接暂不可用，保留未提交任务'});}}
+      if(path==='/api/harness'){const next=harnessValue(body.harness);store.saveConfig({harness:next});return json(res,{active,configured:next,restartRequired:next!==active,environmentOverride:!!process.env.BRIDGE_HARNESS});}
+      if(path==='/api/chat-harness'){const next=harnessValue(body.harness);store.saveConfig({chatHarness:next});chatSandbox.invalidate();return json(res,{harness:next});}
       if(path==='/api/code-sandbox/setup'){if(!sandboxPreparing){sandboxPreparing=true;codeSandbox.setup().catch(()=>log('代码沙箱准备失败，请检查 Docker 引擎与镜像下载','attention')).finally(()=>sandboxPreparing=false);}return json(res,{preparing:sandboxPreparing});}
       if(path==='/api/ai-chats/select'){chats.beginSelection();return json(res,{ok:true});}
       if(path==='/api/ai-chats/cancel'){chats.endSelection();return json(res,{ok:true});}
@@ -169,7 +176,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/config'||path==='/api/targets'){
         if(!Array.isArray(body.targets)||body.targets.length>20)throw new Error('目标聊天列表格式错误');
         const targets=body.targets.map(t=>({id:String(t.id||''),alias:String(t.alias||'').trim(),name:String(t.name||'').slice(0,150)}));
-        if(targets.some(t=>!/^[\w-]{5,100}$/.test(t.id)||!t.alias||t.alias.length>60)||new Set(targets.map(t=>t.alias)).size!==targets.length)throw new Error('目标 ID 或别名无效，别名不能重复');
+        if(targets.some(t=>!/^(?:dsh:)?[\w-]{5,100}$/.test(t.id)||!t.alias||t.alias.length>60)||new Set(targets.map(t=>t.alias)).size!==targets.length)throw new Error('目标 ID 或别名无效，别名不能重复');
         if(targets.some(t=>t.id===store.config.coordinator))throw new Error('调度聊天不能作为派发目标');
         if(targets.some(t=>store.db.prepare('SELECT 1 FROM need_threads WHERE thread=?').get(t.id)))throw new Error('需求助手会话不能作为派发目标');
         if(path==='/api/targets'){store.saveConfig({targets});configurePanel(store,'targets');return json(res,{ok:true});}
@@ -216,15 +223,15 @@ const server=http.createServer(async(req,res)=>{
     res.end(await readFile(join(project,'public',assets[path])));
   }catch(e){json(res,{error:e.message},400);}
 });
-server.listen(port,'127.0.0.1',()=>{console.log('抖音 Codex 助手控制台：'+origin);log('控制台已启动，正在恢复本机连接');store.backup().catch(()=>log('状态快照暂未完成，请检查磁盘空间','attention'));});
+server.listen(port,'127.0.0.1',()=>{console.log('抖音 Agent Bridge 控制台：'+origin);log('控制台已启动，正在恢复本机连接');store.backup().catch(()=>log('状态快照暂未完成，请检查磁盘空间','attention'));});
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
 engine.start();codex.startAuthWatcher();
-const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 Codex 已连接');}).catch(e=>log('Codex 连接失败：'+e.message,'error'));
+const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 '+(active==='dsh'?'DeepSeek Harness':'Codex')+' 已连接');}).catch(e=>log('助手连接失败：'+e.message,'error'));
 if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
   await codexReady;if(closing||!store.config.resumeOnStartup)return;
   try{await engine.arm(true,{resumeSince:startupSince});log('已恢复保存的会话与监听，补收本次启动期间的消息；已有记录不会重复执行');}catch(e){log('绑定和资料已保留，等待恢复抖音会话：'+e.message,'attention');}
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
-async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();chats.stop();codex.close();taskCodex.close();await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values()]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
+async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();chats.stop();await Promise.allSettled([codex.close(),taskCodex.close(),chatSandbox.close()]);await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values()]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
