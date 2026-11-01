@@ -6,7 +6,7 @@
 - Quote the triggering native group message in every reply segment, verify both the composer reference and the confirmed outgoing pointer, and never silently send an unanchored or duplicate uncertain reply.
 - Preserve isolated chat privileges while allowing public web search, a bounded arithmetic parser and clock. Add optional disposable Python containers with no host mounts, network, credentials, Docker socket or desktop; enforce image verification and resource/time limits without host fallback.
 - Allow each group to choose native-mention-only or all-new-message replies, defaulting to mentions. Trigger changes persist without cancelling current answers or weakening isolation.
-- Reconcile uncertain quoted deliveries through exact native references, full bodies, structured mention ranges and sender identity, without resending.
+- Reconcile uncertain quoted deliveries through exact native references, full bodies, structured mention ranges and sender identity, without resending. Resume a verified native @ draft without overwriting user text; distinguish the quoted message from any older reference nested inside it.
 - Keep personal Agent and chat model choices independent. Improve the chat prompt's completeness and factual tool use; limited capabilities do not change the selected model or reasoning effort.
 - Add actual CLI allowlist/injection tests, delayed-DOM and inbox scheduling tests, native quote fixtures for both adapters, and actual Linux container isolation checks alongside paired Windows/macOS ARM64 releases.
 

@@ -5,7 +5,7 @@ import { toPlainChatText,comparableChatText,matchesOutgoingText } from './chat-t
 import {createHash} from 'node:crypto';
 import {bindScanIdentity} from './chat-identity.mjs';
 import {inspectInbox} from './inbox.mjs';
-import {prepareQuote,inspectQuoteDraft,inspectQuoteSchema} from './quote-reply.mjs';
+import {prepareQuote,inspectQuoteDraft,inspectQuoteSchema,inspectNativeMentionDraft,clickQuoteAction,allowComposerDraft,focusComposerEnd} from './quote-reply.mjs';
 
 // Executed inside the dedicated, locally logged-in browser. No cookies or tokens leave it.
 // Share-card extraction follows the publicly documented React message shape used by
@@ -134,6 +134,7 @@ export function inspectComposers() {
     // Slate / Draft editors render their prompt inside the editable surface.
     // Placeholder text and zero-width caret markers are not a user's draft.
     clone.querySelectorAll('[data-slate-placeholder],[data-placeholder],[class*="placeholder" i]').forEach(n=>n.remove());
+    clone.querySelectorAll('br').forEach(n=>n.replaceWith('\n'));clone.querySelectorAll('div,p').forEach(n=>{n.prepend('\n');n.append('\n');});
     let text=el.tagName==='TEXTAREA'?el.value:clone.textContent||'';
     if(clone.querySelector('img,[data-slate-void="true"]'))text+='[非文字内容]';
     text=text.replace(/[\u200B-\u200D\u2060\uFEFF]/g,'').trim();
@@ -283,8 +284,8 @@ export class DouyinAdapter {
     }return {opened:true,frames};
   }
   async inbox(){if(!this.chatFrame)return {entries:[],rows:0};return this.chatFrame.evaluate(inspectInbox);}
-  async quoteSchema(){return this.chatFrame?this.chatFrame.evaluate(inspectQuoteSchema):null;}
-  async send(owner,text,{plainText=false,replyToMessageId=''}={}) {
+  async quoteSchema(){return this.chatFrame?{...await this.chatFrame.evaluate(inspectQuoteSchema),nativeDraft:await this.chatFrame.evaluate(inspectNativeMentionDraft)}:null;}
+  async send(owner,text,{plainText=false,replyToMessageId='',replyToSenderUid=''}={}) {
     checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');
     this.sending=true;let submitted=false,editor,surface,body;
@@ -295,14 +296,19 @@ export class DouyinAdapter {
       const composer=(await surface.evaluate(inspectComposers))[0];
       if(!composer)throw new Error('未找到私信输入框，抖音页面可能已改版');
       editor=surface.locator('[contenteditable="true"],textarea').nth(composer.index);
-      if(composer.text)throw new Error('私信输入框有未发送的草稿，请先处理草稿');
-      if(replyToMessageId)await prepareQuote({evaluate:(fn,arg)=>surface.evaluate(fn,arg),wait:ms=>new Promise(r=>setTimeout(r,ms)),verify:async()=>{checkWork();if(!matchesPeer((await this.scan()).peer,owner))throw new Error('会话已切换，停止准备引用');},openMenu:async()=>{await surface.evaluate(captureMessageMenu);await surface.locator('[data-bridge-quote-source="true"]').last().click({button:'right',timeout:3000});},choose:async token=>{checkWork();await surface.locator('[data-bridge-quote-action="'+token+'"]').click({timeout:3000});},diagnostic:v=>{this.lastQuoteDiagnostic=v;}},replyToMessageId);
+      const replyToSender=replyToSenderUid||scan.messages.find(m=>m.id===replyToMessageId)?.sender||'';
+      if(!await allowComposerDraft(fn=>surface.evaluate(fn),composer.text,replyToMessageId,replyToSender))throw new Error('私信输入框有未发送的草稿，请先处理草稿');
+      if(replyToMessageId)await prepareQuote({evaluate:(fn,arg)=>surface.evaluate(fn,arg),wait:ms=>new Promise(r=>setTimeout(r,ms)),verify:async()=>{checkWork();if(!matchesPeer((await this.scan()).peer,owner))throw new Error('会话已切换，停止准备引用');},openMenu:async()=>{await surface.evaluate(captureMessageMenu);await surface.locator('[data-bridge-quote-source="true"]').last().click({button:'right',timeout:3000});},choose:async token=>{checkWork();await surface.evaluate(clickQuoteAction,token);},diagnostic:v=>{this.lastQuoteDiagnostic=v;}},replyToMessageId);
       body=plainText?String(text).trim():toPlainChatText(text);
-      checkWork();await editor.click();checkWork();await this.page.keyboard.insertText(body);
+      const prefix=(await surface.evaluate(inspectComposers))[0]?.text||'';
+      if(!await allowComposerDraft(fn=>surface.evaluate(fn),prefix,replyToMessageId,replyToSender))throw new Error('引用后出现了其他草稿，未填写回复');
+      const expectedBody=prefix?prefix+' '+body:body;
+      checkWork();await surface.evaluate(focusComposerEnd,{index:composer.index,expected:prefix});checkWork();await this.page.keyboard.insertText(prefix?' '+body:body);
       scan=await this.scan();
       if(!matchesPeer(scan.peer,owner))throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
       if(replyToMessageId){const quote=await surface.evaluate(inspectQuoteDraft);if(quote.ids.length!==1||quote.ids[0]!==replyToMessageId)throw new Error('引用草稿已变化，已取消发送');}
-      const before=new Set(scan.messages.map(m=>m.id)),replyToSender=scan.messages.find(m=>m.id===replyToMessageId)?.sender||'';
+      if(comparableChatText((await surface.evaluate(inspectComposers))[0]?.text)!==comparableChatText(expectedBody))throw new Error('回复草稿发生变化，未发送');
+      const before=new Set(scan.messages.map(m=>m.id));
       checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;
       submitted=true;
       await this.page.keyboard.press('Enter');
