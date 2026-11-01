@@ -102,7 +102,7 @@ export class BridgeEngine {
   }
   referenceFailure(message,e){
     this.progress.receive(message);this.progress.identify(message.id,{announce:true});this.store.messageStatus(message.id,'waiting_reference',e.message);
-    this.reply(e.code==='REFERENCE_UNRESOLVED'?e.message:'引用暂时无法核实，要求已保留；请稍后重新回复具体反馈。',{operationId:message.id,priority:90,dedupe:'reference-error:'+message.id});this.progress.finish(message.id,'waiting');
+    this.reply(['REFERENCE_UNRESOLVED','REFERENCE_INCOMPLETE'].includes(e.code)?e.message:'引用暂时无法核实，要求已保留；请稍后重新回复具体反馈。',{operationId:message.id,priority:90,dedupe:'reference-error:'+message.id});this.progress.finish(message.id,'waiting');
   }
   async scan() {
     if((!this.store.config.enabled&&!this.armedAt)||this.scanBusy)return;

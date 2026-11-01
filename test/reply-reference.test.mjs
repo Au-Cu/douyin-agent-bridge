@@ -96,3 +96,14 @@ test('需求上下文按实际时间排列，不因补充编号是文字而把�
   for(let i=0;i<9;i++){const m=msg(String(8000000000000000080n+BigInt(i)),'新任务'+i);h.s.incoming(m);h.engine.progress.receive(m);h.engine.progress.bind(m.id,need.id,need.thread);h.engine.progress.identify(m.id);}const requests=h.conv.context({needId:need.id}).requests;assert.equal(requests.length,8);assert.equal(requests.some(r=>r.number==='1-1'),false);
  }finally{h.s.close();}
 });
+
+test('分段记录缺失或无法确定分组时不冒充完整反馈',async()=>{
+ const h=setup();try{const origin=await source(h),first=origin.rows[0],link=h.s.db.prepare('SELECT platform_id FROM outgoing_message_links WHERE outbox_id=?').get(first.id);h.s.delivery(origin.rows[1].id,'superseded','测试缺失');const m=msg('8000000000000000089','请使用',{replyTo:{messageId:link.platform_id,status:0,hint:first.body,authorId:'assistant'}});assert.throws(()=>h.engine.references.find(m),e=>e.code==='REFERENCE_INCOMPLETE');assert.equal(h.s.db.prepare('SELECT 1 FROM reply_reference_links WHERE message_id=?').get(m.id),undefined);
+  h.s.delivery(origin.rows[1].id,'sent');for(const row of origin.rows){const p=JSON.parse(row.payload);delete p.group;delete p.totalSegments;h.s.db.prepare('UPDATE outbox SET payload=? WHERE id=?').run(JSON.stringify(p),row.id);}assert.throws(()=>h.engine.references.find(m),e=>e.code==='REFERENCE_INCOMPLETE');
+ }finally{h.s.close();}
+});
+
+test('旧记录缺少 group 但保留完整分段号和去重键时，能核对并恢复所有分段',async()=>{
+ const h=setup();try{const origin=await source(h);for(const [i,row] of origin.rows.entries()){const p=JSON.parse(row.payload);delete p.group;h.s.db.prepare('UPDATE outbox SET payload=?,dedupe=? WHERE id=?').run(JSON.stringify(p),'result:fixture:'+i,row.id);}const first=origin.rows[0],link=h.s.db.prepare('SELECT platform_id FROM outgoing_message_links WHERE outbox_id=?').get(first.id),m=msg('8000000000000000090','请总结',{replyTo:{messageId:link.platform_id,status:0,hint:first.body,authorId:'assistant'}});assert.deepEqual(h.engine.references.find(m).parts.map(p=>p.text),origin.rows.map(r=>r.body));
+ }finally{h.s.close();}
+});
