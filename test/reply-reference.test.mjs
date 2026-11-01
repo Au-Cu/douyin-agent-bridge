@@ -90,3 +90,9 @@ test('重启时若引用消息已入库但尚未分类，先恢复引用身份�
  const h=setup();try{const origin=await source(h),part=origin.rows[1],link=h.s.db.prepare('SELECT platform_id FROM outgoing_message_links WHERE outbox_id=?').get(part.id),m=msg('8000000000000000062','请概括这条',{replyTo:{messageId:link.platform_id,status:0,hint:part.body,authorId:'assistant'}});h.s.incoming(m);await h.engine.processNext();const body=JSON.parse(h.s.db.prepare('SELECT body FROM messages WHERE id=?').get(m.id).body);assert.ok(body.referenceKey);assert.equal(body.referenceOperationId,origin.m.id);assert.ok(h.engine.progress.get(m.id).fingerprint.endsWith('|reply:'+body.referenceKey));assert.equal(h.conv.needs.route(m.id).need_id,origin.need.id);
  }finally{h.s.close();}
 });
+
+test('需求上下文按实际时间排列，不因补充编号是文字而把旧补充排到最新',async()=>{
+ const h=setup();try{const need=await h.conv.create('测试'),root=msg('8000000000000000070','旧任务'),sub=msg('8000000000000000071','旧补充');for(const m of [root,sub]){h.s.incoming(m);h.engine.progress.receive(m);h.engine.progress.bind(m.id,need.id,need.thread);}h.engine.progress.identify(root.id);h.engine.progress.db.prepare('UPDATE operations SET parent=? WHERE id=?').run(root.id,sub.id);h.engine.progress.identify(sub.id);
+  for(let i=0;i<9;i++){const m=msg(String(8000000000000000080n+BigInt(i)),'新任务'+i);h.s.incoming(m);h.engine.progress.receive(m);h.engine.progress.bind(m.id,need.id,need.thread);h.engine.progress.identify(m.id);}const requests=h.conv.context({needId:need.id}).requests;assert.equal(requests.length,8);assert.equal(requests.some(r=>r.number==='1-1'),false);
+ }finally{h.s.close();}
+});
