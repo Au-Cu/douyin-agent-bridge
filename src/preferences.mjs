@@ -54,6 +54,6 @@ export class Preferences{
     const keys=['model','reasoningEffort','fastMode','autoRoute','contextBudget','visualFps'];this.store.saveConfig(Object.fromEntries(keys.filter(k=>k in patch).map(k=>[k,next[k]])));
     if(keys.some(k=>k!=='visualFps'&&k in patch))configurePanel(this.store,'model');return this.store.config;
   }
-  describe(){const c=this.store.config;return `模型：${c.model||'Codex 默认'}\n强度：${effortNames[c.reasoningEffort]||c.reasoningEffort||'Codex 默认'}\n快速：${c.fastMode?'开':'关'}；密度：${c.visualFps} 帧/秒\n自动分聊：${c.autoRoute?'开':'关'}；上下文预算：${c.contextBudget} tokens`;}
+  describe(){const c=this.store.config;const name=this.codex.harnessName==='dsh'?'DeepSeek Harness':'Codex';return `助手：${name}\n模型：${c.model||name+' 默认'}\n强度：${effortNames[c.reasoningEffort]||c.reasoningEffort||name+' 默认'}\n快速：${c.fastMode?'开':'关'}；密度：${c.visualFps} 帧/秒\n自动分聊：${c.autoRoute?'开':'关'}；上下文预算：${c.contextBudget} tokens`;}
 }
 import {configurePanel} from './ui-state.mjs';

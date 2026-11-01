@@ -8,6 +8,7 @@
     "scripts/Launcher.ps1", "scripts/storage.mjs", "scripts/setup-asr.mjs", "scripts/setup-runtime.mjs", "scripts/doctor.mjs",
     "scripts/video-inspect.mjs", "scripts/live-smoke.mjs", "scripts/visual-smoke.mjs", "scripts/ui-smoke.mjs", "scripts/routing-smoke.mjs", "scripts/chat-safety-smoke.mjs", "scripts/setup-sandbox.mjs",
     "scripts/release-files.mjs", "scripts/release-check.mjs", "scripts/release-build.mjs", "scripts/verify-release-pair.mjs", "scripts/portable-smoke.mjs",
+    "scripts/dsh-smoke.mjs",
     "docs/TROUBLESHOOTING.md", ".github/workflows/ci.yml"
   ]
 }

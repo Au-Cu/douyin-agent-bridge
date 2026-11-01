@@ -212,6 +212,14 @@ export class BridgeEngine {
       const op=archive?this.archives.archiveTask(arg):this.archives.restoreTask(arg);return this.progress.label(op.id)+'\n'+(archive?'已归档，未提交的工作暂停；已提交的执行与回复保留现场。':'已恢复显示。已完成或结果不明的工作不会重跑；确定未提交的暂停任务需另用 /重试 '+op.number+'。');
     }
     if(!this.preferences)throw new Error('此运行入口未启用配置服务');
+    if(name==='harness'){
+      const current=this.codex.harnessName||this.store.config.harness||'codex';
+      if(!arg)return '当前助手：'+current+'\n可用：codex、dsh\n用 /助手 codex 或 /助手 dsh 切换，保存后需重启助手生效。';
+      const value=arg.toLowerCase();
+      if(!['codex','dsh'].includes(value))throw new Error('助手只能是 codex 或 dsh。');
+      this.store.saveConfig({harness:value});
+      return '已保存助手：'+value+'\n重启助手后生效；当前这一轮仍使用原来的助手。';
+    }
     if(name==='settings')return this.preferences.describe();
     if(name==='retry'){if(!arg)throw new Error('格式：/重试 任务编号，例如 /重试 5');const id=this.progress.retry(arg);return this.progress.get(id)?this.progress.label(id)+'\n已恢复确定尚未提交的工作，已有执行不会重跑。':'已恢复确定尚未提交的工作。';}
     if(name==='find'){

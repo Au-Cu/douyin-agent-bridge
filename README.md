@@ -9,13 +9,13 @@
 
 也可以在面板中为指定单聊或群聊启用普通聊天 AI。它使用同一个本机 Codex 登录，仅回复该聊天的消息；群聊默认仅在原生 @ 助手时回复，也可为每个群聊选择回复所有新消息。现有的视频学习与项目处理称为“个人 Agent”，仍使用绑定用户的单聊。
 
-这是运行在个人电脑上的社区项目，依赖抖音网页版结构。提供 Windows x64 / ARM64 和 macOS Apple 芯片版本；Windows ARM64 已做真实账号验收。Mac Safari 版为新适配，真实抖音账号收发及视频获取仍需在自己的 Mac 上核验；无法获取原片时会停止并报告，不会假装完成视觉学习。Linux 尚未提供安装入口。不是抖音或 OpenAI 官方连接器。
+这是运行在个人电脑上的社区项目，依赖抖音网页版结构。提供 Windows x64 / ARM64 和 macOS Apple 芯片版本；Windows ARM64 已做真实账号验收。Mac Safari 版已在真实抖音账号上完成文字往返回复与三段表情回执的验收；视频地址提取、下载与全时段视觉学习仍需在自己的 Mac 上用真实视频核验；无法获取原片时会停止并报告，不会假装完成视觉学习。Linux 尚未提供安装入口。不是抖音或 OpenAI 官方连接器。
 
 ## 需要准备
 
 - Node.js 24.5.0 或以上：[官方下载](https://nodejs.org/)。安装后重新打开终端。
 - 正常联网并在使用期间保持开机的电脑：Windows 使用 Microsoft Edge；Apple 芯片 Mac 默认使用系统 Safari。
-- 自己已开通 Codex 使用权限的 ChatGPT 账号。项目会安装固定版本的官方 Codex CLI，复用本机 Codex 登录与聊天数据，无需单独配置模型 API Key。
+- 自己已开通 Codex 使用权限的 ChatGPT 账号。项目会安装固定版本的官方 Codex CLI，复用本机 Codex 登录与聊天数据，无需单独配置模型 API Key。也可以改用本机 DeepSeek Harness，见[改用 DeepSeek Harness](#改用-deepseek-harness)。
 - 一个用来接收视频的抖音助手账号；主号和助手账号互关。手机可以是 iPhone 或安卓。
 
 视觉理解和任务执行由 Codex 完成；口播使用本机 SenseVoice 转写。没有第三方云模型调用。文字稿与连续画面会提交给你登录的 Codex，使用你的 Codex 额度。耗时和额度消耗取决于视频长度与采样密度。
@@ -190,6 +190,53 @@ Mac 使用普通 Safari 窗口及其当前个人资料的登录状态，而非�
 
 这是本机 app-server 连接的恢复，不会更改 Codex 的登录文件或复制令牌。官方协议见 [Codex App Server](https://learn.chatgpt.com/docs/app-server#auth-endpoints)。
 
+## Mac 版的真实验证状态
+
+在 Apple 芯片 Mac 上用真实抖音账号跑通的部分：
+
+- **账号绑定**：从 Safari 里登录的抖音助手账号识别出对端用户与会话，绑定后可接收该用户的私信。
+- **文字全链路**：手机发来的消息被读取，经 DeepSeek Harness 处理后，回复真实出现在抖音私信里。
+- **三段表情回执**：👌 收到、[奋斗] 进行中、🎉 完成，逐个核验到原消息上的表情气泡。
+- **本机能力**：FFmpeg 解码与 SenseVoice 口播转写在本机完成。
+- **还没走完的部分**：视频地址提取、原片下载、全时段连续视觉与视频回复。视觉分析会请助手打开本机保存的连续画面文件，这些文件在项目目录之外，DeepSeek Harness 的沙箱可能要求一次读取授权；请在控制台确认后回复。
+
+## 改用 DeepSeek Harness
+
+除了 Codex，桥接也可以把本机 DeepSeek Harness 当作执行助手。抖音绑定、目标名单、资料整理、表情回执、派发与归档的规则完全不变，只更换真正读视频、想问题、写代码的那一端。
+
+DeepSeek Harness 通过官方 [Agent Client Protocol](https://agentclientprotocol.com) 提供自动化会话：桥接启动 `dsh --profile acp`，为每个需求建立一个持久会话，用 MCP 把 `need_context`、`knowledge_search`、`dispatch_task` 和回看工具交给助手，再通过 `session/prompt` 提交每一轮指令。待确认的操作走 ACP 的权限请求，仍由你决定同意或拒绝。
+
+切换方式三选一：
+
+```sh
+# 1. 启动时用环境变量（优先级最高）
+BRIDGE_HARNESS=dsh npm start
+
+# 2. 在抖音里发送命令，保存后重启助手
+/助手 dsh
+/助手 codex
+
+# 3. 直接改配置文件
+# data/config.json 里写入 "harness": "dsh"
+```
+
+`/助手` 不带参数时只显示当前使用哪一个助手。切换在重启后生效，不会打断正在执行的任务。
+
+几点和 Codex 版本的差别：
+
+- **模型名单与推理强度**来自 DeepSeek 自己的目录。DeepSeek 的档位比 Codex 少，桥接保留 Codex 的档位名称并在切换时对齐到最接近的一档；`/强度` 显示的是对齐后的档位。
+- **没有快速模式**。切到 DeepSeek Harness 时若原本开着快速模式，会关闭并记录一次原因。
+- **图片不直接送进模型**。DeepSeek 路线不接受内联图片，桥接把连续画面保存为本机文件，让助手用自己的图片工具逐张打开；视频理解仍然是全时段连续覆盖，不是抽几张预览。
+- **没有原生归档**。DeepSeek Harness 的会话不支持归档，归档状态只保存在本机记录里，需要时仍可恢复会话继续。
+- **不需要 ChatGPT 账号**。助手端用你自己的 DeepSeek 登录或 API Key；抖音绑定和数据仍只留在本机。
+
+检查本机连接：
+
+```sh
+BRIDGE_HARNESS=dsh npm run doctor
+BRIDGE_HARNESS=dsh npm run doctor -- --live-dsh
+```
+
 ## 固定提示词在哪里
 
 固定规则放在 `prompts/assistant.md` 和 `prompts/visual.md`。程序在建立助手会话时主动注入会话级规则；已有助手聊天首次恢复时更新一次，不依赖模型碰巧打开 README。`prompts/router.md` 与 `prompts/memory.md` 负责临时分类与交接摘要。派给其他项目时，用 `prompts/task-reference.md` 说明如何读取视频，消息只带读取入口、简短摘要和原片索引，保留图片附件。目标项目聊天原有的规则不会被覆盖。
@@ -258,7 +305,10 @@ npm run doctor -- --live-codex --live-asr
 npm run test:live
 npm run test:visual
 npm run test:routing
+npm run test:dsh
 ```
+
+`npm run test:dsh` 会真的启动本机 DeepSeek Harness 的 ACP 会话并跑通一次工具调用，会消耗你自己的模型额度；只想检查连接可以运行 `BRIDGE_HARNESS=dsh npm run doctor`。`npm test` 里的 DeepSeek Harness 用例使用本地合成的 ACP 服务，不联网也不消耗额度。
 
 CI 分别在 Windows 和 Apple 芯片 Mac 上构建，并核对两份发布包版本、源码清单和校验值一致。这些真实模型检查会使用自己的 Codex 额度；组件测试通过不等于每个抖音账号的真实收发都已验收。跨聊天正在被桌面端占用时，桥接不会强抢；不明执行结果不会自动重做。
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0
+
+- Add a DeepSeek Harness build of the bridge. The harness runs the local DeepSeek Harness agent over the official Agent Client Protocol, keeps one persistent session per need, and publishes the bridge's need, knowledge, dispatch and video-review tools to the agent through MCP. Approval requests still wait for the owner.
+- Select the harness with `BRIDGE_HARNESS=dsh`, the `/助手 dsh` command or the saved setting; Codex remains the default and switching needs a restart.
+- Map DeepSeek's smaller model and reasoning catalogue onto the existing Codex vocabulary, drop the fast-mode option that DeepSeek does not offer, keep archive state locally because DeepSeek sessions have no native archive, and pass video frames as local files the agent opens with its own image tool.
+- Run the page-automation regressions on macOS with the bundled Chromium instead of assuming Edge is installed, and skip with a stated reason on a machine without any browser.
+- Locate the Douyin chat tab by its URL instead of assuming it is the first tab. Safari 26 opens the page as a new tab in the current window, so the old assumption read the wrong tab and ended in a misleading "allow JavaScript from Apple Events" error.
+- Keep the located window and tab across restarts, and re-locate the page when the user rearranges tabs, so the bridge no longer opens a second copy of the same page.
+- Verify on a real macOS Douyin account: the account binds, an inbound message is read, the assistant answers, the reply reaches the chat, and the three progress reactions appear on the original message.
+
 ## 0.11.0
 
 - Avoid routine chat switching when the exact native sidebar unread count is zero. Keep a one-minute reconciliation, stable message collection after navigation, coalesced polling and complete leases through sending/reaction verification. Independent video tabs no longer block the inbox.

@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { chromium } from 'playwright-core';
+import { launchTestBrowser } from './browser.mjs';
 
-test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入名单后不溢出、不丢失目标 ID', async () => {
+test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入名单后不溢出、不丢失目标 ID', async t => {
   const longName = '研究页面切换与视频视觉效果 '.repeat(160);
   const threads = [{id:'long-thread-id',name:longName},{id:'short-thread-id',name:'其他聊天'}];
   const state = {
@@ -43,7 +43,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   await listenBrowserFixture(server);
   let browser;
   try{
-    browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||'msedge',headless:true});
+    browser=await launchTestBrowser(t);if(!browser)return;
     const page=await browser.newPage({viewport:{width:1100,height:900}}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto('http://127.0.0.1:'+server.address().port);

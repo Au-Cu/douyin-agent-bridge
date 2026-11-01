@@ -1,5 +1,6 @@
 const aliases=new Map(Object.entries({help:'help','帮助':'help','状态':'status',status:'status','设置':'settings','配置':'settings','密度':'density','模型':'model',model:'model','强度':'effort','快':'fast','快速':'fast',fast:'fast','分聊':'routing','预算':'budget','新建':'new','切换':'switch','找':'find','续看':'resume','继续视频':'resume','重连':'reconnect','重新连接':'reconnect',reconnect:'reconnect','派':'dispatch','派给':'dispatch',dispatch:'dispatch','同意':'approve','拒绝':'decline','重试':'retry','归档需求':'archive_need','归档任务':'archive_task','恢复需求':'restore_need','恢复任务':'restore_task'}));
 aliases.set('中断','interrupt');
+aliases.set('助手','harness');aliases.set('harness','harness');
 aliases.set('忽略','ignore_start');aliases.set('结束忽略','ignore_end');
 export function parseCommand(text){const m=String(text||'').trim().match(/^\/([^\s/]+)(?:\s+([\s\S]*))?$/);return m?{name:aliases.get(m[1].toLowerCase())||'unknown',arg:(m[2]||'').trim(),raw:String(text)}:null;}
 export function onOff(arg){if(['开','on'].includes(arg.toLowerCase()))return true;if(['关','off'].includes(arg.toLowerCase()))return false;throw new Error('请明确填写 开 或 关；不填写时只查看当前设置。');}
@@ -16,6 +17,7 @@ export const commandHelp=`可用命令
 /密度 2|4|8  视频每秒读取帧数
 /分聊 开|关  自动按需求分对话
 /预算 数字  上下文 tokens 上限
+/助手 [codex|dsh]  查看或切换本机助手，重启后生效
 
 /新建 [标题]  新需求并切换
 /找 [关键词]  查找需求目录
