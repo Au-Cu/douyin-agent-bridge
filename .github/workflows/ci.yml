@@ -19,6 +19,12 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run setup:runtime
+      - name: Install optional pinned DSH for protocol isolation checks
+        shell: pwsh
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/dsh-wire" --no-audit --no-fund --ignore-scripts @deepseek-ai/dsh@0.2.1-rc.5
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "BRIDGE_DSH_WIRE_BIN=$env:RUNNER_TEMP/dsh-wire/node_modules/@deepseek-ai/dsh/lib/bin.js" >> $env:GITHUB_ENV
       - run: npm test
       - run: npm run test:portable
       - run: npm run release:check
@@ -50,6 +56,10 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: node node_modules/@openai/codex/bin/codex.js --version
       - run: npm run setup:runtime
+      - name: Install optional pinned DSH for protocol isolation checks
+        run: |
+          npm install --prefix "$RUNNER_TEMP/dsh-wire" --no-audit --no-fund --ignore-scripts @deepseek-ai/dsh@0.2.1-rc.5
+          echo "BRIDGE_DSH_WIRE_BIN=$RUNNER_TEMP/dsh-wire/node_modules/@deepseek-ai/dsh/lib/bin.js" >> "$GITHUB_ENV"
       - run: npm run setup:asr
       - run: node scripts/mac-native-smoke.mjs
       - run: sudo /usr/bin/safaridriver --enable
@@ -63,9 +73,10 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/mac-source-check"
           /usr/bin/ditto -x -k dist/*-macos-arm64-source.zip "$RUNNER_TEMP/mac-source-check"
-          test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/start-mac.command"
-          test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/install-mac.command"
-          test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/start-shared-codex-mac.command"
+          SOURCE_FOLDER=$(node -p "const p=require('./package.json'); p.name+'-'+p.version")
+          test -x "$RUNNER_TEMP/mac-source-check/$SOURCE_FOLDER/start-mac.command"
+          test -x "$RUNNER_TEMP/mac-source-check/$SOURCE_FOLDER/install-mac.command"
+          test -x "$RUNNER_TEMP/mac-source-check/$SOURCE_FOLDER/start-shared-codex-mac.command"
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: macos-arm64-source

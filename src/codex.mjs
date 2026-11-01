@@ -16,7 +16,7 @@ export function approvalResponse(request,allow) {
 export class CodexClient extends EventEmitter {
   constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome(),restricted=false,spawnEnv={},authTokensProvider,allowedChatTools=[],allowPublicWeb=false,sharedRoot,sharedRole='bridge' }={}) {
     super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome,restricted,spawnEnv,authTokensProvider,allowPublicWeb});this.allowedChatTools=new Set(allowedChatTools); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
-    this.sharedRoot=sharedRoot;this.sharedRole=sharedRole;this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.loaded=new Set();this.threadLocks=new Map();this.interrupting=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
+    this.sharedRoot=sharedRoot;this.sharedRole=sharedRole;this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.loaded=new Set();this.threadLocks=new Map();this.interrupting=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};this.harnessName='codex';
   }
   async connect() {
     if(this.closed)throw Object.assign(new Error('Codex 客户端已关闭'),{code:'CODEX_CLIENT_CLOSED'});
@@ -51,6 +51,7 @@ export class CodexClient extends EventEmitter {
     await this.connect();return {deferred:false,auth:this.authState};
   }
   get authState(){return {...this.auth,reconnectPending:!!this.needsReconnect};}
+  threadUrl(id){return /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(String(id||''))?'codex://threads/'+encodeURIComponent(id):null;}
   startAuthWatcher(intervalMs=3000){
     clearInterval(this.authTimer);
     this.authTimer=setInterval(()=>this.connect().catch(e=>{

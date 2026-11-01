@@ -1,7 +1,7 @@
 export const archiveScopes=new Set(['current','archived','all']);
 export const taskStatuses=new Set(['all','queued','running','blocked','uncertain','done','cancelled','failed','waiting','sending','failed_delivery','stopping']);
 export const archiveScope=value=>{const scope=value||'current';if(!archiveScopes.has(scope))throw new Error('归档范围必须为 current、archived 或 all');return scope;};
-export const codexThreadUrl=id=>/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(String(id||''))?'codex://threads/'+encodeURIComponent(id):null;
+export const codexThreadUrl=id=>/^(?:dsh:)?[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(String(id||''))?String(id).startsWith('dsh:')?'dsh://session/'+encodeURIComponent(id.slice(4)):'codex://threads/'+encodeURIComponent(id):null;
 
 export class Archives{
   constructor({store,codex,progress,conversations}){
@@ -31,11 +31,13 @@ export class Archives{
   restoreTask(value){const op=this.task(value);this.store.setArchived('task',op.id,false,{reason:'restored'});return op;}
   knowledge(id,archived){const item=this.store.knowledge(String(id));if(!item)throw new Error('学习资料不存在');this.store.setArchived('knowledge',item.id,archived,{reason:archived?'manual':'restored'});return item;}
   async threadArchived(thread){
-    const {thread:t}=await this.codex.request('thread/read',{threadId:thread,includeTurns:false});
+    const client=this.codex.forThread?.(thread)||this.codex;
+    await client.connect?.();
+    const {thread:t}=await client.request('thread/read',{threadId:thread,includeTurns:false});
     if(typeof t?.archived==='boolean')return t.archived;
     const path=String(t?.path||'').replaceAll('\\','/');if(path.includes('/archived_sessions/'))return true;if(path.includes('/sessions/'))return false;
     let cursor;for(let page=0;page<50;page++){
-      const result=await this.codex.request('thread/list',{archived:true,limit:100,...(cursor?{cursor}:{})});if(result.data?.some(t=>t.id===thread))return true;
+      const result=await client.request('thread/list',{archived:true,limit:100,...(cursor?{cursor}:{})});if(result.data?.some(t=>t.id===thread))return true;
       cursor=result.nextCursor;if(!cursor)return false;
     }throw new Error('归档状态目录尚未核实完整，未重复发送归档请求');
   }
@@ -43,11 +45,11 @@ export class Archives{
     const need=this.conversations.needs.lookup(value,{includeArchived:true}),key=need.id;
     if(this.busy.has(key))throw new Error('该需求的归档操作正在核对，请稍后查看。');this.busy.add(key);
     try{
-      await this.codex.connect();
       const threads=this.db.prepare('SELECT thread FROM need_threads WHERE need_id=? ORDER BY seq').all(need.id).map(t=>t.thread);if(need.thread&&!threads.includes(need.thread))threads.push(need.thread);
+      const localOnly=threads.filter(t=>(this.codex.forThread?.(t)||this.codex).capabilities?.nativeArchive===false);
       if(archived){
         if(this.db.prepare("SELECT 1 FROM operations WHERE need_id=? AND kind<>'control' AND status='running' LIMIT 1").get(need.id))throw new Error('该需求仍在执行，先等任务结束再归档需求；可单独收起任务卡片。');
-        for(const thread of threads){if(this.codex.threadLocks?.has(thread))throw new Error('对应 Codex 聊天仍在运行，未归档。');const read=await this.codex.request('thread/read',{threadId:thread,includeTurns:false});if(read.thread?.status?.type==='active')throw new Error('对应 Codex 聊天仍在运行，未归档。');}
+        for(const thread of threads){const client=this.codex.forThread?.(thread)||this.codex;if(client.threadLocks?.has(thread)||client.runs?.has(thread))throw new Error('对应助手聊天仍在运行，未归档。');if(localOnly.includes(thread)){if(client.state?.turns(thread).some(t=>t.status==='inProgress'))throw new Error('对应 DSH 聊天的运行结果尚未核实，未归档。');continue;}await client.connect?.();const read=await client.request('thread/read',{threadId:thread,includeTurns:false});if(read.thread?.status?.type==='active')throw new Error('对应助手聊天仍在运行，未归档。');}
       }
       const previous=this.store.archiveRecord('need',need.id);
       this.store.setArchived('need',need.id,!!previous?.archived,{desired:archived,state:'pending',reason:archived?'manual':'restored'});
@@ -57,6 +59,7 @@ export class Archives{
       }
       for(const thread of threads){
         const direction=Number(archived),old=this.db.prepare('SELECT * FROM archive_jobs WHERE need_id=? AND thread=? AND direction=?').get(need.id,thread,direction);
+        if(localOnly.includes(thread)){this.db.prepare('INSERT OR REPLACE INTO archive_jobs VALUES(?,?,?,?,?,?)').run(need.id,thread,direction,'done','仅本地归档：DSH ACP 不支持原生归档',Date.now());continue;}
         const current=await this.threadArchived(thread);
         if(current===archived){this.db.prepare('INSERT OR REPLACE INTO archive_jobs VALUES(?,?,?,?,?,?)').run(need.id,thread,direction,'done','',Date.now());continue;}
         if(old?.status==='uncertain'||old?.status==='submitted')throw new Error('该聊天的上次归档请求仍需核实，未重复提交；可稍后核对，或恢复需求显示。');
@@ -66,7 +69,7 @@ export class Archives{
       }
       this.store.setArchived('need',need.id,archived,{desired:archived,state:'done',reason:archived?'manual':'restored'});
       this.db.prepare("UPDATE archive_jobs SET status='reconciled',error='',changed=? WHERE need_id=? AND direction<>? AND status IN ('submitted','uncertain')").run(Date.now(),need.id,Number(archived));
-      return {number:need.number,title:need.title,archived,threads:threads.length};
+      return {number:need.number,title:need.title,archived,threads:threads.length,localOnlyThreads:localOnly.length};
     }catch(e){const old=this.store.archiveRecord('need',key);if(old?.state==='pending')this.store.setArchived('need',key,!!old.archived,{desired:archived,state:'attention',error:String(e.message).slice(0,500),reason:old.reason});throw e;}
     finally{this.busy.delete(key);}
   }

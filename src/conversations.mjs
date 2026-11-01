@@ -5,6 +5,7 @@ import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {authFailure} from './codex-auth.mjs';
 import {checkWork,raceWork} from './execution.mjs';
+import {threadHarness} from './harness.mjs';
 const schema=(properties)=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str={type:'string'},strings={type:'array',items:str};
 export const routeSchema=schema({action:{type:'string',enum:['continue','new','recall','clarify']},needId:str,title:str,reason:str,question:str});
@@ -128,7 +129,7 @@ export class Conversations{
     need=this.needs.get(need.id);const history=this.needs.history(need.id);
     const references=this.needs.knowledge(need.id,'',1000).map(k=>({id:k.id,title:k.title,path:k.path}));
     const handoff=this.needs.json(need.id,`handoff-${need.seq+1}.json`,{needId:need.id,previousThread:need.thread,memory:need.memory,summaryIncomplete:need.version!==need.summary_version,historyPath:history,legacyHistoryPath:this.needs.root+'/'+need.id+'/legacy-thread.json',references});
-    const thread=await this.codex.createCoordinator(coordinatorTools,false,{name:`抖音 · ${need.title} · ${need.seq+1}`,...await this.preferences.work()});
+    const thread=await this.codex.createCoordinator(coordinatorTools,false,{harness:threadHarness(need.thread),name:`抖音 · ${need.title} · ${need.seq+1}`,...await (this.preferences.workFor?this.preferences.workFor(need.thread):this.preferences.work())});
     const next=this.needs.bindThread(need.id,thread,handoff);await this.codex.request('thread/unsubscribe',{threadId:need.thread},5000).catch(()=>{});this.store.event('上下文预算触发交接：'+need.title.slice(0,40));return next;
   }
   context(route){const n=this.needs.get(route.needId),thread=this.store.db.prepare('SELECT handoff FROM need_threads WHERE thread=?').get(n.thread),legacy=join(this.needs.root,n.id,'legacy-thread.json'),hasOperations=this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'").get(),requests=hasOperations?this.store.db.prepare("SELECT number,title,status,phase FROM operations WHERE need_id=? AND kind<>'control' AND status<>'merged' AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=operations.id AND a.archived=1) AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=operations.id) ORDER BY created DESC,rowid DESC LIMIT 8").all(n.id):[];return {needId:n.id,needNumber:n.number,title:n.title,memory:n.memory,summaryIncomplete:n.version!==n.summary_version,historyPath:route.historyPath,handoffPath:thread?.handoff||undefined,requests,tasks:this.needs.taskState(n.id,8,{activeOnly:true}).map(t=>({...t,result:t.result.slice(0,1000)})),...(existsSync(legacy)?{legacyHistoryPath:legacy,legacySummaryScope:'较早要求请核对完整历史记录'}:{})};}

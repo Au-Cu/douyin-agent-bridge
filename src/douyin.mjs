@@ -248,7 +248,21 @@ export class DouyinAdapter {
     }
     this.page=this.context.pages().find(p=>p.url().startsWith('https://www.douyin.com/chat'))||this.context.pages()[0]||await this.context.newPage();
     await this.page.bringToFront();
-    try{await this.page.goto('https://www.douyin.com/chat?isPopup=1',{waitUntil:'domcontentloaded',timeout:60000});this.openFailed=false;this.status='waiting_login';}
+    try{
+      const target='https://www.douyin.com/chat?isPopup=1',navigate=()=>this.page.goto(target,{waitUntil:'domcontentloaded',timeout:60000});
+      const internalError=e=>/interrupted by another navigation to ["']chrome-error:\/\/chromewebdata\//.test(e.message);
+      for(let attempt=0;attempt<3;attempt++)try{await navigate();break;}catch(e){
+        if(this.openFailed&&e.message.includes('interrupted by another navigation to "'+target+'"')){
+          // A retry can already be committing the exact target. Accept it only
+          // after inspecting the real document, not Chromium's fallback URL.
+          await this.page.waitForFunction(url=>location.href===url&&document.readyState!=='loading',target,{timeout:15000});break;
+        }
+        // An old internal error-page commit can interrupt the next goto.
+        // Retry only that exact race, at most twice. Other errors stay visible.
+        if(attempt===2||!internalError(e))throw e;
+      }
+      this.openFailed=false;this.status='waiting_login';
+    }
     catch(e){this.openFailed=true;this.status='open_error';throw e;}
     if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回用户会话：'+e.message));
   }

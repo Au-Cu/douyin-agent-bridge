@@ -28,7 +28,7 @@ export const visualTools=[
 function timelineFilter(fps,width){const font=process.platform==='darwin'?'/System/Library/Fonts/Menlo.ttc':'C\\:/Windows/Fonts/consola.ttf';return `fps=${fps}:round=up,scale=${width}:-2,drawtext=fontfile='${font}':text='%{pts\\:hms}':x=6:y=6:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.75,tile=2x2:padding=4:margin=4`;}
 // Current ChatGPT-authenticated app-server does not reliably expose images embedded
 // in a dynamic tool result. Native view_image can read these same local files.
-const imageOutput=async(paths,text)=>({success:true,contentItems:[{type:'inputText',text:text+'\n图片已保存到本机。请调用原生 view_image 工具查看下面的图片路径后再判断，不能只根据文件名推断：\n'+paths.join('\n')}]});
+const imageOutput=async(paths,text)=>({success:true,imagePaths:paths,contentItems:[{type:'inputText',text:text+'\n图片已保存到本机。请调用原生 view_image 工具查看下面的图片路径后再判断，不能只根据文件名推断：\n'+paths.join('\n')}]});
 
 export async function extractVideoFrame({video,folder,seconds,duration,box,name='frame.jpg'}){
   if(box)validateVisualCrop(seconds,box,duration);
