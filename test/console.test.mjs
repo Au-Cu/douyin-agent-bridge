@@ -1,3 +1,4 @@
+import {listenBrowserFixture} from './fixture-http.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -39,7 +40,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');
     res.end(await readFile(new URL('../public/'+name,import.meta.url)));
   });
-  server.listen(0,'127.0.0.1');await once(server,'listening');
+  await listenBrowserFixture(server);
   let browser;
   try{
     browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||'msedge',headless:true});
