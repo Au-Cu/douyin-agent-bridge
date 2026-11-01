@@ -1,10 +1,8 @@
 # Changelog
 
-## 0.9.2
+## 0.9.1
 
 - Allow more time for the reaction menu to expand on slower Windows machines without retrying an uncertain reaction click.
-
-## 0.9.1
 
 - Bound browser-heavy regression concurrency to reduce timeouts on busy Windows CI runners; continue building and verifying both platform packages together.
 
