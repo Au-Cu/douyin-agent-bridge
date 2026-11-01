@@ -55,10 +55,22 @@ export function scanConversation() {
     const awemeId=id(p.itemId||p.item_id||p.awemeId||p.aweme_id);
     const rawText=String(p.text||p.content||p.textContent||(typeof m.content==='string'&&!m.content.startsWith('{')?m.content:''));
     const text=clean(rawText),lineBreaks=(rawText.match(/\n/g)||[]).length;
+    const ref=m.referenceInfo||m.reference_info||m.refInfo||p.referenceInfo||p.reference_info;
+    let replyTo;
+    if(ref&&typeof ref==='object'){
+      const rawId=ref.referenced_message_id??ref.referencedMessageId??ref.refMessageId??ref.ref_message_id;
+      const messageId=typeof rawId==='number'&&!Number.isSafeInteger(rawId)?'':id(rawId);
+      let hint=ref.hint||'';try{if(typeof hint==='string')hint=JSON.parse(hint);}catch{hint={};}
+      let sourceText=typeof hint?.content==='string'?hint.content:'';
+      if(!sourceText&&typeof hint?.refmsg_content==='string'){try{const saved=JSON.parse(hint.refmsg_content);sourceText=typeof saved.text==='string'?saved.text:'';}catch{}}
+      const rawStatus=ref.referenced_message_status??ref.referencedMessageStatus??ref.refMessageStatus;
+      const authorId=id(hint?.refmsg_uid||hint?.sender_uid||'');
+      replyTo={messageId:/^\d{5,32}$/.test(messageId)?messageId:'',status:rawStatus==null?null:Number(rawStatus),hint:sourceText.slice(0,12000),authorId};
+    }
     const videoEl=row.querySelector('video');
     const mediaUrl=p.video?.play_addr?.url_list?.[0]||p.video_url||videoEl?.currentSrc||'';
     const kind=awemeId||videoEl?'video':text?'text':'unsupported';
-    messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl});
+    messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,...(replyTo?{replyTo}:{})});
   }
   messages.sort((a,b)=>a.created-b.created);
   const interactiveRows=rows.filter(row=>{const e=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row,r=e.getBoundingClientRect(),x=r.x+Math.min(24,r.width/4),y=r.y+Math.min(24,r.height/4);if(x<0||y<0||x>=innerWidth||y>=innerHeight)return false;const hit=document.elementFromPoint(x,y);return !!hit&&(e===hit||e.contains(hit));}).length;
@@ -257,7 +269,9 @@ export class DouyinAdapter {
       for(let i=0;i<15;i++) {
         await new Promise(r=>setTimeout(r,400));const after=await this.scan();
         if(after.peer?.chatKey!==owner.chatKey)throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');
-        if(after.messages.some(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body)))return;
+        const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body));
+        if(matches.length===1)return {messageId:matches[0].id};
+        if(matches.length>1)throw new UncertainDelivery('检测到多条相同回复，无法确认本次发送的消息；不会自动重发');
       }
       throw new UncertainDelivery('已按下发送，但未能确认回执；不会自动重复发送');
     } catch(e){if(submitted)e.uncertain=true;else if(workSignal()?.aborted&&editor&&surface&&body){try{const scan=await this.scan(),draft=(await surface.evaluate(inspectComposers))[0];if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid&&draft?.text===body)await editor.fill('');}catch{}}throw e;} finally {this.sending=false;}

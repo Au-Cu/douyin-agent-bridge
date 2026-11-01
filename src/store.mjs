@@ -11,7 +11,7 @@ export class Store {
     this.unlock=lockStorage(root);
     try{
     const established=existsSync(join(root,'config.json'))||existsSync(join(root,'storage.json'));
-    if(!existsSync(join(root,'bridge.sqlite'))&&(existsSync(join(root,'backups','latest.json'))||established&&['knowledge','needs'].some(name=>existsSync(join(root,name))&&readdirSync(join(root,name)).length)))throw new Error('已保存资料的数据库文件缺失，已停止启动并保留资料与备份，不能创建空库替代。');
+    if(!existsSync(join(root,'bridge.sqlite'))&&(existsSync(join(root,'backups','latest.json'))||established&&['knowledge','needs','reply-references'].some(name=>existsSync(join(root,name))&&readdirSync(join(root,name)).length)))throw new Error('已保存资料的数据库文件缺失，已停止启动并保留资料与备份，不能创建空库替代。');
     this.db = new DatabaseSync(join(root, 'bridge.sqlite'));
     if(this.db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('数据库完整性检查未通过，已保留原文件；请从备份恢复并核实任务状态，不能创建空记忆替代。');
     this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
@@ -19,6 +19,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS archive_records(kind TEXT,id TEXT,archived INTEGER NOT NULL DEFAULT 0,desired INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'done',error TEXT NOT NULL DEFAULT '',reason TEXT NOT NULL DEFAULT '',meta TEXT NOT NULL DEFAULT '{}',changed INTEGER NOT NULL,PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS archive_jobs(need_id TEXT,thread TEXT,direction INTEGER,status TEXT,error TEXT,changed INTEGER,PRIMARY KEY(need_id,thread,direction));
       CREATE TABLE IF NOT EXISTS interruptions(operation_id TEXT PRIMARY KEY,state TEXT,requested INTEGER,updated INTEGER,error TEXT);
+      CREATE TABLE IF NOT EXISTS outgoing_message_links(peer TEXT NOT NULL,platform_id TEXT NOT NULL,outbox_id TEXT NOT NULL,method TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(peer,platform_id));
+      CREATE TABLE IF NOT EXISTS reply_reference_links(message_id TEXT PRIMARY KEY,peer TEXT NOT NULL,platform_id TEXT NOT NULL,outbox_id TEXT NOT NULL,match_method TEXT NOT NULL,created INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, peer TEXT, kind TEXT, body TEXT, status TEXT, result TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS knowledge(id TEXT PRIMARY KEY, title TEXT, transcript TEXT, summary TEXT, path TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, alias TEXT, thread TEXT, prompt TEXT, status TEXT, turn TEXT, result TEXT, created INTEGER);
@@ -111,6 +113,10 @@ export class Store {
   autoArchiveTask(id){this.db.prepare("INSERT OR IGNORE INTO archive_records(kind,id,archived,desired,state,reason,changed) VALUES('task',?,1,1,'done','completed',?)").run(id,Date.now());}
   pendingOutbox() { return this.db.prepare("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? ORDER BY priority DESC,created LIMIT 1").all(Date.now()); }
   delivery(id,status,error='') { this.db.prepare('UPDATE outbox SET status=?,error=?,next_attempt=? WHERE id=?').run(status,error,status==='pending'&&error?Date.now()+10000:0,id); }
+  confirmTextDelivery(id,platformId){
+    const out=this.db.prepare('SELECT peer FROM outbox WHERE id=?').get(id);if(!out)throw new Error('未找到发送记录');this.db.exec('BEGIN IMMEDIATE');
+    try{let conflict=false;if(platformId&&/^\d{5,32}$/.test(String(platformId))){const old=this.db.prepare('SELECT outbox_id FROM outgoing_message_links WHERE peer=? AND platform_id=?').get(out.peer,String(platformId));conflict=!!old&&old.outbox_id!==id;if(!old)this.db.prepare('INSERT INTO outgoing_message_links VALUES(?,?,?,?,?)').run(out.peer,String(platformId),id,'delivery',Date.now());}this.delivery(id,conflict?'uncertain':'sent',conflict?'消息 ID 与历史记录冲突，需核实送达':'');this.db.exec('COMMIT');return !conflict;}catch(e){this.db.exec('ROLLBACK');throw Object.assign(e,{uncertain:true});}
+  }
   snapshot() {
     const read=(table)=>this.db.prepare(`SELECT * FROM ${table} ORDER BY created DESC LIMIT 35`).all();
     const counts={knowledge:this.db.prepare('SELECT COUNT(*) AS n FROM knowledge').get().n,queuedTasks:this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status='queued'").get().n,runningTasks:this.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status='running'").get().n};

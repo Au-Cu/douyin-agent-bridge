@@ -46,7 +46,7 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.7.0',projectRoot:project,dataRoot,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.8.0',projectRoot:project,dataRoot,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const needScope=archiveScope(url.searchParams.get('needs')),knowledgeScope=archiveScope(url.searchParams.get('knowledge')),workScope=archiveScope(url.searchParams.get('work')),status=url.searchParams.get('status')||'all';if(!taskStatuses.has(status))throw new Error('未知任务状态');

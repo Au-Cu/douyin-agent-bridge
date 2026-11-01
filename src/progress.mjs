@@ -9,7 +9,7 @@ export const explicitRedo=text=>{
   const s=String(text||'').replace(/“[^”]*”|「[^」]*」|"[^"]*"|'[^']*'/g,'').replace(/(?:不要|不必|无需|不需要|别).{0,3}(?:重新(?:做|执行|生成|分析)|重做|再做|从头(?:做|来))/g,'').trim();
   return /^(?:(?:请|麻烦你?|帮我|我要你?|我要求你?|现在|这次|给我|把.{0,20})\s*){0,3}(?:重新(?:做|执行|生成|分析)|重做|再做一遍|从头(?:做|来))/.test(s)||/(?:请|要求你|帮我|给我|麻烦你).{0,10}(?:重新(?:做|执行|生成|分析)|重做|再做一遍|从头(?:做|来))/.test(s);
 };
-export const requestKey=m=>m.kind==='video'?'video:'+m.awemeId:'text:'+String(m.text||'').normalize('NFKC').replace(/\s+/g,' ').trim().replace(/[。！!]+$/,'');
+export const requestKey=m=>(m.kind==='video'?'video:'+m.awemeId:'text:'+String(m.text||'').normalize('NFKC').replace(/\s+/g,' ').trim().replace(/[。！!]+$/,''))+(m.referenceKey?'|reply:'+m.referenceKey:'');
 const unfinished="'queued','running','sending','waiting','blocked','uncertain','failed_delivery','stopping'";
 const opColumns='id,peer,request,fingerprint,kind,need_id,status,phase,detail,created,started,changed,last_notice,ended,outcome,parent,thread,turn,submitted';
 export function operationTitle(value){const raw=String(value||'').replace(/\s+/g,' ').trim(),specific=String(value||'').match(/(?:具体任务|用户(?:的)?(?:原话|指示|指令))[:：]\s*([^\n]+)/)?.[1];const text=(specific||raw).replace(/^\/(?:派给|派|dispatch)\s+(\S+)\s+/,'$1：').replace(/^转发视频[:：]/,'学习视频：');const chars=Array.from(text||'未命名任务');return chars.slice(0,36).join('')+(chars.length>36?'…':'');}
@@ -61,7 +61,12 @@ export class Progress{
   open({includeArchived=false}={}){return this.db.prepare(`SELECT * FROM operations WHERE status IN (${unfinished}) ORDER BY created`).all().filter(o=>includeArchived||!this.store.isArchived('task',o.id));}
   identify(id,{announce=false}={}){
     let op=this.get(id);if(!op||op.kind==='control')return op;
-    if(!op.number){const number=this.db.prepare('SELECT COALESCE(MAX(number),0)+1 AS n FROM operations').get().n;this.db.prepare('UPDATE operations SET number=?,title=? WHERE id=? AND number IS NULL').run(number,operationTitle(op.request),id);op=this.get(id);}
+    if(!op.number){
+      const parent=this.get(op.parent);let number;
+      if(parent?.number){const root=String(parent.number).split('-')[0];const numbers=this.db.prepare("SELECT number FROM operations WHERE typeof(number)='text' AND number LIKE ?").all(root+'-%').map(r=>String(r.number).match(/^\d+-(\d+)$/)?.[1]).filter(Boolean).map(Number);number=root+'-'+(numbers.reduce((max,n)=>Math.max(max,n),0)+1);}
+      else number=this.db.prepare("SELECT COALESCE(MAX(number),0)+1 AS n FROM operations WHERE typeof(number)='integer'").get().n;
+      this.db.prepare('UPDATE operations SET number=?,title=? WHERE id=? AND number IS NULL').run(number,operationTitle(op.request),id);op=this.get(id);
+    }
     if(announce)this.notify(`已登记任务 ${op.number}：${op.title}${op.parent&&this.get(op.parent)?.number?'\n这是任务 '+this.get(op.parent).number+' 的补充要求。':''}`,{operationId:op.id,notification:true,priority:120,dedupe:'op-identity:'+id});return op;
   }
   label(id){const o=this.get(id);return o?.number?`任务 ${o.number}：${o.title}`:operationTitle(o?.request);}
@@ -141,7 +146,7 @@ export class Progress{
     const previous=this.db.prepare('SELECT * FROM operation_messages WHERE message_id=?').get(message.id);
     if(previous&&['accepted','supplement','duplicate'].includes(previous.relation))return {relation:previous.relation,operationId:previous.operation_id,parent:this.get(previous.operation_id)?.parent};
     const own=this.receive(message);if(explicitRedo(message.text)){this.identify(own.id,{announce:true});return {relation:'new',operationId:own.id};}
-    const candidates=this.open().filter(o=>!this.stopped(o.id)&&o.kind!=='control'&&o.id!==own.id&&o.peer===own.peer&&(!o.need_id||!own.need_id||o.need_id===own.need_id)&&o.parent!==own.id);
+    const candidates=this.open().filter(o=>!this.stopped(o.id)&&o.kind!=='control'&&o.id!==own.id&&o.peer===own.peer&&(message.referenceOperationId?(o.id===message.referenceOperationId||o.fingerprint.endsWith('|reply:'+message.referenceKey)):(!o.need_id||!own.need_id||o.need_id===own.need_id))&&o.parent!==own.id);
     let match=candidates.find(o=>o.fingerprint===own.fingerprint),relation=match?'duplicate':'independent';
     if(!match&&candidates.length===1&&/^(怎么(?:还|一直)|为什么(?:还|一直)|还没(?:好|完成|执行)|进度(?:呢|如何)|做到哪|处理完了吗|快点|继续处理|催一下)[\s\S]{0,22}[？?！!。]*$/.test(message.text||'')){match=candidates[0];relation='duplicate';}
     if(!match&&candidates.length&&this.classify&&message.kind==='text'){
@@ -174,15 +179,16 @@ export class Progress{
   recoverAuth(){for(const w of this.db.prepare("SELECT * FROM task_waits WHERE reason='等待本机 Codex 登录或额度恢复'").all()){const t=this.db.prepare('SELECT * FROM tasks WHERE id=?').get(w.task_id);if(t&&!t.turn&&['queued','blocked'].includes(t.status)){this.clearWait(t.id);this.store.taskStatus(t.id,'queued','登录已恢复，继续确定未提交的任务');}}}
   retry(value){
     const numeric=String(value).trim().replace(/^任务\s*/,'').replace(/^#/,'');
-    const archived=/^\d+$/.test(numeric)?this.db.prepare('SELECT id FROM operations WHERE number=?').get(Number(numeric)):this.get(numeric);if(archived&&this.store.isArchived('task',archived.id))throw new Error('任务已归档，请先 /恢复任务 '+numeric+'，再明确重试。');
+    const isNumber=/^\d+(?:-\d+)?$/.test(numeric),lookup=isNumber?(numeric.includes('-')?numeric:Number(numeric)):numeric;
+    const archived=isNumber?this.db.prepare('SELECT id FROM operations WHERE number=?').get(lookup):this.get(numeric);if(archived&&this.store.isArchived('task',archived.id))throw new Error('任务已归档，请先 /恢复任务 '+numeric+'，再明确重试。');
     if(archived&&this.stopped(archived.id))throw new Error('任务已中断，不能恢复旧执行；需要时请明确发送新的要求。');
-    if(/^\d+$/.test(numeric)){
-      const op=this.db.prepare('SELECT * FROM operations WHERE number=?').get(Number(numeric));
+    if(isNumber){
+      const op=this.db.prepare('SELECT * FROM operations WHERE number=?').get(lookup);
       if(op){const tasks=this.tasks(op.id);if(op.status==='uncertain'||op.status==='failed_delivery'||tasks.some(t=>t.status==='uncertain'))throw new Error('任务 '+op.number+' 的执行或送达结果不明，需先核实，不能自动重跑。');
         if(op.parent&&this.stopped(op.parent)&&!op.submitted)this.db.prepare("UPDATE operations SET parent='' WHERE id=?").run(op.id);
         if(this.db.prepare('SELECT 1 FROM task_waits WHERE task_id=?').get('message:'+op.id)&&!op.submitted){this.clearWait('message:'+op.id);this.store.messageStatus(op.id,'new');this.db.prepare("UPDATE operations SET status='queued',phase='恢复未提交要求的调度' WHERE id=?").run(op.id);return op.id;}
         const pending=tasks.filter(t=>['queued','blocked'].includes(t.status)&&!t.turn);if(!pending.length)throw new Error('任务 '+op.number+' 没有可安全重试的未提交工作。');for(const t of pending){this.clearWait(t.id);this.store.taskStatus(t.id,'queued','用户要求恢复未提交任务');}return op.id;
-      }if(numeric.length<8)throw new Error('没有找到任务 '+numeric+'，发送 /状态 查看编号与标题。');
+      }if(numeric.includes('-')||numeric.length<8)throw new Error('没有找到任务 '+numeric+'，发送 /状态 查看编号与标题。');
     }
     const messages=this.open().filter(o=>o.status==='blocked'&&!o.submitted&&this.db.prepare('SELECT 1 FROM task_waits WHERE task_id=?').get('message:'+o.id)&&createHash('sha256').update(o.id).digest('hex').startsWith(String(value)));
     if(messages.length===1){const op=messages[0];this.clearWait('message:'+op.id);this.store.messageStatus(op.id,'new');this.db.prepare("UPDATE operations SET status='queued',phase='恢复未提交要求的调度' WHERE id=?").run(op.id);return op.id;}

@@ -25,6 +25,6 @@ test('发送时保留换行；平台回执压缩空白后仍能确认相同消�
   const owner={chatKey:'owner',peerUid:'uid'};let body='',pressed=false;
   const adapter=new DouyinAdapter({root:'unused'});adapter.page={keyboard:{insertText:async t=>body=t,press:async()=>{pressed=true;}}};
   adapter.chatFrame={evaluate:async()=>[{index:0,text:''}],locator:()=>({nth:()=>({click:async()=>{}})})};
-  adapter.scan=async()=>({peer:owner,messages:pressed?[{id:'out',direction:'out',text:comparableChatText(body)}]:[]});
-  await adapter.send(owner,'**开始**\n\n1. 看画面\n2. 看变化');assert.equal(body,'开始\n\n1. 看画面\n2. 看变化');
+  adapter.scan=async()=>({peer:owner,messages:pressed?[{id:'90071992547409931',direction:'out',text:comparableChatText(body)}]:[]});
+  const receipt=await adapter.send(owner,'**开始**\n\n1. 看画面\n2. 看变化');assert.equal(body,'开始\n\n1. 看画面\n2. 看变化');assert.equal(receipt.messageId,'90071992547409931');
 });

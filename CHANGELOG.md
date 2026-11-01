@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+- Resolve native Douyin reply pointers to verified outgoing messages, the complete reply group, original need and original video evidence. Persist exact platform IDs and use a unique exact-text fallback for older deliveries.
+- Feed the full cited response and video references to new Codex turns and authorized target chats without treating quoted content as new instructions. Ambiguous citations wait for user clarification.
+- Assign new supplements durable root-based labels such as 1-1 and 1-2 without consuming root task numbers; existing labels stay unchanged and all task commands accept the new labels.
+
 ## 0.7.0
 
 - Add immediate per-operation interruption through task cards and /中断. Persist stop intent, interrupt owned Codex turns, terminate local decoding/transcription, fence late results and stop unsent reply segments without blocking unrelated chats.

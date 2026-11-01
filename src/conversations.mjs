@@ -62,17 +62,28 @@ export class Conversations{
     if(waiting){this.needs.saveRoute(waiting.id,need,'recall','用户明确选择需求');this.store.messageStatus(waiting.id,'new');}
     return !!waiting;
   }
-  async prepare(message,{learned,capture=this.capture()}={}){
+  async prepare(message,{learned,capture=this.capture(),reference}={}){
     await this.ensureLegacy();
     const saved=this.needs.route(message.id);
     if(saved){const n=this.needs.get(saved.need_id);this.needs.attach(n.id,learned?.id);return this.ready(message,n,saved.action,saved.reason);}
+    if(reference?.needId){
+      const source=this.needs.get(reference.needId);
+      if(source){
+        const available=!source.archived&&!(source.archiveDesired&&source.archiveState!=='done');
+        const need=available?source:await this.create('参考：'+String(reference.title||source.title).slice(0,45),{activate:false});
+        checkWork();for(const id of reference.videoIds||[])this.needs.attach(need.id,id);this.needs.attach(need.id,learned?.id);
+        if((this.store.config.needEpoch||0)===capture.epoch||!this.store.config.activeNeed)this.needs.activate(need.id);
+        this.needs.saveRoute(message.id,need,available?'recall':'new','用户直接回复过往反馈，原任务只作为参考');
+        return this.ready(message,need,available?'recall':'new','用户直接回复过往反馈，原任务只作为参考');
+      }
+    }
     const candidate=this.needs.get(capture.needId||this.store.config.activeNeed),current=candidate&&!candidate.archived&&!(candidate.archiveDesired&&candidate.archiveState!=='done')?candidate:null,directory=this.needs.directory(message.text||message.title||'');
     let decision={action:'continue',needId:current?.id||'',title:current?.title||'新需求',reason:'自动分聊已关闭'};
     if(this.store.config.autoRoute){
       const segments=learned?.visual?.segments||[];
       const indices=Array.from({length:Math.min(20,segments.length)},(_,i)=>Math.round(i*(segments.length-1)/Math.max(1,Math.min(20,segments.length)-1)));
       const newMessage=message.kind==='video'?{kind:'video',title:learned?.title||message.title,videoId:message.awemeId,visualCoverage:learned?.visual?{status:learned.visual.status,seconds:learned.seconds,fps:learned.visual.fps}:null,observedContent:indices.length?indices.map(i=>({start:segments[i].start,end:segments[i].end,observation:segments[i].text.slice(0,160)})):learned?.visual?.notes?.slice(0,2200),narration:learned?.transcript?.slice(0,500)}:{kind:'text',text:message.text};
-      const payload={newMessage,recentExchanges:capture.recent,currentNeed:current?{id:current.id,title:current.title,summary:memoryText(current.memory).slice(0,1800),summaryIncomplete:current.version!==current.summary_version}:null,needDirectory:directory};
+      const payload={newMessage,...(reference?{quotedFeedback:{title:reference.title,needId:reference.needId,number:reference.number,excerpt:reference.sourceText.slice(0,700)}}:{}),recentExchanges:capture.recent,currentNeed:current?{id:current.id,title:current.title,summary:memoryText(current.memory).slice(0,1800),summaryIncomplete:current.version!==current.summary_version}:null,needDirectory:directory};
       const result=await this.lightCall('router',payload,routeSchema);
       checkWork();
       decision=parse(result.text);

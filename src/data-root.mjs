@@ -35,7 +35,7 @@ export async function rebaseData(root,source,target){
     db.exec('COMMIT;PRAGMA wal_checkpoint(TRUNCATE)');
   }catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}finally{db.close();}
   async function walk(folder){if(!existsSync(folder))return;for(const entry of await readdir(folder,{withFileTypes:true})){const file=join(folder,entry.name);if(entry.isSymbolicLink())throw new Error('迁移中发现符号链接，原数据保持不变。');if(entry.isDirectory())await walk(file);else if(/\.(?:json|md|txt)$/i.test(entry.name)){const text=await readFile(file,'utf8'),next=rebaseText(text,source,target);if(next!==text)await writeFile(file,next);}}}
-  for(const part of ['knowledge','needs'])await walk(join(root,part));
+  for(const part of ['knowledge','needs','reply-references'])await walk(join(root,part));
   for(const name of ['config.json','config.json.bak'])if(existsSync(join(root,name))){const text=await readFile(join(root,name),'utf8');await writeFile(join(root,name),rebaseText(text,source,target));}
 }
 export async function migrateData(source,target){
@@ -47,7 +47,7 @@ export async function migrateData(source,target){
   try{
     unlock=lockStorage(parent,'migration.lock');await mkdir(staging);
     if(existsSync(target))await cp(target,staging,{recursive:true,force:false,errorOnExist:false,filter:p=>!['bridge.lock','server.pid'].includes(p.split(/[\\/]/).at(-1))&&!/^bridge\.sqlite(?:-|$)/.test(p.split(/[\\/]/).at(-1))});
-    for(const name of ['config.json','config.json.bak','knowledge','needs','models','browser-profile','runtime'])if(existsSync(join(source,name)))await cp(join(source,name),join(staging,name),{recursive:true,force:true,preserveTimestamps:true,filter:p=>!['SingletonLock','SingletonSocket','SingletonCookie','DevToolsActivePort'].includes(p.split(/[\\/]/).at(-1))});
+    for(const name of ['config.json','config.json.bak','knowledge','needs','reply-references','models','browser-profile','runtime'])if(existsSync(join(source,name)))await cp(join(source,name),join(staging,name),{recursive:true,force:true,preserveTimestamps:true,filter:p=>!['SingletonLock','SingletonSocket','SingletonCookie','DevToolsActivePort'].includes(p.split(/[\\/]/).at(-1))});
     // Windows copy timestamps can round sub-millisecond precision. Preserve the
     // original revision so completed visual segments remain reusable after a move.
     if(existsSync(join(source,'knowledge')))for(const entry of await readdir(join(source,'knowledge'),{withFileTypes:true}))if(entry.isDirectory()){

@@ -2,6 +2,8 @@ import {randomUUID} from 'node:crypto';
 import {mkdirSync} from 'node:fs';
 import {durableJson} from './durable.mjs';
 import {join} from 'node:path';
+import {replyReferencePath} from './reply-reference.mjs';
+import {existsSync} from 'node:fs';
 
 export const emptyMemory=()=>({title:'未命名需求',goal:'',constraints:[],decisions:[],pending:[],progress:''});
 export const memoryText=m=>[m.goal,...(m.constraints||[]).map(s=>'约束：'+s),...(m.decisions||[]).map(s=>'决策：'+s),m.progress,...(m.pending||[]).map(s=>'待办：'+s)].filter(Boolean).join('\n');
@@ -59,7 +61,7 @@ export class Needs{
     const hasOperations=this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'").get(),filter=activeOnly?" AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=json_extract(tasks.context,'$.operationId') AND a.archived=1) AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=json_extract(tasks.context,'$.operationId'))":'';
     return this.db.prepare("SELECT id,alias,status,result,turn,created,json_extract(context,'$.operationId') AS operationId FROM tasks WHERE json_extract(context,'$.needId')=?"+filter+" ORDER BY created DESC LIMIT ?").all(id,limit).map(({operationId,...task})=>{const op=hasOperations&&this.db.prepare('SELECT number,title FROM operations WHERE id=?').get(operationId||'');return {...task,...(op?{number:op.number,title:op.title}:{})};});
   }
-  history(id){const turns=this.db.prepare('SELECT * FROM need_turns WHERE need_id=? ORDER BY created').all(id),tasks=this.taskState(id,10000);return this.json(id,'history.json',{needId:id,turns,tasks});}
+  history(id){const turns=this.db.prepare('SELECT * FROM need_turns WHERE need_id=? ORDER BY created').all(id).map(t=>{const path=replyReferencePath(this.store.root,t.message_id);return existsSync(path)?{...t,replyReferencePath:path}:t;}),tasks=this.taskState(id,10000);return this.json(id,'history.json',{needId:id,turns,tasks});}
   lookup(value,{includeArchived=false}={}){const q=String(value).trim().toLowerCase().replace(/^需求\s*/,'').replace(/^#/,'');const list=this.list({includeArchived});if(/^\d+$/.test(q)){const numbered=list.find(n=>n.number===Number(q));if(numbered)return numbered;}const matches=list.filter(n=>n.id.startsWith(q)||n.title===value);if(matches.length!==1)throw new Error(matches.length?'需求不唯一，请使用需求编号。':'未找到当前需求；已归档的需求可用 /恢复需求 编号 找回。');return matches[0];}
   directory(query='',limit=20){
     const list=this.list(),words=String(query).toLowerCase().match(/[a-z\d-]{2,}|[\p{Script=Han}]{2,}/gu)||[];

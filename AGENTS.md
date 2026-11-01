@@ -22,6 +22,8 @@
 - Auto-archive only when work and all text delivery are confirmed complete; preserve a user's later manual restore. Persist manual setup-panel open/closed choices.
 - Explicit interruption must bypass execution, classification and settings queues. Cancel only the selected operation's owned Codex turns and local workers; persist the stop intent first and fence late outputs, dispatch and retries. Unknown stopping results remain uncertain.
 - Archived or interrupted operations must never become new supplement parents. Recheck after asynchronous classification and detach unsubmitted links when their parent is archived.
+- A native reply points to a specific verified outgoing message and its complete original reply group. Preserve the exact quoted feedback and linked original-video evidence; only the new direct user instruction grants execution or dispatch. For older messages without a recorded platform ID, accept only a unique exact local match and never guess between groups.
+- New supplement operation labels use the root task number and a durable suffix, such as 1-1 and 1-2; do not renumber historical tasks or consume another root number. Task commands must accept those labels.
 - /忽略 and /结束忽略 are silent gates for subsequent bound-user input. While ignoring, accept only the exact ending command; do not infer, dispatch, react or retain ignored content in model history. Persist only minimal ignored-message metadata for deduplication and retain the mode across restarts.
 - Keep the independent checker outside execution locks. Bound retries for known unsubmitted writer conflicts; never replay submitted uncertain execution.
 - Use 用户 throughout Chinese interfaces, rules, documentation and outgoing replies.

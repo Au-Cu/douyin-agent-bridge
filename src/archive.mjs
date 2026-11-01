@@ -9,7 +9,7 @@ export class Archives{
     this.db.prepare("UPDATE archive_jobs SET status='uncertain',error='上次归档请求的结果需要核实' WHERE status='submitted'").run();
     this.db.prepare("UPDATE archive_records SET state='attention',error='上次归档过程被中断，请核对归档或恢复；未自动重复提交' WHERE kind='need' AND state='pending'").run();
   }
-  task(value){const raw=String(value).trim().replace(/^任务\s*/,'');const op=/^\d+$/.test(raw)?this.db.prepare('SELECT * FROM operations WHERE number=?').get(Number(raw)):this.progress.get(raw);if(!op)throw new Error('未找到该任务，请使用任务编号。');return op;}
+  task(value){const raw=String(value).trim().replace(/^任务\s*/,'');const op=/^\d+(?:-\d+)?$/.test(raw)?this.db.prepare('SELECT * FROM operations WHERE number=?').get(raw.includes('-')?raw:Number(raw)):this.progress.get(raw);if(!op)throw new Error('未找到该任务，请使用任务编号。');return op;}
   archiveTask(value,{reason='manual'}={}){
     const op=this.task(value);if(this.store.isArchived('task',op.id)){this.progress.detachArchivedParents(op.id);return op;}
     const meta={status:op.status,phase:op.phase};this.db.exec('BEGIN IMMEDIATE');

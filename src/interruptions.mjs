@@ -14,7 +14,7 @@ export class Interruptions{
     finally{scope.users--;if(!scope.users&&!scope.signal.aborted)this.scopes.delete(id);}
   }
   request(value){
-    const raw=String(value).trim().replace(/^任务\s*/,''),op=/^\d+$/.test(raw)?this.store.db.prepare('SELECT * FROM operations WHERE number=?').get(Number(raw)):this.progress.get(raw);
+    const raw=String(value).trim().replace(/^任务\s*/,''),op=/^\d+(?:-\d+)?$/.test(raw)?this.store.db.prepare('SELECT * FROM operations WHERE number=?').get(raw.includes('-')?raw:Number(raw)):this.progress.get(raw);
     if(!op||op.kind==='control')throw new Error('未找到该任务，请填写任务编号，例如 /中断 5。');
     if(this.requests.has(op.id))return this.requests.get(op.id);
     const old=this.record(op.id);if(old)return Promise.resolve({number:op.number,title:op.title,state:old.state,error:old.error,alreadyRequested:true});
