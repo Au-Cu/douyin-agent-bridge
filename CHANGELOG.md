@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Bound browser-heavy regression concurrency to reduce timeouts on busy Windows CI runners; continue building and verifying both platform packages together.
+
 ## 0.9.0
 
 - Add an Apple Silicon macOS installation, launcher, native FFmpeg and local speech runtime. Keep Mac and Windows release artifacts paired and verified on their respective CI machines.

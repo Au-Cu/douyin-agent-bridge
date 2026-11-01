@@ -1,6 +1,6 @@
 {
   "name": "douyin-codex-bridge",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "type": "module",
   "description": "抖音私信接入本机 Codex，视频学习与指定聊天任务转发",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node --use-env-proxy src/server.mjs",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test --test-concurrency=2 test/*.test.mjs",
     "setup:asr": "node --use-env-proxy scripts/setup-asr.mjs",
     "setup:runtime": "node --use-env-proxy scripts/setup-runtime.mjs",
     "doctor": "node scripts/doctor.mjs",
@@ -22,9 +22,9 @@
     "test:routing": "node --use-env-proxy scripts/routing-smoke.mjs"
   },
   "dependencies": {
+    "@openai/codex": "0.166.0",
     "playwright-core": "1.64.1",
-    "sherpa-onnx-node": "2.0.1",
-    "@openai/codex": "0.166.0"
+    "sherpa-onnx-node": "2.0.1"
   },
   "license": "MIT",
   "repository": {
