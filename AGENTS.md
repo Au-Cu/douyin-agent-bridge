@@ -17,6 +17,9 @@
 - Slash commands must be exact, unambiguous and backward compatible. Missing setting arguments inspect state instead of toggling it.
 - An operation remains unfinished until all target tasks and reply segments are confirmed. Coalesce duplicate requests without losing amendments or explicit redo instructions.
 - Progress is reaction-only: received, active, then done. Do not send autonomous periodic/phase status texts; answer explicit status requests with recorded facts.
+- Active must use the exact native Douyin [奋斗] reaction (red headband and fists). Do not substitute another reaction or expand its name into semantic aliases. Pending proven-unsubmitted receipts may be migrated; sent and uncertain clicks must remain untouched.
+- Archive is recoverable metadata, never deletion of evidence or execution records. Synchronize need assistant chats with native Codex archive/unarchive, but never archive shared target project chats. Persist and reconcile archive RPCs before retrying; restoring display never authorizes replay.
+- Auto-archive only when work and all text delivery are confirmed complete; preserve a user's later manual restore. Persist manual setup-panel open/closed choices.
 - Keep the independent checker outside execution locks. Bound retries for known unsubmitted writer conflicts; never replay submitted uncertain execution.
 - Use 用户 throughout Chinese interfaces, rules, documentation and outgoing replies.
 - Persist settings before acknowledging changes; use FULL SQLite durability, atomic recovery mirrors and consistent snapshots. Keep one writer per data directory. Migrations retain the original source, rebase evidence paths and never overwrite an existing account or memory.

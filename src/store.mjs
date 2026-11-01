@@ -16,6 +16,8 @@ export class Store {
     if(this.db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('数据库完整性检查未通过，已保留原文件；请从备份恢复并核实任务状态，不能创建空记忆替代。');
     this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS archive_records(kind TEXT,id TEXT,archived INTEGER NOT NULL DEFAULT 0,desired INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'done',error TEXT NOT NULL DEFAULT '',reason TEXT NOT NULL DEFAULT '',meta TEXT NOT NULL DEFAULT '{}',changed INTEGER NOT NULL,PRIMARY KEY(kind,id));
+      CREATE TABLE IF NOT EXISTS archive_jobs(need_id TEXT,thread TEXT,direction INTEGER,status TEXT,error TEXT,changed INTEGER,PRIMARY KEY(need_id,thread,direction));
       CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, peer TEXT, kind TEXT, body TEXT, status TEXT, result TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS knowledge(id TEXT PRIMARY KEY, title TEXT, transcript TEXT, summary TEXT, path TEXT, created INTEGER);
       CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, alias TEXT, thread TEXT, prompt TEXT, status TEXT, turn TEXT, result TEXT, created INTEGER);
@@ -39,6 +41,9 @@ export class Store {
     this.config = { port: 39361, enabled: false, owner: null, targets: [], coordinator: '', pollMs: 3000, maxVideoSeconds: 1800, visualFps:4, ackMode:'auto',model:'',reasoningEffort:'',fastMode:false,autoRoute:true,contextBudget:48000,activeNeed:'',resumeOnStartup:!!saved.enabled, ...saved };
     // Explicitly re-arm the listener after a restart; old history is not a new command.
     this.config.enabled = false;
+    if(!this.config.uiPanels)this.config.uiPanels={model:!!(saved.model||saved.reasoningEffort||saved.fastMode||saved.autoRoute===false||saved.contextBudget&&saved.contextBudget!==48000),targets:!!saved.targets?.length};
+    if(!this.config.uiConfigured)this.config.uiConfigured={model:!!(saved.model||saved.reasoningEffort||saved.fastMode||saved.autoRoute===false||saved.contextBudget&&saved.contextBudget!==48000),targets:!!saved.targets?.length};
+    for(const key of ['model','targets'])if(this.config.uiConfigured[key]&&!(key in this.config.uiPanels))this.config.uiPanels[key]=true;
     this.saveConfig({});
     if(this.recovery)this.event(this.recovery,'attention');
     }catch(e){try{this.db?.close();}catch{}this.unlock();throw e;}
@@ -60,7 +65,7 @@ export class Store {
       .run(message.id,message.peer,message.kind,JSON.stringify(message),'new','',Date.now()).changes > 0;
   }
   messageStatus(id,status,result='') { this.db.prepare('UPDATE messages SET status=?,result=? WHERE id=?').run(status,result,id); }
-  pendingMessages() { return this.db.prepare("SELECT * FROM messages WHERE status='new' ORDER BY created LIMIT 20").all(); }
+  pendingMessages() { return this.db.prepare("SELECT m.* FROM messages m WHERE m.status='new' AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=m.id AND a.archived=1) ORDER BY m.created LIMIT 20").all(); }
   addKnowledge(item) {
     this.db.prepare('INSERT OR REPLACE INTO knowledge VALUES(?,?,?,?,?,?)').run(item.id,item.title,item.transcript||'',item.summary||'',item.path,Date.now());
   }
@@ -79,7 +84,8 @@ export class Store {
     return id;
   }
   taskStatus(id,status,result='',turn='') { this.db.prepare('UPDATE tasks SET status=?,result=?,turn=CASE WHEN ?=\'\' THEN turn ELSE ? END WHERE id=?').run(status,result,turn,turn,id); }
-  queuedTasks() { return this.db.prepare("SELECT * FROM tasks WHERE status='queued' ORDER BY created LIMIT 10").all(); }
+  queuedTasks() { return this.db.prepare("SELECT t.* FROM tasks t WHERE t.status='queued' AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=json_extract(t.context,'$.operationId') AND a.archived=1) ORDER BY t.created LIMIT 20").all(); }
+  knowledgeList({scope='current',limit=100}={}){const where=scope==='all'?'1=1':scope==='archived'?'COALESCE(a.archived,0)=1':'COALESCE(a.archived,0)=0';return this.db.prepare("SELECT k.*,COALESCE(a.archived,0) AS archived FROM knowledge k LEFT JOIN archive_records a ON a.kind='knowledge' AND a.id=k.id WHERE "+where+' ORDER BY k.created DESC LIMIT ?').all(limit);}
   enqueueReply(peer,body,{kind='text',payload={},priority=0,dedupe=''}={}) {
     const id=randomUUID();
     const inserted=this.db.prepare('INSERT OR IGNORE INTO outbox(id,peer,body,status,error,created,kind,payload,priority,dedupe) VALUES(?,?,?,?,?,?,?,?,?,?)')
@@ -94,6 +100,12 @@ export class Store {
   latestVideoMessage(awemeId){
     return this.db.prepare("SELECT body FROM messages WHERE kind='video' ORDER BY created DESC LIMIT 100").all().map(m=>JSON.parse(m.body)).find(m=>m.awemeId===awemeId);
   }
+  archiveRecord(kind,id){return id?this.db.prepare('SELECT * FROM archive_records WHERE kind=? AND id=?').get(kind,id):null;}
+  isArchived(kind,id){return !!this.archiveRecord(kind,id)?.archived;}
+  setArchived(kind,id,archived,{reason='manual',state='done',desired=archived,error='',meta={}}={}){
+    this.db.prepare('INSERT OR REPLACE INTO archive_records VALUES(?,?,?,?,?,?,?,?,?)').run(kind,id,Number(archived),Number(desired),state,error,reason,JSON.stringify(meta),Date.now());return this.archiveRecord(kind,id);
+  }
+  autoArchiveTask(id){this.db.prepare("INSERT OR IGNORE INTO archive_records(kind,id,archived,desired,state,reason,changed) VALUES('task',?,1,1,'done','completed',?)").run(id,Date.now());}
   pendingOutbox() { return this.db.prepare("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? ORDER BY priority DESC,created LIMIT 1").all(Date.now()); }
   delivery(id,status,error='') { this.db.prepare('UPDATE outbox SET status=?,error=?,next_attempt=? WHERE id=?').run(status,error,status==='pending'&&error?Date.now()+10000:0,id); }
   snapshot() {

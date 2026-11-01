@@ -39,7 +39,9 @@ export class Preferences{
     if('contextBudget'in patch){const n=Number(patch.contextBudget);if(!Number.isInteger(n)||n<4000||n>200000)throw new Error('上下文预算需为 4000–200000 tokens');next.contextBudget=n;}
     if('visualFps'in patch){if(![2,4,8].includes(Number(patch.visualFps)))throw new Error('密度仅支持 2、4、8 帧/秒');next.visualFps=Number(patch.visualFps);}
     if(['model','reasoningEffort','fastMode'].some(k=>k in patch))await this.resolve(next);
-    const keys=['model','reasoningEffort','fastMode','autoRoute','contextBudget','visualFps'];return this.store.saveConfig(Object.fromEntries(keys.filter(k=>k in patch).map(k=>[k,next[k]])));
+    const keys=['model','reasoningEffort','fastMode','autoRoute','contextBudget','visualFps'];this.store.saveConfig(Object.fromEntries(keys.filter(k=>k in patch).map(k=>[k,next[k]])));
+    if(keys.some(k=>k!=='visualFps'&&k in patch))configurePanel(this.store,'model');return this.store.config;
   }
   describe(){const c=this.store.config;return `模型：${c.model||'Codex 默认'}\n强度：${effortNames[c.reasoningEffort]||c.reasoningEffort||'Codex 默认'}\n快速：${c.fastMode?'开':'关'}；密度：${c.visualFps} 帧/秒\n自动分聊：${c.autoRoute?'开':'关'}；上下文预算：${c.contextBudget} tokens`;}
 }
+import {configurePanel} from './ui-state.mjs';

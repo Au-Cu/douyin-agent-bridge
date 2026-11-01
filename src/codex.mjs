@@ -207,7 +207,7 @@ export class CodexClient extends EventEmitter {
       onStarted?.(turn.id);
       if(this.early.has(turn.id)){const event=this.early.get(turn.id);this.early.delete(turn.id);this.#finish(r,event.turn);}
       else if(turn.status==='completed'||turn.status==='failed'||turn.status==='interrupted')this.#finish(r,turn);
-    } catch(e){this.runs.delete(provisional);if(!e.remote)e.uncertain=true;throw e;}
+    } catch(e){this.runs.delete(provisional);if(!e.remote&&!e.notSubmitted)e.uncertain=true;throw e;}
     return promise;
   }
   async interrupt(threadId) {const r=[...this.runs.values()].find(r=>r.threadId===threadId);if(r?.turnId)await this.request('turn/interrupt',{threadId,turnId:r.turnId});}

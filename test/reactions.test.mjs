@@ -12,7 +12,7 @@ test('原生无文字圆形展开按钮也能打开完整表情；探测不点�
 });
 
 test('快捷表情行和整块表情网格不能被当成一个图标点击',async()=>{
-  const browser=await chromium.launch({channel:'msedge',headless:true});try{const page=await browser.newPage();await page.setContent('<div role="menu" style="width:300px"><div class="PopBodyEmojiQuickReplyrow"><img id="celebrate" alt="[庆祝]" width="32" height="32"><img id="active" alt="[一起加油]" width="32" height="32"><img id="roger" alt="[OK]" width="32" height="32"></div></div>');const choices=(await page.evaluate(inspectReactionChoices,'exact')).choices;assert.deepEqual(choices.map(c=>c.emoji),['🎉','💪','👌']);for(const c of choices)assert.equal(await page.locator('[data-bridge-reaction-choice="exact-'+c.index+'"]').evaluate(e=>e.tagName),'IMG');
+  const browser=await chromium.launch({channel:'msedge',headless:true});try{const page=await browser.newPage();await page.setContent('<div role="menu" style="width:300px"><div class="PopBodyEmojiQuickReplyrow"><img id="celebrate" alt="[庆祝]" width="32" height="32"><img id="wrong" alt="[一起加油]" width="32" height="32"><img id="also-wrong" alt="[加油]" width="32" height="32"><img id="active" alt="[奋斗]" width="32" height="32"><img id="muscle" alt="💪" width="32" height="32"><img id="roger" alt="[OK]" width="32" height="32"></div></div>');const choices=(await page.evaluate(inspectReactionChoices,'exact')).choices;assert.deepEqual(choices.map(c=>c.emoji),['🎉','[奋斗]','💪','👌']);for(const c of choices)assert.equal(await page.locator('[data-bridge-reaction-choice="exact-'+c.index+'"]').evaluate(e=>e.tagName),'IMG');assert.equal(await page.locator('[data-bridge-reaction-choice="exact-1"]').getAttribute('id'),'active');
   }finally{await browser.close();}
 });
 
@@ -37,7 +37,7 @@ test('重复打开平台菜单仍能识别三个表情，并阻止浏览器菜�
     await page.evaluate(()=>document.querySelector('[data-bridge-message-id]').addEventListener('contextmenu',e=>{window.platformHandled=true;window.browserMenuPrevented=e.defaultPrevented;}));
     await page.evaluate(captureMessageMenu);await page.locator('[data-bridge-message-id]').click({button:'right'});
     assert.equal(await page.evaluate(()=>window.platformHandled),true);assert.equal(await page.evaluate(()=>window.browserMenuPrevented),true);
-    assert.deepEqual((await page.evaluate(inspectReactionChoices,'existing')).choices.map(c=>c.emoji),['👌','💪','🎉']);
+    assert.deepEqual((await page.evaluate(inspectReactionChoices,'existing')).choices.map(c=>c.emoji),['👌','[奋斗]','🎉']);
   }finally{await browser.close();}
 });
 

@@ -33,7 +33,7 @@ export class Conversations{
     this.initializing=this.initializeLegacy().finally(()=>{this.initializing=null;});return this.initializing;
   }
   async initializeLegacy(){
-    if(this.needs.list().length)return;
+    if(this.needs.list({includeArchived:true}).length)return;
     if(!this.store.config.coordinator)return;
     const n=this.needs.create('历史对话',this.store.config.coordinator);
     const rows=this.store.db.prepare("SELECT * FROM messages WHERE status='done' ORDER BY created DESC LIMIT 6").all().reverse();
@@ -62,7 +62,7 @@ export class Conversations{
     await this.ensureLegacy();
     const saved=this.needs.route(message.id);
     if(saved){const n=this.needs.get(saved.need_id);this.needs.attach(n.id,learned?.id);return this.ready(message,n,saved.action,saved.reason);}
-    const current=this.needs.get(capture.needId||this.store.config.activeNeed),directory=this.needs.directory(message.text||message.title||'');
+    const candidate=this.needs.get(capture.needId||this.store.config.activeNeed),current=candidate&&!candidate.archived&&!(candidate.archiveDesired&&candidate.archiveState!=='done')?candidate:null,directory=this.needs.directory(message.text||message.title||'');
     let decision={action:'continue',needId:current?.id||'',title:current?.title||'新需求',reason:'自动分聊已关闭'};
     if(this.store.config.autoRoute){
       const segments=learned?.visual?.segments||[];
@@ -87,6 +87,8 @@ export class Conversations{
     return this.ready(message,need,decision.action,decision.reason);
   }
   async ready(message,need,action,reason){
+    need=this.needs.get(need.id);
+    if(need.archived||need.archiveDesired&&need.archiveState!=='done')throw new Error('需求 '+need.number+' 已归档或正在归档，请先 /恢复需求 '+need.number);
     const bytes=tokenEstimate(message.text||message.title||'')+1500;
     const budget=Math.min(this.store.config.contextBudget,need.model_window?Math.floor(need.model_window*.8):Infinity);
     if(need.context_tokens+bytes>budget)need=await this.rollover(need);
@@ -138,5 +140,5 @@ export class Conversations{
     if(need){this.needs.saveRoute(message.id,need,'continue','继续已保存视频');return this.ready(message,need,'continue','继续已保存视频');}
     return this.prepare(message,{learned});
   }
-  state(){return this.needs.state();}
+  state(options){return this.needs.state(options);}
 }

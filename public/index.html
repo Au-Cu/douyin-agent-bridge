@@ -5,14 +5,15 @@
   <div id="notice" role="status"></div>
   <section class="panel"><div class="section-title"><h2>数据与恢复</h2><button id="backupNow" class="secondary">备份配置与记录</button></div><p id="storagePath" class="hint">正在读取固定数据目录…</p><p id="backupInfo" class="hint">已保存的设置即时写入磁盘，无需等退出程序；原视频、画面、需求记忆和抖音登录态保存在同一固定目录。</p></section>
   <section class="status-grid"><article><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录助手账号，再选中你的会话</small></article><article><span>Codex</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small></article><article><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
-  <section class="panel setup"><div class="section-title"><h2>连接助手</h2><span>首次连接完成这三步</span></div>
+  <details class="panel setup config-panel" id="setupPanel" data-panel="setup" open><summary><span>连接助手</span><small id="setupSummary">首次连接完成这三步</small></summary>
     <div class="steps"><div><b>01</b><h3>连接抖音助手账号</h3><p>首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。</p><button id="openBrowser">打开抖音窗口</button></div>
     <div><b>02</b><h3>绑定你的私信会话</h3><p>在浏览器里点开你的主号会话，再绑定。助手只接收这个账号的新消息。</p><button id="bindOwner">绑定当前会话</button><small id="scanInfo"></small></div>
     <div><b>03</b><h3>准备 Codex 与口播转写</h3><p>建立固定的调度聊天。视频按完整时间轴逐段读取画面，口播在本机转写。</p><div class="button-row"><button id="createCoordinator">创建调度聊天</button><button id="reconnectCodex" class="secondary">重新连接 Codex</button><button id="setupAsr" class="secondary">安装转写模型</button></div></div></div>
     <div class="listen-row"><div><strong id="listenTitle">准备好后开始监听</strong><small>启动时跳过历史消息；电脑需要保持运行。</small></div><button id="toggleListen" class="primary">开始监听</button></div>
-  </section>
-  <section class="panel" id="modelPanel">
-    <div class="section-title"><h2>默认模型与需求对话</h2><button id="reloadModels" class="secondary">刷新模型名单</button></div>
+  </details>
+  <details class="panel config-panel" id="modelPanel" data-panel="model" open>
+    <summary><span>默认模型与需求对话</span><small id="modelSummary">设置模型和管理需求</small></summary>
+    <div class="button-row panel-tools"><button id="reloadModels" class="secondary">刷新模型名单</button></div>
     <p class="hint">回复、视频理解和派发任务使用这组配置；需求判断使用独立的轻量临时会话。快速模式会按 Codex 规则增加用量。</p>
     <div class="model-settings">
       <label>默认模型<select id="defaultModel"><option value="">使用 Codex 默认模型</option></select></label>
@@ -25,15 +26,16 @@
     <p id="effectiveModel" class="hint">模型名单来自本机 Codex，登录后可刷新。</p>
     <div class="need-current" id="currentNeed">尚未开始需求，发送消息后自动判断。</div>
     <div class="need-create"><input id="newNeedTitle" maxlength="60" placeholder="新需求标题，可留空"><button id="newNeed">新建并切换对话</button></div>
+    <div class="list-filters"><label>需求范围 <select id="needScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label></div>
     <div id="needList" class="need-list"></div>
     <details><summary>抖音中的简洁命令</summary><pre id="commandHelp">/帮助  查看全部命令\n/模型  查看模型名单\n/强度  查看可用档位\n/快 开|关\n/密度 2|4|8\n/分聊 开|关\n/新建 标题\n/找 关键词\n/切换 需求ID\n/续看 [视频ID]\n/重连</pre></details>
-  </section>
-  <section class="panel"><div class="section-title"><h2>可以交给哪些 Codex 聊天</h2><button id="loadThreads" class="secondary">读取本机聊天</button></div><p class="hint">给允许接收任务的聊天设置一个好记的别名。之后在抖音说「把这个交给别名去做」，或发送「/派给 别名 具体任务」。</p>
+  </details>
+  <details class="panel config-panel" id="targetsPanel" data-panel="targets" open><summary><span>可以交给哪些 Codex 聊天</span><small id="targetsSummary">设置授权的目标聊天</small></summary><div class="button-row panel-tools"><button id="loadThreads" class="secondary">读取本机聊天</button></div><p class="hint">给允许接收任务的聊天设置一个好记的别名。之后在抖音说「把这个交给别名去做」，或发送「/派给 别名 具体任务」。</p>
     <div class="target-add"><select id="threadSelect"><option value="">先读取聊天列表</option></select><input id="targetAlias" placeholder="别名，例如：网站项目" maxlength="60"><button id="addTarget">加入名单</button></div><div id="targetList" class="target-list"></div>
     <div class="settings-row"><label>单条视频时长上限 <input type="number" id="maxMinutes" value="30" min="1" max="120"> 分钟</label><label>视觉读取密度 <select id="visualFps"><option value="4">连续视觉 · 4 帧/秒</option><option value="8">动效细看 · 8 帧/秒</option><option value="2">较慢画面 · 2 帧/秒</option></select></label><label>收到视频时 <select id="ackMode" disabled><option value="auto">仅贴表情：收到 / 运行 / 完成</option></select></label><button id="saveConfig" class="secondary">保存配置</button></div>
-  </section>
-  <div class="bottom-grid"><section class="panel"><div class="section-title"><h2>学习资料</h2><span>连续画面、口播、视觉观察和总结</span></div><div id="knowledgeList" class="items"><p class="empty">分享第一条视频后，资料会出现在这里。</p></div></section>
-  <section class="panel"><div class="section-title"><h2>任务与回复</h2><span>实际状态持续更新</span></div><div id="taskList" class="items"></div><div id="outboxList" class="items"></div><div id="approvalList"></div></section></div>
+  </details>
+  <div class="bottom-grid"><section class="panel"><div class="section-title"><h2>学习资料</h2><span>连续画面、口播、视觉观察和总结</span></div><div class="list-filters"><label>资料范围 <select id="knowledgeScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label></div><div id="knowledgeList" class="items"><p class="empty">分享第一条视频后，资料会出现在这里。</p></div></section>
+  <section class="panel"><div class="section-title"><h2>任务与回复</h2><span>完成并送达后自动归档</span></div><div class="list-filters"><label>任务范围 <select id="workScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label><label>状态 <select id="workStatus"><option value="all">全部状态</option><option value="queued">排队中</option><option value="running">执行中</option><option value="sending">发送中</option><option value="blocked">调度受阻</option><option value="uncertain">需要核实</option><option value="failed_delivery">送达需核实</option><option value="waiting">等待恢复</option><option value="done">已完成</option><option value="cancelled">已取消</option><option value="failed">处理失败</option></select></label></div><div id="taskList" class="items"></div><div id="outboxList" class="items"></div><div id="approvalList"></div></section></div>
   <section class="panel logs"><div class="section-title"><h2>运行记录</h2><span>连接或处理失败时查看这里</span></div><div id="eventList"></div></section>
   <footer>抖音负责入口，Codex 负责理解与执行。视频里的内容作为资料，你发来的指示才是命令。</footer>
 </main><dialog id="noteDialog"><button id="closeNote" class="secondary">关闭</button><pre id="noteText"></pre></dialog><dialog id="visualDialog"><button id="closeVisual" class="secondary">关闭</button><h2>连续视觉覆盖</h2><p id="visualInfo"></p><div id="visualSheets"></div><pre id="visualNotes"></pre></dialog><script type="module" src="/app.js"></script></body></html>

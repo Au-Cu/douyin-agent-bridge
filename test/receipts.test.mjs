@@ -33,7 +33,7 @@ test('正在分析别的视频时，新视频也立即贴收到表情；排队�
 test('收到表情先于下载；真正开始后才排入 active，失败不贴 done',async()=>{
   const h=harness();h.s.incoming(stored);
   let mediaCalled=false;h.media.process=async()=>{mediaCalled=true;assert.equal(h.receipts.length,1);assert.deepEqual(h.receipts[0].payload.emojis,['👌']);throw new Error('下载测试终止');};
-  await h.engine.processNext();assert.equal(mediaCalled,true);await h.engine.deliver();assert.equal(h.receipts.length,2);assert.deepEqual(h.receipts[1].payload.emojis,['👀','💪','🤠']);assert.equal(h.s.snapshot().outbox.some(o=>JSON.parse(o.payload).stage==='done'),false);h.s.close();
+  await h.engine.processNext();assert.equal(mediaCalled,true);await h.engine.deliver();assert.equal(h.receipts.length,2);assert.deepEqual(h.receipts[1].payload.emojis,['[奋斗]']);assert.equal(h.s.snapshot().outbox.some(o=>JSON.parse(o.payload).stage==='done'),false);h.s.close();
 });
 
 test('已经收到排队确认的视频，真正开始分析时再确认一次，重复调用不刷屏',async()=>{

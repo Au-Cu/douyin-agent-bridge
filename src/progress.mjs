@@ -1,7 +1,8 @@
 import {createHash} from 'node:crypto';
 import {parseCommand} from './commands.mjs';
+import {codexThreadUrl} from './archive.mjs';
 
-export const progressEmoji={roger:['👌'],active:['👀','💪','🤠'],done:['🎉','✅','👍']};
+export const progressEmoji={roger:['👌'],active:['[奋斗]'],done:['🎉','✅','👍']};
 export const writerConflict=e=>e?.code==='THREAD_BUSY'||/\bactive writer\b|\bthread\b[^.\n]{0,100}\b(?:already (?:active|running)|busy)\b/i.test(String(e?.message||e||''));
 export const explicitRedo=text=>{
   const s=String(text||'').replace(/“[^”]*”|「[^」]*」|"[^"]*"|'[^']*'/g,'').replace(/(?:不要|不必|无需|不需要|别).{0,3}(?:重新(?:做|执行|生成|分析)|重做|再做|从头(?:做|来))/g,'').trim();
@@ -31,7 +32,9 @@ export class Progress{
       this.db.exec('BEGIN IMMEDIATE');try{this.store.mergeOutboxPayload(row.id,{reactionRepairVersion:1,reactionAttempt:{state:'not_submitted',attempts:0}});this.store.delivery(row.id,'pending','准备恢复确定尚未点击的状态表情');this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
     }
     this.adoptTasks();
+    for(const row of this.db.prepare("SELECT id,payload FROM outbox WHERE kind='progress_reaction' AND status='pending' AND json_extract(payload,'$.stage')='active'").all())this.store.mergeOutboxPayload(row.id,{emojis:progressEmoji.active});
     for(const row of this.db.prepare("SELECT id FROM operations WHERE kind<>'control' AND status<>'merged' AND number IS NULL ORDER BY created,rowid").all())this.identify(row.id);
+    for(const row of this.db.prepare("SELECT id FROM operations WHERE status='done'").all())this.store.autoArchiveTask(row.id);
     codex.on('notification',m=>{
       if(!m.params?.threadId)return;const id=this.db.prepare("SELECT id FROM operations WHERE thread=? AND status='running' ORDER BY created DESC LIMIT 1").get(m.params.threadId)?.id;
       if(id)this.db.prepare('UPDATE operations SET changed=? WHERE id=?').run(this.now(),id);
@@ -42,7 +45,7 @@ export class Progress{
   }
   get(id){return id?this.db.prepare('SELECT * FROM operations WHERE id=?').get(id):null;}
   forMessage(id){const link=this.db.prepare('SELECT operation_id FROM operation_messages WHERE message_id=?').get(id);return link?this.get(link.operation_id):null;}
-  open(){return this.db.prepare(`SELECT * FROM operations WHERE status IN (${unfinished}) ORDER BY created`).all();}
+  open({includeArchived=false}={}){return this.db.prepare(`SELECT * FROM operations WHERE status IN (${unfinished}) ORDER BY created`).all().filter(o=>includeArchived||!this.store.isArchived('task',o.id));}
   identify(id,{announce=false}={}){
     let op=this.get(id);if(!op||op.kind==='control')return op;
     if(!op.number){const number=this.db.prepare('SELECT COALESCE(MAX(number),0)+1 AS n FROM operations').get().n;this.db.prepare('UPDATE operations SET number=?,title=? WHERE id=? AND number IS NULL').run(number,operationTitle(op.request),id);op=this.get(id);}
@@ -90,6 +93,7 @@ export class Progress{
     if((op.outcome==='failed'||tasks.some(t=>t.status==='failed'))&&!parts.pending){this.db.prepare("UPDATE operations SET status='failed',phase='本次要求未完成' WHERE id=?").run(id);return;}
     if(op.outcome==='done'&&!tasks.some(t=>t.status==='failed')&&!parts.pending&&!noticesPending){
       this.db.prepare("UPDATE operations SET status='done',phase='任务及回复全部完成',changed=? WHERE id=?").run(this.now(),id);this.reactAll(id,'done');
+      this.store.autoArchiveTask(id);
     }else if(parts.pending&&op.outcome==='done')this.db.prepare("UPDATE operations SET status='sending',phase='结果已生成，正在分段发送' WHERE id=?").run(id);
   }
   status(id){
@@ -118,7 +122,7 @@ export class Progress{
     const previous=this.db.prepare('SELECT * FROM operation_messages WHERE message_id=?').get(message.id);
     if(previous&&['accepted','supplement','duplicate'].includes(previous.relation))return {relation:previous.relation,operationId:previous.operation_id,parent:this.get(previous.operation_id)?.parent};
     const own=this.receive(message);if(explicitRedo(message.text)){this.identify(own.id,{announce:true});return {relation:'new',operationId:own.id};}
-    const candidates=this.open().filter(o=>o.kind!=='control'&&o.id!==own.id&&o.peer===own.peer&&(!o.need_id||!own.need_id||o.need_id===own.need_id)&&o.parent!==own.id);
+    const candidates=this.open({includeArchived:true}).filter(o=>o.kind!=='control'&&o.id!==own.id&&o.peer===own.peer&&(!o.need_id||!own.need_id||o.need_id===own.need_id)&&o.parent!==own.id);
     let match=candidates.find(o=>o.fingerprint===own.fingerprint),relation=match?'duplicate':'independent';
     if(!match&&candidates.length===1&&/^(怎么(?:还|一直)|为什么(?:还|一直)|还没(?:好|完成|执行)|进度(?:呢|如何)|做到哪|处理完了吗|快点|继续处理|催一下)[\s\S]{0,22}[？?！!。]*$/.test(message.text||'')){match=candidates[0];relation='duplicate';}
     if(!match&&candidates.length&&this.classify&&message.kind==='text'){
@@ -128,7 +132,7 @@ export class Progress{
       this.db.prepare("UPDATE operation_messages SET operation_id=?,relation='duplicate' WHERE message_id=?").run(match.id,message.id);
       this.db.prepare("UPDATE operations SET status='merged',ended=1 WHERE id=?").run(own.id);
       this.store.messageStatus(message.id,'linked',match.id);if(match.started)this.reaction(message.id,'active');
-      this.notice(match.id,'这项要求正在处理，没有重复启动。\n'+this.label(match.id)+'\n当前：'+this.status(match.id),'duplicate:'+message.id);return {relation,operationId:match.id};
+      this.notice(match.id,(this.store.isArchived('task',match.id)?'这项要求已归档，没有重复启动。':'这项要求正在处理，没有重复启动。')+'\n'+this.label(match.id)+'\n当前：'+this.status(match.id),'duplicate:'+message.id);return {relation,operationId:match.id};
     }
     if(match&&relation==='supplement'){
       this.db.prepare('UPDATE operations SET parent=?,need_id=? WHERE id=?').run(match.id,match.need_id,own.id);
@@ -138,7 +142,7 @@ export class Progress{
     this.identify(own.id,{announce:true});
     return {relation:match?relation:'independent',operationId:own.id,parent:match?.id};
   }
-  canRun(id){const op=this.get(id);if(!op?.parent)return true;const parent=this.get(op.parent);return parent?.status==='done';}
+  canRun(id){if(this.store.isArchived('task',id))return false;const op=this.get(id);if(!op?.parent)return true;const parent=this.get(op.parent);return parent?.status==='done';}
   taskBlocked(task,reason){
     const context=JSON.parse(task.context||'{}'),id=context.operationId,old=this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(task.id),now=this.now(),attempts=(old?.attempts||0)+1,since=old?.since||now,paused=now-since>=this.writerLimit||attempts>=6;
     this.db.prepare('INSERT OR REPLACE INTO task_waits VALUES(?,?,?,?,?,?,?)').run(task.id,id||'',reason,since,attempts,now+Math.min(60000,10000*2**(attempts-1)),Number(paused));
@@ -150,6 +154,7 @@ export class Progress{
   recoverAuth(){for(const w of this.db.prepare("SELECT * FROM task_waits WHERE reason='等待本机 Codex 登录或额度恢复'").all()){const t=this.db.prepare('SELECT * FROM tasks WHERE id=?').get(w.task_id);if(t&&!t.turn&&['queued','blocked'].includes(t.status)){this.clearWait(t.id);this.store.taskStatus(t.id,'queued','登录已恢复，继续确定未提交的任务');}}}
   retry(value){
     const numeric=String(value).trim().replace(/^任务\s*/,'').replace(/^#/,'');
+    const archived=/^\d+$/.test(numeric)?this.db.prepare('SELECT id FROM operations WHERE number=?').get(Number(numeric)):this.get(numeric);if(archived&&this.store.isArchived('task',archived.id))throw new Error('任务已归档，请先 /恢复任务 '+numeric+'，再明确重试。');
     if(/^\d+$/.test(numeric)){
       const op=this.db.prepare('SELECT * FROM operations WHERE number=?').get(Number(numeric));
       if(op){const tasks=this.tasks(op.id);if(op.status==='uncertain'||op.status==='failed_delivery'||tasks.some(t=>t.status==='uncertain'))throw new Error('任务 '+op.number+' 的执行或送达结果不明，需先核实，不能自动重跑。');
@@ -177,7 +182,7 @@ export class Progress{
   async inspect(){
     if(!this.store.config.enabled||this.inspecting)return;this.inspecting=true;
     try{
-      for(const op of this.open()){
+      for(const op of this.open({includeArchived:true})){
         this.sync(op.id);if(this.get(op.id)?.status==='done')continue;
         if(this.now()-op.last_notice>=this.noticeInterval){
           const pending=this.store.pendingMessages().length,elapsed=op.started?Math.floor((this.now()-op.started)/60000):0;
@@ -192,11 +197,15 @@ export class Progress{
     }finally{this.inspecting=false;}
   }
   state(){return this.open().map(o=>({id:o.id,number:o.number,title:o.title||operationTitle(o.request),shortId:createHash('sha256').update(o.id).digest('hex').slice(0,8),status:o.status,phase:o.phase,detail:this.status(o.id),started:o.started,created:o.created}));}
-  cards(limit=50){
-    return this.db.prepare("SELECT * FROM operations WHERE status<>'merged' ORDER BY CASE WHEN status IN ('queued','running','sending','waiting','blocked','uncertain','failed_delivery') AND kind<>'control' THEN 0 ELSE 1 END,created DESC LIMIT ?").all(limit).map(op=>{
+  cards(options={}){
+    const {limit=100,scope='current',status='all'}=typeof options==='number'?{limit:options}:options;
+    const where=scope==='all'?'1=1':scope==='archived'?'COALESCE(a.archived,0)=1':'COALESCE(a.archived,0)=0';
+    return this.db.prepare("SELECT o.*,COALESCE(a.archived,0) AS archived FROM operations o LEFT JOIN archive_records a ON a.kind='task' AND a.id=o.id WHERE o.status<>'merged' AND "+where+" AND (?='all' OR o.status=?) ORDER BY CASE WHEN o.status IN ('queued','running','sending','waiting','blocked','uncertain','failed_delivery') AND o.kind<>'control' THEN 0 ELSE 1 END,o.created DESC LIMIT ?").all(status,status,limit).map(op=>{
       const rows=this.db.prepare("SELECT * FROM outbox WHERE json_extract(payload,'$.operationId')=? ORDER BY created,rowid").all(op.id);
       const receipts=['roger','active','done'].map(stage=>{const group=rows.filter(r=>r.kind==='progress_reaction'&&JSON.parse(r.payload||'{}').stage===stage);return {stage,total:group.length,sent:group.filter(r=>r.status==='sent').length,pending:group.filter(r=>['pending','sending'].includes(r.status)).length,uncertain:group.filter(r=>r.status==='uncertain').length,unavailable:group.filter(r=>r.status==='unavailable').length,errors:[...new Set(group.filter(r=>r.error&&r.status!=='sent').map(r=>r.error))]};});
-      return {id:op.id,number:op.number,title:op.title||operationTitle(op.request),kind:op.kind,status:op.status,detail:this.status(op.id),receipts,replies:rows.filter(r=>r.kind==='text').map(r=>({id:r.id,status:r.status,error:r.error,notification:!!JSON.parse(r.payload||'{}').notification})),targets:this.tasks(op.id).map(t=>({alias:t.alias,status:t.status,result:t.result?.slice(0,300)}))};
+      const tasks=this.tasks(op.id),parent=this.get(op.parent),needId=op.need_id||parent?.need_id,links=new Map(),assistant=needId&&this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='needs'").get()?this.db.prepare('SELECT thread FROM needs WHERE id=?').get(needId)?.thread:null;
+      for(const [id,label] of [[assistant,'需求对话'],[parent?.thread,'原任务对话'],...this.tasks(parent?.id||'').map(t=>[t.thread,'原任务目标：'+t.alias]),[op.thread,'本轮对话'],...tasks.map(t=>[t.thread,'目标：'+t.alias])])if(codexThreadUrl(id))links.set(id,{label,url:codexThreadUrl(id)});
+      return {id:op.id,number:op.number,title:op.title||operationTitle(op.request),kind:op.kind,status:op.status,archived:!!op.archived,links:[...links.values()],detail:this.status(op.id),receipts,replies:rows.filter(r=>r.kind==='text').map(r=>({id:r.id,status:r.status,error:r.error,notification:!!JSON.parse(r.payload||'{}').notification})),targets:tasks.map(t=>({alias:t.alias,status:t.status,result:t.result?.slice(0,300)}))};
     });
   }
 }

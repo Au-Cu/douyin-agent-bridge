@@ -12,3 +12,8 @@ test('权限确认按实际协议仅授予本轮所请求的范围，拒绝时�
   assert.deepEqual(approvalResponse(request,false),{permissions:{},scope:'turn'});
   assert.deepEqual(approvalResponse({method:'item/commandExecution/requestApproval'},false),{decision:'decline'});
 });
+
+test('提交边界因归档取消时不会发 turn/start，也不误标成未知执行',async()=>{
+  const c=new CodexClient({codexHome:mkdtempSync(join(base,'archive-boundary-')),executable:process.execPath,spawnArgs:[fileURLToPath(new URL('./fixture-rpc.mjs',import.meta.url))]});
+  try{let submitted=false;await assert.rejects(c.run('thread-test',[{type:'text',text:'不应提交'}],{onSubmitted:()=>{submitted=true;throw Object.assign(new Error('已归档'),{code:'ARCHIVED_TASK',notSubmitted:true});}}),e=>e.code==='ARCHIVED_TASK'&&e.notSubmitted&&!e.uncertain);assert.equal(submitted,true);assert.equal(c.runs.size,0);assert.equal(c.threadLocks.size,0);}finally{c.close();}
+});

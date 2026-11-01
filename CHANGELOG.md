@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Archive and restore needs, learning materials and task cards without deleting memory, media or delivery records. Need archiving synchronizes the assistant's Codex continuation chats through a persisted, reconciled archive journal; shared dispatch targets are preserved.
+- Automatically archive completed operations only after all tasks and text replies finish. Restoring an operation never silently replays submitted or uncertain execution.
+- Add archive scopes, task status filters, explicit archive/restore slash commands and validated links to the operation's actual Codex chats.
+- Collapse setup when connected and configuration cards after first customization; persist manual open/closed choices across restarts.
+- Restrict active progress to Douyin's exact native [奋斗] reaction and migrate only pending unsubmitted receipts to the corrected selection.
+
 ## 0.5.0
 
 - Use persistent numeric task/need labels and short titles; announce new task identities once and group execution, reply delivery and reactions by their actual operation association.

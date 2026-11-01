@@ -17,6 +17,8 @@ import {commandHelp} from './commands.mjs';
 import {progressEmoji} from './progress.mjs';
 import {prepareDataRoot} from './data-root.mjs';
 import {existsSync} from 'node:fs';
+import {archiveScope,taskStatuses,codexThreadUrl} from './archive.mjs';
+import {configurePanel,updatePanels} from './ui-state.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const startupSince=Date.now();
@@ -44,16 +46,19 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!String(req.headers.cookie||'').split(';').some(c=>c.trim()==='bridge_session='+token))return json(res,{error:'请先打开本机控制台'},401);
       if(req.headers.origin&&req.headers.origin!==origin)return json(res,{error:'来源校验失败'},403);
-      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.5.0',projectRoot:project,dataRoot,port});
+      if(req.method==='GET'&&path==='/api/instance')return json(res,{app:'douyin-codex-bridge',version:'0.6.0',projectRoot:project,dataRoot,port});
       if(req.method==='GET'&&path==='/api/state'){
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
-        const snapshot=store.snapshot();snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(snapshot.knowledge.map(async k=>{
+        const needScope=archiveScope(url.searchParams.get('needs')),knowledgeScope=archiveScope(url.searchParams.get('knowledge')),workScope=archiveScope(url.searchParams.get('work')),status=url.searchParams.get('status')||'all';if(!taskStatuses.has(status))throw new Error('未知任务状态');
+        if(store.config.enabled&&store.config.owner&&adapter.status==='ready'&&codex.ready&&codex.authState?.status==='ready'&&asrReady)configurePanel(store,'setup');
+        const snapshot=store.snapshot();snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(async k=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
-        return json(res,{...snapshot,storage:store.storageState(),conversations:conversations.state(),operations:engine.progress.state(),work:engine.progress.cards(),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codexThreadUrl(n.thread)}));
+        return json(res,{...snapshot,storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models')return json(res,await preferences.catalog());
-      if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state());
+      if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
       if(req.method==='GET'&&path==='/api/commands')return json(res,{text:commandHelp});
       if(req.method==='GET'&&path==='/api/threads'){const internal=new Set(store.db.prepare('SELECT thread FROM need_threads').all().map(r=>r.thread));return json(res,(await codex.threads(url.searchParams.get('q')||'')).filter(t=>!internal.has(t.id)));}
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
@@ -76,6 +81,14 @@ const server=http.createServer(async(req,res)=>{
       }
       if(req.method!=='POST')return json(res,{error:'未找到接口'},404);
       const body=await jsonBody(req);
+      if(path==='/api/ui/panels')return json(res,{panels:updatePanels(store,body)});
+      if(path==='/api/archive'){
+        if(typeof body.archived!=='boolean')throw new Error('请明确指定归档或恢复');
+        if(body.kind==='need')return json(res,await engine.archives.need(String(body.id||''),body.archived));
+        if(body.kind==='task'){const op=body.archived?engine.archives.archiveTask(String(body.id||'')):engine.archives.restoreTask(String(body.id||''));return json(res,{number:op.number,title:op.title,archived:body.archived});}
+        if(body.kind==='knowledge'){const k=engine.archives.knowledge(String(body.id||''),body.archived);return json(res,{id:k.id,archived:body.archived});}
+        throw new Error('未知归档类型');
+      }
       if(path==='/api/storage/backup')return json(res,await store.backup());
       if(path==='/api/codex/reconnect')return json(res,await codex.reconnect());
       if(path==='/api/preferences'){await preferences.update(body);let effective=null,effectiveError;try{effective=await preferences.work();}catch(e){effectiveError=e.message;}return json(res,{ok:true,config:store.config,effective,effectiveError});}
@@ -128,11 +141,11 @@ const server=http.createServer(async(req,res)=>{
         if(targets.some(t=>!/^[\w-]{5,100}$/.test(t.id)||!t.alias||t.alias.length>60)||new Set(targets.map(t=>t.alias)).size!==targets.length)throw new Error('目标 ID 或别名无效，别名不能重复');
         if(targets.some(t=>t.id===store.config.coordinator))throw new Error('调度聊天不能作为派发目标');
         if(targets.some(t=>store.db.prepare('SELECT 1 FROM need_threads WHERE thread=?').get(t.id)))throw new Error('需求助手会话不能作为派发目标');
-        if(path==='/api/targets'){store.saveConfig({targets});return json(res,{ok:true});}
+        if(path==='/api/targets'){store.saveConfig({targets});configurePanel(store,'targets');return json(res,{ok:true});}
         const seconds=Number(body.maxVideoSeconds||1800);if(!Number.isFinite(seconds)||seconds<30||seconds>7200)throw new Error('视频上限必须在 30–7200 秒之间');
         const visualFps=Number(body.visualFps||store.config.visualFps||4);if(![2,4,8].includes(visualFps))throw new Error('视觉读取密度只能是每秒 2、4 或 8 帧');
         const ackMode=body.ackMode||store.config.ackMode||'auto';if(!['auto','text'].includes(ackMode))throw new Error('收到视频的确认方式无效');
-        store.saveConfig({targets,maxVideoSeconds:seconds,visualFps,ackMode});return json(res,{ok:true});
+        store.saveConfig({targets,maxVideoSeconds:seconds,visualFps,ackMode});configurePanel(store,'targets');return json(res,{ok:true});
       }
       if(path==='/api/asr/setup'){
         if(!asrInstalling){asrInstalling=true;setupAsr(store.root,log).catch(e=>log(e.message,'error')).finally(()=>{asrInstalling=false;});}
@@ -176,7 +189,7 @@ server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被
 engine.start();codex.startAuthWatcher();
 const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 Codex 已连接');}).catch(e=>log('Codex 连接失败：'+e.message,'error'));
 if(store.config.owner&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
-  await codexReady;if(closing||!store.config.resumeOnStartup||!store.config.coordinator)return;
+  await codexReady;if(closing||!store.config.resumeOnStartup)return;
   try{await engine.arm(true,{resumeSince:startupSince});log('已恢复保存的会话与监听，补收本次启动期间的消息；已有记录不会重复执行');}catch(e){log('绑定和资料已保留，等待恢复抖音会话：'+e.message,'attention');}
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);

@@ -9,7 +9,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   const longName = '研究页面切换与视频视觉效果 '.repeat(160);
   const threads = [{id:'long-thread-id',name:longName},{id:'short-thread-id',name:'其他聊天'}];
   const state = {
-    config:{enabled:false,owner:null,coordinator:'',targets:[],maxVideoSeconds:1800,model:'',reasoningEffort:'',fastMode:false,autoRoute:true,contextBudget:48000},
+    config:{enabled:false,owner:null,coordinator:'',targets:[],maxVideoSeconds:1800,model:'',reasoningEffort:'',fastMode:false,autoRoute:true,contextBudget:48000,uiPanels:{setup:false,model:false,targets:false}},
     conversations:{activeNeed:'website-1',budget:48000,needs:[{id:'website-1',title:'网站需求',summary:'主色绿色，禁止红色',seq:1,contextTokens:2400}]},
     runtime:{browser:'closed',codex:false},counts:{knowledge:0,runningTasks:0,queuedTasks:0},
     knowledge:[],tasks:[],outbox:[],messages:[],events:[]
@@ -19,10 +19,14 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   const catalog={defaults:{model:'fixture-sol',effort:'max'},models:[{model:'fixture-sol',displayName:'Fixture Sol',supportedReasoningEfforts:['low','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority',name:'Fast'}]}]};
   let preferencesSaved;
   const server=http.createServer(async(req,res)=>{
+    const requestUrl=new URL(req.url,'http://localhost');
     if(req.url.startsWith('/api/')){
       res.setHeader('Content-Type','application/json');
-      if(req.url==='/api/preferences'){let text='';for await(const b of req)text+=b;preferencesSaved=JSON.parse(text);Object.assign(state.config,preferencesSaved);res.end(JSON.stringify({ok:true}));return;}
-      if(req.url==='/api/targets'){let text='';for await(const b of req)text+=b;state.config.targets=JSON.parse(text).targets;res.end(JSON.stringify({ok:true}));return;}
+      if(req.url==='/api/preferences'){let text='';for await(const b of req)text+=b;preferencesSaved=JSON.parse(text);Object.assign(state.config,preferencesSaved);state.config.uiPanels.model=true;res.end(JSON.stringify({ok:true}));return;}
+      if(req.url==='/api/targets'){let text='';for await(const b of req)text+=b;state.config.targets=JSON.parse(text).targets;state.config.uiPanels.targets=true;res.end(JSON.stringify({ok:true}));return;}
+      if(req.url==='/api/ui/panels'){let text='';for await(const b of req)text+=b;Object.assign(state.config.uiPanels,JSON.parse(text));res.end(JSON.stringify({ok:true}));return;}
+      if(req.url==='/api/archive'){let text='';for await(const b of req)text+=b;const b=JSON.parse(text);state.work.find(w=>w.id===b.id).archived=b.archived;res.end(JSON.stringify({ok:true}));return;}
+      if(requestUrl.pathname==='/api/state'){const scope=requestUrl.searchParams.get('work')||'current',status=requestUrl.searchParams.get('status')||'all';res.end(JSON.stringify({...state,work:state.work.filter(w=>(scope==='all'||(scope==='archived'?!!w.archived:!w.archived))&&(status==='all'||w.status===status))}));return;}
       if(req.url==='/api/models'){res.end(JSON.stringify(catalog));return;}
       if(req.url==='/api/needs/new'){let text='';for await(const b of req)text+=b;const title=JSON.parse(text).title;const n={id:'created-need',title,seq:1,contextTokens:0,summary:''};state.conversations.needs.push(n);state.conversations.activeNeed=n.id;res.end(JSON.stringify(n));return;}
       if(req.url==='/api/needs/switch'){state.conversations.activeNeed='website-1';res.end(JSON.stringify(state.conversations.needs[0]));return;}
@@ -68,9 +72,17 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     await page.selectOption('#defaultModel','fixture-sol');await page.selectOption('#defaultEffort','max');await page.locator('#fastMode').check();await page.locator('#autoRoute').uncheck();await page.locator('#contextBudget').fill('16000');await page.getByRole('button',{name:'保存默认配置'}).click();
     await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('默认配置已保存'));
     assert.deepEqual(preferencesSaved,{model:'fixture-sol',reasoningEffort:'max',fastMode:true,autoRoute:false,contextBudget:16000});
+    await page.waitForFunction(()=>!document.querySelector('#modelPanel').open);assert.equal(await page.locator('#targetsPanel').evaluate(e=>e.open),false);
+    await page.locator('#modelPanel>summary').click();await page.waitForFunction(()=>document.querySelector('#modelPanel').open);await page.waitForFunction(()=>!document.querySelector('#modelPanel').open===false);
     await page.locator('#newNeedTitle').fill('烹饪参考');await page.getByRole('button',{name:'新建并切换对话'}).click();await page.waitForFunction(()=>document.querySelector('#currentNeed').textContent.includes('烹饪参考'));
     await page.locator('[data-switch-need="website-1"]').click();await page.waitForFunction(()=>document.querySelector('#currentNeed').textContent.includes('网站需求'));
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    await page.waitForFunction(()=>!document.querySelector('#targetsPanel').open);await page.locator('#targetsPanel>summary').click();await page.waitForFunction(()=>document.querySelector('#targetsPanel').open);await page.waitForTimeout(150);
+    await page.reload();await page.locator('[data-operation="operation-A"]').waitFor();assert.equal(await page.locator('#modelPanel').evaluate(e=>e.open),true);assert.equal(await page.locator('#targetsPanel').evaluate(e=>e.open),true);
+    await page.selectOption('#workStatus','done');await page.waitForFunction(()=>document.querySelectorAll('#taskList .work-card').length===1);assert.equal(await page.locator('#workScope').inputValue(),'all');assert.match(await page.locator('#taskList').textContent(),/整理资料/);
+    await page.selectOption('#workStatus','all');await page.selectOption('#workScope','current');await page.locator('[data-operation="operation-A"] [data-archive-kind="task"]').click();await page.waitForFunction(()=>!document.querySelector('[data-operation="operation-A"]'));
+    await page.selectOption('#workScope','archived');await page.locator('[data-operation="operation-A"]').waitFor();assert.match(await page.locator('#taskList').textContent(),/恢复显示/);await page.locator('[data-operation="operation-A"] [data-archive-kind="task"]').click();await page.waitForFunction(()=>!document.querySelector('[data-operation="operation-A"]'));
+    await page.selectOption('#workScope','current');await page.locator('[data-operation="operation-A"]').waitFor();
     assert.deepEqual(errors,[]);
   }finally{
     await browser?.close();await new Promise(resolve=>server.close(resolve));

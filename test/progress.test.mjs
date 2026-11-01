@@ -26,7 +26,7 @@ test('三段回复发到一半的重复要求关联原操作，不再次调用�
     await drain(h);assert.equal(h.engine.progress.get(first.id).status,'done');assert.equal(h.calls.length,1);
     assert.ok(h.sent.some(t=>t.includes('这项要求正在处理，没有重复启动')&&t.includes('第 2/3 段')));
     assert.ok(h.sent.some(t=>t.startsWith('任务 1 · 回复 1/3 段')));assert.ok(h.sent.some(t=>t.startsWith('任务 1 · 回复 3/3 段（末段）')));assert.equal(h.sent.filter(t=>t.startsWith('已登记任务 1：')).length,1);assert.equal(h.engine.progress.forMessage(repeat.id).number,1);
-    for(const id of [first.platformId,repeat.platformId])assert.deepEqual(h.reactions.filter(r=>r.id===id).map(r=>r.emojis[0]),['👌','👀','🎉']);
+    for(const id of [first.platformId,repeat.platformId])assert.deepEqual(h.reactions.filter(r=>r.id===id).map(r=>r.emojis[0]),['👌','[奋斗]','🎉']);
   }finally{h.s.close();}
 });
 

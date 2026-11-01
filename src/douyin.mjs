@@ -137,7 +137,7 @@ export function inspectReactionChoices(token) {
     const label=[e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('data-title'),e.textContent?.length<30?e.textContent:'',img?.alt,img?.title].filter(Boolean).join(' ').trim();
     const src=img?.getAttribute('src')||'';
     const value=label+' '+src;
-    const emoji=/👌|\[OK\]|(?:^|[\s_/-])ok[_\s.-]?(?:hand)?(?:[\s_.?/-]|$)|(?:^|[^a-f\d])1f44c(?:[^a-f\d]|$)/i.test(value)?'👌':/👀|眼睛|围观|(?:^|[^a-f\d])1f440(?:[^a-f\d]|$)/i.test(value)?'👀':/🎉|庆祝|撒花|(?:^|[^a-f\d])1f389(?:[^a-f\d]|$)/i.test(value)?'🎉':/✅|完成|勾选|2705/i.test(value)?'✅':/💪|加油|肌肉|奋斗|1f4aa/i.test(value)?'💪':/🤠|牛仔|1f920/i.test(value)?'🤠':/👍|\[赞\]|\[强\]|点赞|(?:^|[^a-f\d])1f44d(?:[^a-f\d]|$)/i.test(value)?'👍':'';
+    const emoji=/(?:^|[\s\[【])奋斗(?:[\]】\s]|$)/.test(label)?'[奋斗]':/👌|\[OK\]|(?:^|[\s_/-])ok[_\s.-]?(?:hand)?(?:[\s_.?/-]|$)|(?:^|[^a-f\d])1f44c(?:[^a-f\d]|$)/i.test(value)?'👌':/👀|眼睛|围观|(?:^|[^a-f\d])1f440(?:[^a-f\d]|$)/i.test(value)?'👀':/🎉|庆祝|撒花|(?:^|[^a-f\d])1f389(?:[^a-f\d]|$)/i.test(value)?'🎉':/✅|完成|勾选|2705/i.test(value)?'✅':/💪|肌肉|1f4aa/i.test(value)?'💪':/🤠|牛仔|1f920/i.test(value)?'🤠':/👍|\[赞\]|\[强\]|点赞|(?:^|[^a-f\d])1f44d(?:[^a-f\d]|$)/i.test(value)?'👍':'';
     if(!emoji)continue;
     const target=img?(img.closest('button,[role="button"]')||img):(e.closest('button,[role="button"]')||e);
     if(choices.some(c=>c.element===target))continue;
@@ -174,7 +174,7 @@ export function inspectMessageReactions({messageId,emoji}) {
   const visible=e=>!!e.getClientRects().length;
   const containers=[...row.querySelectorAll('[class*="reaction" i],[class*="emojiReply" i],[class*="emojiResponse" i],[class*="MessageBoxContentBottomwrapper"],[data-e2e*="reaction"]')].filter(visible);
   const nodes=[...new Set(containers.flatMap(e=>[e,...e.querySelectorAll('img,[aria-label],[title]')]))];
-  const pattern=emoji==='👌'?/👌|\[OK\]|ok[_-]?hand|1f44c/i:emoji==='👀'?/👀|眼睛|围观|1f440/i:emoji==='🎉'?/🎉|庆祝|撒花|1f389/i:emoji==='✅'?/✅|完成|勾选|2705/i:emoji==='💪'?/💪|加油|肌肉|奋斗|1f4aa/i:emoji==='🤠'?/🤠|牛仔|1f920/i:/👍|\[赞\]|\[强\]|点赞|1f44d/i;
+  const pattern=emoji==='[奋斗]'?/(?:^|[\s\[【])奋斗(?:[\]】\s]|$)/:emoji==='👌'?/👌|\[OK\]|ok[_-]?hand|1f44c/i:emoji==='👀'?/👀|眼睛|围观|1f440/i:emoji==='🎉'?/🎉|庆祝|撒花|1f389/i:emoji==='✅'?/✅|完成|勾选|2705/i:emoji==='💪'?/💪|肌肉|1f4aa/i:emoji==='🤠'?/🤠|牛仔|1f920/i:/👍|\[赞\]|\[强\]|点赞|1f44d/i;
   return {found:true,count:nodes.filter(e=>pattern.test([e.textContent,e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('alt'),e.getAttribute('src')].filter(Boolean).join(' '))).length};
 }
 
