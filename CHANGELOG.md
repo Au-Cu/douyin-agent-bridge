@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1
+
+- Fix the reproduced MSIX AppData virtualization mismatch: desktop Codex and an external CMD could resolve the same logical connection path to different physical files. Store new Windows state under the user's home directory and canonicalize shared setup and executable paths.
+- Discover and conservatively migrate existing AppData/package state, preserving source data, models, browser profiles, knowledge, needs, chat settings and shared setup. Distinct legacy databases require an explicit choice; never silently merge them or overwrite an established profile.
+- Add a read-only Windows shared-launcher check with explicit missing-path diagnostics and UTF-8 output. Keep the Mac ARM64 source release paired; its default data path is unchanged.
+
 ## 0.12.0
 
 - Share the desktop app's actual app-server writer for authorized project dispatch through a local authenticated RPC broker. Translate request and callback IDs, route desktop tools to the desktop, preserve native approvals, reconcile exact turn results and restrict interruption to bridge-owned turns. Keep ordinary chat isolated.

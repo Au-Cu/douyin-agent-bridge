@@ -35,4 +35,5 @@
 - Project target dispatch must use the desktop shared app-server, including exact turn results, native tools, approvals and owned-turn interruption. Never fall back to an independent writer or remove locks. Shared transport credentials stay in private data; ordinary chats must never use this transport. Closing a bridge client only closes its own connection. Desktop cutover is user controlled.
 - Use 用户 throughout Chinese interfaces, rules, documentation and outgoing replies.
 - Persist settings before acknowledging changes; use FULL SQLite durability, atomic recovery mirrors and consistent snapshots. Keep one writer per data directory. Migrations retain the original source, rebase evidence paths and never overwrite an existing account or memory.
+- Windows defaults to the user-home data directory to avoid MSIX AppData virtualization. Resolve shared setup and executable files to physical paths; keep package and external launchers on the same data. Never silently choose between distinct legacy databases.
 - Before publication run npm run release:check and npm run release:build. Only the allowlisted files in release-manifest.json may enter the source archive.

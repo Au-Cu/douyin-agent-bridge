@@ -1,20 +1,22 @@
 import {homedir} from 'node:os';
 import {join,resolve,dirname,relative,isAbsolute} from 'node:path';
 import {existsSync,readFileSync} from 'node:fs';
-import {mkdir,cp,rename,readdir,readFile,writeFile,stat} from 'node:fs/promises';
+import {mkdir,cp,rename,readdir,readFile,writeFile,stat,realpath} from 'node:fs/promises';
 import {DatabaseSync,backup} from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
 import {durableJson,lockStorage,processAlive} from './durable.mjs';
 
 export function resolveDataRoot({env=process.env,platform=process.platform,home=homedir()}={}){
   if(env.BRIDGE_DATA_DIR)return resolve(env.BRIDGE_DATA_DIR);
-  return resolve(platform==='win32'?join(env.LOCALAPPDATA||join(home,'AppData','Local'),'DouyinCodexBridge','data'):join(env.XDG_DATA_HOME||join(home,'.local','share'),'douyin-codex-bridge','data'));
+  // Packaged Windows apps can redirect LOCALAPPDATA per file while an external
+  // launcher sees a different directory under the same path. Home is shared.
+  return resolve(platform==='win32'?join(home,'.douyin-codex-bridge','data'):join(env.XDG_DATA_HOME||join(home,'.local','share'),'douyin-codex-bridge','data'));
 }
 export function inspectData(root){
   let config={},counts={},db;const file=join(root,'bridge.sqlite');
   if(existsSync(join(root,'config.json')))try{config=JSON.parse(readFileSync(join(root,'config.json'),'utf8'));}catch{}
   if(existsSync(file))try{db=new DatabaseSync(file,{readOnly:true});for(const table of ['messages','knowledge','tasks','needs'])try{counts[table]=db.prepare('SELECT COUNT(*) AS n FROM '+table).get().n;}catch{};try{const r=db.prepare("SELECT value FROM app_settings WHERE key='config'").get();if(r)config=JSON.parse(r.value);}catch{}}finally{db?.close();}
-  return {meaningful:!!(config.owner||config.targets?.length||config.model||Object.values(counts).some(Boolean)),config,counts};
+  return {meaningful:!!(config.owner||config.targets?.length||config.model||config.chatModel||config.aiChats?.length||Object.values(counts).some(Boolean)),config,counts};
 }
 export function rebaseText(text,source,target){
   const from=resolve(source),to=resolve(target),pairs=[[JSON.stringify(from).slice(1,-1),JSON.stringify(to).slice(1,-1)],[from,to],[from.replaceAll('\\','/'),to.replaceAll('\\','/')]];
@@ -35,7 +37,7 @@ export async function rebaseData(root,source,target){
     db.exec('COMMIT;PRAGMA wal_checkpoint(TRUNCATE)');
   }catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}finally{db.close();}
   async function walk(folder){if(!existsSync(folder))return;for(const entry of await readdir(folder,{withFileTypes:true})){const file=join(folder,entry.name);if(entry.isSymbolicLink())throw new Error('迁移中发现符号链接，原数据保持不变。');if(entry.isDirectory())await walk(file);else if(/\.(?:json|md|txt)$/i.test(entry.name)){const text=await readFile(file,'utf8'),next=rebaseText(text,source,target);if(next!==text)await writeFile(file,next);}}}
-  for(const part of ['knowledge','needs','reply-references'])await walk(join(root,part));
+  for(const part of ['knowledge','needs','reply-references','desktop-shared','chat-only'])await walk(join(root,part));
   for(const name of ['config.json','config.json.bak'])if(existsSync(join(root,name))){const text=await readFile(join(root,name),'utf8');await writeFile(join(root,name),rebaseText(text,source,target));}
 }
 export async function migrateData(source,target){
@@ -43,11 +45,12 @@ export async function migrateData(source,target){
   const nested=relative(source,target);if(!nested.startsWith('..')&&!isAbsolute(nested))throw new Error('新数据目录不能放在旧数据目录内部。');
   if(inspectData(target).meaningful)throw new Error('目标目录已经有账号或记忆，不能覆盖；请先选择要恢复的数据。');
   const pidFile=join(source,'server.pid');if(existsSync(pidFile)){const pid=Number(readFileSync(pidFile,'utf8').trim());if(Number.isInteger(pid)&&pid>0&&processAlive(pid))throw new Error('请先正常停止旧项目，再迁移数据和浏览器登录态。');}
+  const brokerLock=join(source,'desktop-shared','broker.lock');if(existsSync(brokerLock)){let holder;try{holder=JSON.parse(readFileSync(brokerLock,'utf8'));}catch{throw new Error('桌面共享服务锁无法核验，原数据已保留');}if(Number.isInteger(holder.pid)&&processAlive(holder.pid))throw new Error('请先完全退出桌面共享 Codex，再迁移数据；不会自动中断现有聊天。');}
   const unlockSource=lockStorage(source),parent=dirname(target),staging=join(parent,'.data-migrating-'+randomUUID());await mkdir(parent,{recursive:true});let unlock;
   try{
     unlock=lockStorage(parent,'migration.lock');await mkdir(staging);
     if(existsSync(target))await cp(target,staging,{recursive:true,force:false,errorOnExist:false,filter:p=>!['bridge.lock','server.pid'].includes(p.split(/[\\/]/).at(-1))&&!/^bridge\.sqlite(?:-|$)/.test(p.split(/[\\/]/).at(-1))});
-    for(const name of ['config.json','config.json.bak','knowledge','needs','reply-references','models','browser-profile','runtime'])if(existsSync(join(source,name)))await cp(join(source,name),join(staging,name),{recursive:true,force:true,preserveTimestamps:true,filter:p=>!['SingletonLock','SingletonSocket','SingletonCookie','DevToolsActivePort'].includes(p.split(/[\\/]/).at(-1))});
+    for(const name of ['config.json','config.json.bak','knowledge','needs','reply-references','models','browser-profile','runtime','desktop-shared','chat-only','code-sandbox.json'])if(existsSync(join(source,name)))await cp(join(source,name),join(staging,name),{recursive:true,force:true,preserveTimestamps:true,filter:p=>!['SingletonLock','SingletonSocket','SingletonCookie','DevToolsActivePort','broker.lock','auth.json'].includes(p.split(/[\\/]/).at(-1))});
     // Windows copy timestamps can round sub-millisecond precision. Preserve the
     // original revision so completed visual segments remain reusable after a move.
     if(existsSync(join(source,'knowledge')))for(const entry of await readdir(join(source,'knowledge'),{withFileTypes:true}))if(entry.isDirectory()){
@@ -64,8 +67,14 @@ export async function migrateData(source,target){
     await rename(staging,target);return target;
   }finally{unlock?.();unlockSource();}
 }
-export async function prepareDataRoot(project,{env=process.env,root=resolveDataRoot({env})}={}){
+export async function windowsLegacyData({env=process.env,home=homedir()}={}){
+  const local=env.LOCALAPPDATA||join(home,'AppData','Local'),candidates=[join(local,'DouyinCodexBridge','data')],packages=join(local,'Packages');
+  try{for(const name of await readdir(packages))if(/^OpenAI\.Codex_[A-Za-z0-9]+$/.test(name))candidates.push(join(packages,name,'LocalCache','Local','DouyinCodexBridge','data'));}catch(e){if(e.code!=='ENOENT')throw e;}
+  const unique=new Map();for(const root of candidates)if(inspectData(root).meaningful){let key;try{key=await realpath(join(root,'bridge.sqlite'));}catch{key=await realpath(root);}key=key.toLowerCase();if(!unique.has(key))unique.set(key,root);}
+  if(unique.size>1)throw new Error('检测到多套不同的旧资料，已保留全部原目录；请用 node scripts/storage.mjs --migrate-from 指定完整的一套，不能自动覆盖或合并。');return [...unique.values()][0];
+}
+export async function prepareDataRoot(project,{env=process.env,platform=process.platform,home=homedir(),root=resolveDataRoot({env,platform,home})}={}){
   root=resolve(root);const legacy=join(project,'data');
-  if(!env.BRIDGE_DATA_DIR&&root!==resolve(legacy)&&!inspectData(root).meaningful&&inspectData(legacy).meaningful)await migrateData(legacy,root);
+  if(!env.BRIDGE_DATA_DIR&&root!==resolve(legacy)&&!inspectData(root).meaningful){const source=platform==='win32'?await windowsLegacyData({env,home}):null;if(source&&resolve(source)!==root)await migrateData(source,root);else if(inspectData(legacy).meaningful)await migrateData(legacy,root);}
   await mkdir(root,{recursive:true});if(!existsSync(join(root,'storage.json')))durableJson(join(root,'storage.json'),{version:1,created:Date.now()});return root;
 }
