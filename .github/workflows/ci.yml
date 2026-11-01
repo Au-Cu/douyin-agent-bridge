@@ -36,7 +36,7 @@ jobs:
     timeout-minutes: 30
     env:
       BRIDGE_TEST_BROWSER: chrome
-      BRIDGE_DATA_DIR: ${{ runner.temp }}/douyin-bridge-ci
+      BRIDGE_DATA_DIR: /tmp/douyin-bridge-ci
     steps:
       - uses: actions/checkout@v7.0.1
         with:
