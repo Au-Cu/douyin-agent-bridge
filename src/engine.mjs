@@ -60,12 +60,15 @@ export class BridgeEngine {
   }
   async arm(enabled,{resumeSince}={}) {
     if(!enabled){this.store.saveConfig({enabled:false,resumeOnStartup:false});this.store.event('已暂停接收新指令；正在执行的任务保持原状态');return;}
-    if(!this.store.config.owner)throw new Error('请先绑定用户的抖音会话');
-    if(!this.store.config.coordinator&&!this.conversations?.needs.list({includeArchived:true}).length)throw new Error('请先创建 Codex 调度聊天');
-    const scan=await this.adapter.scan();
-    if(scan.peer?.chatKey!==this.store.config.owner.chatKey||scan.peer?.peerUid!==this.store.config.owner.peerUid)throw new Error('请在抖音浏览器里选中用户的私信会话');
+    const agent=this.chats?this.chats.agentEnabled():!!this.store.config.owner;
+    if(!agent&&!this.chats?.bots().length)throw new Error('请先绑定个人 Agent 用户会话，或在面板启用普通聊天 AI');
+    if(agent&&!this.store.config.coordinator&&!this.conversations?.needs.list({includeArchived:true}).length)throw new Error('请先创建 Codex 调度聊天');
+    const scan=agent?await (this.adapter.scanPeer?this.adapter.scanPeer(this.store.config.owner):this.adapter.scan()):{messages:[]};
+    if(agent&&(scan.peer?.chatKey!==this.store.config.owner.chatKey||scan.peer?.peerUid!==this.store.config.owner.peerUid))throw new Error('请在抖音浏览器里选中用户的私信会话');
     if(resumeSince!==undefined&&(!Number.isFinite(resumeSince)||resumeSince<=0||resumeSince>Date.now()||Date.now()-resumeSince>30*60*1000))throw new Error('恢复监听的时间范围无效');
     this.armedAt=resumeSince??Date.now();
+    this.chats?.arm(this.armedAt);
+    await this.chats?.baseline({resumeSince});
     this.seen=new Set(scan.messages.filter(m=>resumeSince===undefined||m.created<resumeSince-1500).map(m=>m.id));
     this.store.saveConfig({enabled:true,resumeOnStartup:true});this.store.event(resumeSince===undefined?'监听已启动，现有历史消息已跳过':'监听已恢复，将补收本次更新期间的新消息');
   }
@@ -105,10 +108,10 @@ export class BridgeEngine {
     this.reply(['REFERENCE_UNRESOLVED','REFERENCE_INCOMPLETE'].includes(e.code)?e.message:'引用暂时无法核实，要求已保留；请稍后重新回复具体反馈。',{operationId:message.id,priority:90,dedupe:'reference-error:'+message.id});this.progress.finish(message.id,'waiting');
   }
   async scan() {
-    if((!this.store.config.enabled&&!this.armedAt)||this.scanBusy)return;
+    if((!this.store.config.enabled&&!this.armedAt)||this.scanBusy||this.adapter.selecting||this.chats&&!this.chats.agentEnabled())return;
     this.scanBusy=true;
     try{
-    const scan=await this.adapter.scan();const owner=this.store.config.owner;
+    const owner=this.store.config.owner,scan=await (this.adapter.scanPeer?this.adapter.scanPeer(owner):this.adapter.scan());
     const accepted=[],timeline=[...scan.messages].sort((a,b)=>a.created-b.created);
     for(const m of timeline){
       if(!this.store.config.enabled&&!(m.kind==='text'&&['interrupt','ignore_start','ignore_end'].includes(parseCommand(m.text)?.name)))continue;
@@ -230,7 +233,7 @@ export class BridgeEngine {
     if(!patch)throw new Error('命令格式不正确，发送 /帮助 查看');await this.preferences.update(patch);return '设置已保存，从下一次调用起生效。\n'+this.preferences.describe();
   }
   async processNext() {
-    if(!this.store.config.enabled)return;
+    if(!this.store.config.enabled||this.chats&&!this.chats.agentEnabled())return;
     // Approval replies must be handled while the model is paused awaiting approval.
     const urgent=this.store.db.prepare("SELECT * FROM messages WHERE status='new' AND kind='text' AND trim(json_extract(body,'$.text')) LIKE '/中断%' ORDER BY created LIMIT 20").all();for(const row of urgent)if(parseCommand(JSON.parse(row.body).text)?.name==='interrupt'&&this.handleControl(JSON.parse(row.body)))return;
     const pending=this.store.pendingMessages();
@@ -418,7 +421,7 @@ export class BridgeEngine {
     const id=this.store.createTask(alias,target.id,prompt,context);this.store.event('已排队到「'+alias+'」：'+id.slice(0,8));return id;
   }
   async runTask() {
-    if(!this.store.config.enabled)return;
+    if(!this.store.config.enabled||this.chats&&!this.chats.agentEnabled())return;
     for(const t of this.store.queuedTasks())if(t.turn)this.store.taskStatus(t.id,'uncertain','已有执行回合，需要核实，不能自动重跑');
     const task=this.store.queuedTasks().find(t=>!this.taskRuns.has(t.thread)&&this.progress.mayAttempt(t));if(!task)return;
     const context=JSON.parse(task.context||'{}');
@@ -458,9 +461,15 @@ export class BridgeEngine {
   }
   async deliver() {
     if(this.outboxBusy)return;
-    const out=this.store.pendingOutbox()[0];if(!out)return;
+    let out,target,payload;
+    for(const candidate of this.store.pendingOutbox(200)){
+      const p=JSON.parse(candidate.payload||'{}');
+      if(p.chatbot){const chat=this.chats?.deliveryTarget(p,candidate.peer);if(!chat){this.store.delivery(candidate.id,'superseded','普通聊天配置已变更，旧回复不再发送');continue;}out=candidate;target=chat;payload=p;break;}
+      if(candidate.peer===this.store.config.owner?.chatKey&&(!this.chats||this.chats.agentEnabled())){out=candidate;target=this.store.config.owner;payload=p;break;}
+    }
+    if(!out)return;
     if(!this.store.config.enabled&&out.priority<900)return;
-    if(out.peer!==this.store.config.owner?.chatKey)return;
+    if(this.adapter.selecting)return;
     const normalizedBody=out.body.replaceAll(String.fromCharCode(0x4e3b,0x4eba),'用户');
     if(normalizedBody!==out.body){this.store.updatePendingOutbox(out.id,{body:normalizedBody,payload:JSON.parse(out.payload||'{}'),priority:out.priority});out.body=normalizedBody;}
     this.outboxBusy=true;this.store.delivery(out.id,'sending');
@@ -468,19 +477,19 @@ export class BridgeEngine {
       let method='text',textReceipt;
       if(out.kind==='progress_reaction'){
         const payload=JSON.parse(out.payload);let result;
-        if(this.adapter.react)result=await this.adapter.react(this.store.config.owner,payload.messageId,{emojis:payload.emojis});
+        if(this.adapter.react)result=await (payload.chatbot?this.chats.delivery(payload,out.peer,()=>this.adapter.react(target,payload.messageId,{emojis:payload.emojis})):this.adapter.react(target,payload.messageId,{emojis:payload.emojis}));
         if(!result?.verified){const attempts=(payload.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:'not_submitted',attempts,code:result?.code||'UNAVAILABLE'}});this.store.delivery(out.id,result?.notSubmitted&&result?.retryable&&attempts<3?'pending':'unavailable',result?.reason||'当前消息未提供可核验的状态表情');return;}
         this.store.mergeOutboxPayload(out.id,{receiptResult:{method:'reaction',...result}});method='reaction';
       }
       else if(out.kind==='video_ack'&&this.adapter.acknowledge){const result=await this.adapter.acknowledge(this.store.config.owner,JSON.parse(out.payload),out.body);method=result.method;this.store.mergeOutboxPayload(out.id,{receiptResult:result});}
-      else {const operationId=JSON.parse(out.payload||'{}').operationId;textReceipt=await this.interrupts.run(operationId,()=>{this.context.getStore().delivery={id:out.id,submitted:false};return this.adapter.send(this.store.config.owner,out.body,{plainText:JSON.parse(out.payload||'{}').plainText===true});});}
+      else {const send=()=>this.adapter.send(target,out.body,{plainText:payload.plainText===true});if(payload.chatbot)textReceipt=await this.chats.delivery(payload,out.peer,send);else {const operationId=payload.operationId;textReceipt=await this.interrupts.run(operationId,()=>{this.context.getStore().delivery={id:out.id,submitted:false};return send();});}}
       if(out.kind==='text')this.store.confirmTextDelivery(out.id,textReceipt?.messageId);else this.store.delivery(out.id,'sent');
       const operationId=JSON.parse(out.payload||'{}').operationId;if(operationId)this.progress.sync(operationId);
       if(out.kind==='video_ack')this.store.event('已在抖音确认收到视频（'+(method==='reaction'?'消息表情回应':'私信文字')+'）');
     }
-    catch(e){let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}this.store.delivery(out.id,status,e.message);}
+    catch(e){let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}this.store.delivery(out.id,status,e.message);}
     finally{this.outboxBusy=false;}
   }
-  start(){this.timer=setInterval(()=>{for(const task of [()=>this.scan(),()=>this.processNext(),()=>this.runTask(),()=>this.deliver()])task().catch(e=>this.store.event(e.message,'error'));},3000);this.watchdog=setInterval(()=>{this.interrupts.reconcile();this.progress.inspect().catch(e=>this.store.event('独立进度检查暂不可用','attention'));},5000);}
+  start(){this.timer=setInterval(()=>{for(const task of [()=>this.scan(),()=>this.chats?.scan(),()=>this.chats?.process(),()=>this.processNext(),()=>this.runTask(),()=>this.deliver()])Promise.resolve(task()).catch(e=>this.store.event(e.message,'error'));},3000);this.watchdog=setInterval(()=>{this.interrupts.reconcile();this.progress.inspect().catch(e=>this.store.event('独立进度检查暂不可用','attention'));},5000);}
   stop(){clearInterval(this.timer);clearInterval(this.watchdog);this.store.saveConfig({enabled:false});}
 }

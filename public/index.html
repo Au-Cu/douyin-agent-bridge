@@ -7,9 +7,22 @@
   <section class="status-grid"><article><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录助手账号，再选中你的会话</small></article><article><span>Codex</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small></article><article><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
   <details class="panel setup config-panel" id="setupPanel" data-panel="setup" open><summary><span>连接助手</span><small id="setupSummary">首次连接完成这三步</small></summary>
     <div class="steps"><div><b>01</b><h3>连接抖音助手账号</h3><p id="browserInstructions">首次登录助手窗口；主号与它互关后，从手机给它发一条私信。</p><button id="openBrowser">打开抖音窗口</button></div>
-    <div><b>02</b><h3>绑定你的私信会话</h3><p>在浏览器里点开你的主号会话，再绑定。助手只接收这个账号的新消息。</p><button id="bindOwner">绑定当前会话</button><small id="scanInfo"></small></div>
+    <div><b>02</b><h3>绑定你的私信会话</h3><p>在浏览器里点开你的主号会话，再绑定。个人 Agent 只接受这个用户的直接指令；普通聊天在下方单独启用。</p><button id="bindOwner">绑定当前会话</button><small id="scanInfo"></small></div>
     <div><b>03</b><h3>准备 Codex 与口播转写</h3><p>建立固定的调度聊天。视频按完整时间轴逐段读取画面，口播在本机转写。</p><div class="button-row"><button id="createCoordinator">创建调度聊天</button><button id="reconnectCodex" class="secondary">重新连接 Codex</button><button id="setupAsr" class="secondary">安装转写模型</button></div></div></div>
     <div class="listen-row"><div><strong id="listenTitle">准备好后开始监听</strong><small>启动时跳过历史消息；电脑需要保持运行。</small></div><button id="toggleListen" class="primary">开始监听</button></div>
+  </details>
+  <details class="panel config-panel" id="chatsPanel" data-panel="chats" open>
+    <summary><span>启用 AI 的抖音聊天</span><small id="chatsSummary">个人 Agent 与普通聊天分别配置</small></summary>
+    <p class="hint">个人 Agent 就是现有的用户单聊模式，可学习视频并按你的指令处理项目。普通聊天 AI 只能回复文字，使用独立上下文，没有项目、文件、电脑、插件或任务派发权限。群聊仅在消息原生 @ 到助手账号时回复，输入“@昵称”文字不算。</p>
+    <div class="button-row panel-tools"><button id="selectAiChat">配置一个单聊或群聊</button><button id="finishAiSelection" class="secondary" hidden>完成选择，恢复轮询</button></div>
+    <div id="aiChatSelection" class="chat-selection" hidden>
+      <p class="hint">轮询与发送暂时暂停，最长 5 分钟。在助手的抖音窗口打开目标单聊或群聊，再读取。如果尚未核验助手身份，请从助手账号手动发一条普通消息。</p>
+      <button id="observeAiChat" class="secondary">读取当前抖音聊天</button>
+      <p id="observedChat" class="hint">尚未读取聊天</p>
+      <div class="button-row"><label>使用方式 <select id="observedChatMode"><option value="chat">普通聊天 AI · 仅回复</option><option value="agent">个人 Agent · 现有模式</option></select></label><button id="enableAiChat" disabled>保存并启用此聊天</button></div>
+    </div>
+    <div id="aiChatList" class="ai-chat-list"></div>
+    <details data-fold-key="bot-history"><summary>普通聊天记录与送达状态</summary><p class="hint">每次使用临时 Codex 会话，仅带本聊天最近 6 次已送达交流。视频分享卡片只提供标题，普通聊天不会下载、学习视频或操作项目。</p><div id="botHistory"></div></details>
   </details>
   <details class="panel config-panel" id="modelPanel" data-panel="model" open>
     <summary><span>默认模型与需求对话</span><small id="modelSummary">设置模型和管理需求</small></summary>

@@ -20,6 +20,9 @@ import {prepareDataRoot} from './data-root.mjs';
 import {existsSync} from 'node:fs';
 import {archiveScope,taskStatuses,codexThreadUrl} from './archive.mjs';
 import {configurePanel,updatePanels} from './ui-state.mjs';
+import {PeerBrowser} from './peer-browser.mjs';
+import {Chats} from './chats.mjs';
+import {ChatSandbox} from './chat-sandbox.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const startupSince=Date.now();
@@ -27,13 +30,14 @@ const {values:args}=parseArgs({options:{port:{type:'string'},'data-dir':{type:'s
 if(args['data-dir'])process.env.BRIDGE_DATA_DIR=args['data-dir'];
 const dataRoot=await prepareDataRoot(project),store=new Store(dataRoot);
 const log=(message,level)=>store.event(message,level);
-const adapter=process.platform==='darwin'?new SafariDouyinAdapter({root:store.root,log}):new DouyinAdapter({root:store.root,log});
+const adapter=new PeerBrowser(process.platform==='darwin'?new SafariDouyinAdapter({root:store.root,log}):new DouyinAdapter({root:store.root,log}));
 const codex=new CodexClient({cwd:project,log});
 const media=new MediaProcessor({root:store.root,adapter,log});
 const preferences=new Preferences({store,codex});
 const conversations=new Conversations({store,codex,preferences});
 const visual=new VisualAnalyzer({codex,log,settings:()=>preferences.work()});
 const engine=new BridgeEngine({store,adapter,media,codex,visual,preferences,conversations});
+const chatSandbox=new ChatSandbox({root:store.root,codex,log}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
 const token=randomBytes(32).toString('hex');let asrInstalling=false;let closing=false;
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
 if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口必须为 1024–65535 的整数');
@@ -56,7 +60,7 @@ const server=http.createServer(async(req,res)=>{
           try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
         }));
         const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codexThreadUrl(n.thread)}));
-        return json(res,{...snapshot,storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models')return json(res,await preferences.catalog());
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
@@ -82,6 +86,13 @@ const server=http.createServer(async(req,res)=>{
       }
       if(req.method!=='POST')return json(res,{error:'未找到接口'},404);
       const body=await jsonBody(req);
+      if(path==='/api/ai-chats/select'){chats.beginSelection();return json(res,{ok:true});}
+      if(path==='/api/ai-chats/cancel'){chats.endSelection();return json(res,{ok:true});}
+      if(path==='/api/ai-chats/current')return json(res,await chats.observe());
+      if(path==='/api/ai-chats/save'){
+        if(body.enabled===true&&body.mode==='chat')await chatSandbox.prepare();
+        const saved=chats.configure(body);configurePanel(store,'chats');return json(res,saved);
+      }
       if(path==='/api/tasks/interrupt')return json(res,await engine.interrupts.request(String(body.id||'')));
       if(path==='/api/ui/panels')return json(res,{panels:updatePanels(store,body)});
       if(path==='/api/archive'){
@@ -97,7 +108,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/needs/new'){const n=await conversations.create(String(body.title||'新需求'));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
       if(path==='/api/needs/switch'){const n=await conversations.switchTo(String(body.id||''));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
       if(path==='/api/shutdown'){
-        if((engine.busy||engine.taskBusy)&&body.force!==true)throw new Error('仍有任务执行中，请先等待任务结束；强制停止会把执行结果标为需要核实');
+        if((engine.busy||engine.taskBusy||chats.running.size)&&body.force!==true)throw new Error('仍有任务或聊天执行中，请先等待结束；强制停止会把执行结果标为需要核实');
         json(res,{ok:true});setTimeout(shutdown,100);return;
       }
       if(path==='/api/browser/open'){await adapter.open(store.config.owner);return json(res,{ok:true});}
@@ -130,6 +141,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(path==='/api/bind'){
         const scan=await adapter.scan();if(!scan.peer)throw new Error('请先在助手账号中打开用户的私信会话，并由用户发一条消息');
+        if(scan.peer.type==='group')throw new Error('个人 Agent 绑定现有用户单聊；群聊请在 AI 聊天卡片启用普通聊天模式');
         if(!scan.messages.some(m=>m.direction==='in'&&m.sender===scan.peer.peerUid&&m.created>0))throw new Error('无法核实发信账号或时间，请让用户再发一条新私信');
         if(store.config.enabled||engine.busy||engine.taskBusy)throw new Error('请先暂停监听并等待当前任务结束，再更换绑定');
         if(store.config.owner&&store.config.owner.peerUid!==scan.peer.peerUid&&store.pendingOutbox().length)throw new Error('旧账号仍有待发送消息，请先处理发件箱');
@@ -190,11 +202,11 @@ server.listen(port,'127.0.0.1',()=>{console.log('抖音 Codex 助手控制台：
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
 engine.start();codex.startAuthWatcher();
 const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 Codex 已连接');}).catch(e=>log('Codex 连接失败：'+e.message,'error'));
-if(store.config.owner&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
+if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
   await codexReady;if(closing||!store.config.resumeOnStartup)return;
   try{await engine.arm(true,{resumeSince:startupSince});log('已恢复保存的会话与监听，补收本次启动期间的消息；已有记录不会重复执行');}catch(e){log('绑定和资料已保留，等待恢复抖音会话：'+e.message,'attention');}
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
-async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();codex.close();await Promise.allSettled([...engine.interrupts.requests.values()]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
+async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();chats.stop();codex.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values()]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

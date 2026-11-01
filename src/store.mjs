@@ -111,7 +111,7 @@ export class Store {
     this.db.prepare('INSERT OR REPLACE INTO archive_records VALUES(?,?,?,?,?,?,?,?,?)').run(kind,id,Number(archived),Number(desired),state,error,reason,JSON.stringify(meta),Date.now());return this.archiveRecord(kind,id);
   }
   autoArchiveTask(id){this.db.prepare("INSERT OR IGNORE INTO archive_records(kind,id,archived,desired,state,reason,changed) VALUES('task',?,1,1,'done','completed',?)").run(id,Date.now());}
-  pendingOutbox() { return this.db.prepare("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? ORDER BY priority DESC,created LIMIT 1").all(Date.now()); }
+  pendingOutbox(limit=1) { return this.db.prepare("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? ORDER BY priority DESC,created LIMIT ?").all(Date.now(),limit); }
   delivery(id,status,error='') { this.db.prepare('UPDATE outbox SET status=?,error=?,next_attempt=? WHERE id=?').run(status,error,status==='pending'&&error?Date.now()+10000:0,id); }
   confirmTextDelivery(id,platformId){
     const out=this.db.prepare('SELECT peer FROM outbox WHERE id=?').get(id);if(!out)throw new Error('未找到发送记录');this.db.exec('BEGIN IMMEDIATE');

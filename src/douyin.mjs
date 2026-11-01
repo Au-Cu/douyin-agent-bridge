@@ -10,7 +10,7 @@ export function scanConversation() {
   const scope=this?.document?this:globalThis,document=scope.document,location=scope.location,innerWidth=scope.innerWidth,innerHeight=scope.innerHeight,getComputedStyle=scope.getComputedStyle.bind(scope);
   const visible=e=>!!(e&&e.getClientRects().length);
   const clean=v=>String(v??'').replace(/\s+/g,' ').trim();
-  const id=v=>v==null?'':typeof v==='object'?(v.toString?.()!=='[object Object]'?String(v):''):String(v);
+  const id=v=>v==null||typeof v==='number'&&!Number.isSafeInteger(v)?'':typeof v==='object'?(v.toString?.()!=='[object Object]'?String(v):''):String(v);
   function reactMessage(node) {
     let el=node;
     for(let n=0;n<8&&el;n++,el=el.parentElement) {
@@ -38,7 +38,7 @@ export function scanConversation() {
   }
   const title=[...document.querySelectorAll('.RightPanelHeadertitle,[class*="box-header-name"],[class*="item-header-name-"],[class*="conversation-title"]')].find(visible);
   const rows=[...document.querySelectorAll('[class*="MessageBoxContentrowBox"], [class*="MessageBoxContentcolumnBox"], [class*="messageMessageBoxcontentBox"], [data-e2e*="message-item"]')].filter(visible);
-  const messages=[];const seen=new Set();let unknownDirection=0,withoutIdentity=0;
+  const messages=[];const seen=new Set();const conversationTypes=new Set();let unknownDirection=0,withoutIdentity=0;
   for(const row of rows) {
     const m=reactMessage(row);if(!m)continue;
     let p=m.parsedContent;
@@ -46,6 +46,8 @@ export function scanConversation() {
     p=p||{};
     const messageId=id(m.serverId||m.serverMessageId||m.server_message_id||m.messageId||m.msgId||m.id);
     const conversation=id(m.conversationId||m.conversation_id||m.conversationShortId||m.conversation_short_id);
+    const conversationType=Number(m.conversationType??m.conversation_type??m.conversation?.type);
+    if([1,2].includes(conversationType))conversationTypes.add(conversationType);
     const sender=id(m.sender?.uid||m.sender?.id||m.senderId||m.senderUserId||m.fromUserId||(typeof m.sender!=='object'?m.sender:''));
     if(!messageId||!sender){withoutIdentity++;continue;}
     if(seen.has(messageId))continue;seen.add(messageId);
@@ -56,6 +58,11 @@ export function scanConversation() {
     const awemeId=id(p.itemId||p.item_id||p.awemeId||p.aweme_id);
     const rawText=String(p.text||p.content||p.textContent||(typeof m.content==='string'&&!m.content.startsWith('{')?m.content:''));
     const text=clean(rawText),lineBreaks=(rawText.match(/\n/g)||[]).length;
+    // Only structured mention identities count. A literal @name, a quoted
+    // mention, an @all token or text containing a UID never enables the bot.
+    let mentioned=m.mentionedUsers??m.mentioned_users??p.mentioned_users??p.mentionedUsers??m.ext?.['awe:mention_users'];
+    if(typeof mentioned==='string')try{mentioned=JSON.parse(mentioned);}catch{mentioned=[];}
+    const mentionedUids=Array.isArray(mentioned)?[...new Set(mentioned.map(v=>id(v&&typeof v==='object'?(v.uid??v.userId??v.user_id??v):v)).filter(v=>/^\d{5,32}$/.test(v)))]:[];
     const ref=m.referenceInfo||m.reference_info||m.refInfo||p.referenceInfo||p.reference_info;
     let replyTo;
     if(ref&&typeof ref==='object'){
@@ -71,14 +78,18 @@ export function scanConversation() {
     const videoEl=row.querySelector('video');
     const mediaUrl=p.video?.play_addr?.url_list?.[0]||p.video_url||videoEl?.currentSrc||'';
     const kind=awemeId||videoEl?'video':text?'text':'unsupported';
-    messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,...(replyTo?{replyTo}:{})});
+    messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,mentionedUids,...(replyTo?{replyTo}:{})});
   }
   messages.sort((a,b)=>a.created-b.created);
   const interactiveRows=rows.filter(row=>{const e=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row,r=e.getBoundingClientRect(),x=r.x+Math.min(24,r.width/4),y=r.y+Math.min(24,r.height/4);if(x<0||y<0||x>=innerWidth||y>=innerHeight)return false;const hit=document.elementFromPoint(x,y);return !!hit&&(e===hit||e.contains(hit));}).length;
   const inbound=messages.filter(m=>m.direction==='in');
   const last=inbound.at(-1);
-  const peer=last?{chatKey:last.conversation||'peer:'+last.sender,peerUid:last.sender,displayName:clean(title?.textContent)||last.sender}:null;
-  return {url:location.href,title:clean(title?.textContent),peer,messages,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
+  const current=last||messages.at(-1),chatKey=current?.conversation||'',idType=chatKey.match(/^\d+:([12]):/);
+  if(idType)conversationTypes.add(Number(idType[1]));
+  const type=conversationTypes.size===1?([...conversationTypes][0]===2?'group':'single'):'unknown';
+  const ownIds=[...new Set(messages.filter(m=>m.direction==='out').map(m=>m.sender))],selfUid=ownIds.length===1?ownIds[0]:'';
+  const peer=current?{chatKey:chatKey||'peer:'+current.sender,peerUid:type==='group'?'group:'+chatKey:last?.sender||'',displayName:clean(title?.textContent)||last?.sender||chatKey,type,selfUid}:null;
+  return {url:location.href,title:clean(title?.textContent),peer,messages,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity,conversationType:type,selfIdentified:!!selfUid},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
 }
 
 export async function foregroundFrame(frame){
@@ -94,6 +105,7 @@ export function isOwnerMessage(message,owner,armedAt) {
   // Do not interpret newly rendered old history as fresh user commands.
   return message.created>0&&message.created>=armedAt-1500&&['text','video'].includes(message.kind);
 }
+export function matchesPeer(observed,expected){return !!(observed&&expected&&observed.chatKey===expected.chatKey&&observed.peerUid===expected.peerUid&&(!expected.type||expected.type==='unknown'||observed.type===expected.type||expected.legacy&&observed.type==='unknown')&&(!expected.selfUid||observed.selfUid===expected.selfUid));}
 
 export function safeMediaUrl(value) {
   try {
@@ -220,7 +232,7 @@ export class DouyinAdapter {
     let clicked=false;
     for(let attempt=0;attempt<20;attempt++){
       const scan=await this.scan();
-      if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid)return true;
+      if(matchesPeer(scan.peer,owner))return true;
       if(scan.loginRequired)return false;
       for(const frame of this.page.frames()){
         if(!/^https:\/\/(www\.)?douyin\.com\//.test(frame.url()))continue;
@@ -259,7 +271,7 @@ export class DouyinAdapter {
     this.sending=true;let submitted=false,editor,surface,body;
     try {
       let scan=await this.scan();
-      if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请先在浏览器选回绑定的用户会话');
+      if(!matchesPeer(scan.peer,owner))throw new Error('请先在浏览器选回绑定的用户会话');
       surface=this.chatFrame||this.page;
       const composer=(await surface.evaluate(inspectComposers))[0];
       if(!composer)throw new Error('未找到私信输入框，抖音页面可能已改版');
@@ -268,14 +280,14 @@ export class DouyinAdapter {
       body=plainText?String(text).trim():toPlainChatText(text);
       checkWork();await editor.click();checkWork();await this.page.keyboard.insertText(body);
       scan=await this.scan();
-      if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
+      if(!matchesPeer(scan.peer,owner))throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
       const before=new Set(scan.messages.map(m=>m.id));
       checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;
       submitted=true;
       await this.page.keyboard.press('Enter');
       for(let i=0;i<15;i++) {
         await new Promise(r=>setTimeout(r,400));const after=await this.scan();
-        if(after.peer?.chatKey!==owner.chatKey)throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');
+        if(!matchesPeer(after.peer,owner))throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');
         const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body));
         if(matches.length===1)return {messageId:matches[0].id};
         if(matches.length>1)throw new UncertainDelivery('检测到多条相同回复，无法确认本次发送的消息；不会自动重发');
@@ -284,12 +296,13 @@ export class DouyinAdapter {
     } catch(e){if(submitted)e.uncertain=true;else if(workSignal()?.aborted&&editor&&surface&&body){try{const scan=await this.scan(),draft=(await surface.evaluate(inspectComposers))[0];if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid&&draft?.text===body)await editor.fill('');}catch{}}throw e;} finally {this.sending=false;}
   }
   async react(owner,messageId,{probeOnly=false,emojis=['👌','👀','👍']}={}) {
+    checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');
     if(!/^\d{5,32}$/.test(messageId||''))return {supported:false,reason:'无法定位原视频消息'};
     this.sending=true;let submitted=false;let surface;let menuSurfaces=[];
     try{
       const scan=await this.scan();
-      if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请选回绑定的用户会话');
+      if(!matchesPeer(scan.peer,owner))throw new Error('请选回绑定的用户会话');
       this.lastReactionDiagnostic={messageId,stage:'locating'};
       surface=this.chatFrame||this.page;
       if(surface.mainFrame)surface=surface.mainFrame();
@@ -308,7 +321,7 @@ export class DouyinAdapter {
           return false;
         });
         (this.lastReactionDiagnostic.scroll??=[]).push(step);if(!step?.moved)break;await new Promise(r=>setTimeout(r,400));const current=await this.scan();
-        if(current.peer?.chatKey!==owner.chatKey||current.peer?.peerUid!==owner.peerUid)throw new Error('会话已切换，停止查找原消息');
+        if(!matchesPeer(current.peer,owner))throw new Error('会话已切换，停止查找原消息');
       }
       if(await row.count()!==1)return {supported:false,reason:'原视频消息未显示在当前会话'};
       const cards=row.locator('[class*="ShareAweme"],[class*="shareAweme"],[class*="cardMsg"],[data-e2e*="share"],video');
@@ -350,12 +363,12 @@ export class DouyinAdapter {
       // Do not toggle an existing reaction when self ownership is not exposed.
       if(before.count)return {supported:false,reason:'原消息已有同款表情，避免反复点击撤销'};
       const current=await this.scan();
-      if(current.peer?.chatKey!==owner.chatKey||current.peer?.peerUid!==owner.peerUid)throw new Error('会话已切换，已取消表情回应');
-      submitted=true;
+      if(!matchesPeer(current.peer,owner))throw new Error('会话已切换，已取消表情回应');
+      checkWork();submitted=true;
       await selected.menu.surface.locator('[data-bridge-reaction-choice="'+selected.menu.token+'-'+choice.index+'"]').click({timeout:3500});
       for(let i=0;i<10;i++){
         await new Promise(r=>setTimeout(r,300));const after=await this.scan();
-        if(after.peer?.chatKey!==owner.chatKey||after.peer?.peerUid!==owner.peerUid)throw new UncertainDelivery('表情回应后会话已切换');
+        if(!matchesPeer(after.peer,owner))throw new UncertainDelivery('表情回应后会话已切换');
         const evidence=await surface.evaluate(inspectMessageReactions,{messageId,emoji:choice.emoji});
         if(evidence.count>before.count)return {supported:true,verified:true,emoji:choice.emoji};
       }

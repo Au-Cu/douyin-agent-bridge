@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {durableJson} from './durable.mjs';
 import {toPlainChatText,comparableChatText} from './chat-text.mjs';
-import {scanConversation,inspectComposers,markOwnerConversation,captureMessageMenu,inspectReactionChoices,markMoreReactions,inspectMessageReactions,safeMediaUrl,UncertainDelivery} from './douyin.mjs';
+import {scanConversation,inspectComposers,markOwnerConversation,captureMessageMenu,inspectReactionChoices,markMoreReactions,inspectMessageReactions,safeMediaUrl,UncertainDelivery,matchesPeer} from './douyin.mjs';
 import {checkWork,workSignal,operationContext} from './execution.mjs';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -49,34 +49,35 @@ export class SafariDouyinAdapter {
     }catch(e){this.status='blocked';throw e;}
   }
   async restoreOwner(owner){
-    let clicked=false;for(let i=0;i<20;i++){const scan=await this.scan();if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid)return true;if(scan.loginRequired)return false;
+    let clicked=false;for(let i=0;i<20;i++){const scan=await this.scan();if(matchesPeer(scan.peer,owner))return true;if(scan.loginRequired)return false;
       const n=await this.evaluate(markOwnerConversation,owner.displayName);if(n>1)throw new Error('联系人重名，需手动选择后核验账号');if(n===1&&(!clicked||i===10)){await this.inTab(this.frameCode(this.framePath)+'const e=w.document.querySelector("[data-bridge-owner-choice=\\"true\\"]");if(e)e.click();return !!e;');clicked=true;}await sleep(500);
     }throw new Error('未恢复到绑定账号，发送保持暂停');
   }
-  ownerCheck(owner){return `const observed=(${scanConversation.toString()}).call(w);if(observed.peer?.chatKey!==${JSON.stringify(owner.chatKey)}||observed.peer?.peerUid!==${JSON.stringify(owner.peerUid)})throw new Error('会话已切换，操作已停止');`;}
+  ownerCheck(owner){return `const observed=(${scanConversation.toString()}).call(w);if(!(${matchesPeer.toString()})(observed.peer,${JSON.stringify(owner)}))throw new Error('会话已切换，操作已停止');`;}
   async uiDiagnostics(){return {opened:!!this.page,frames:this.lastScan?[{main:!this.framePath?.length,...this.lastScan.diagnostics}]:[]};}
   async composerState(){await this.scan();return this.page?this.evaluate(inspectComposers):[];}
   async send(owner,text,{plainText=false}={}){
     checkWork();if(this.sending)throw new Error('正在发送上一条回复');this.sending=true;let submitted=false;
-    try{const scan=await this.scan();if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请先在 Safari 选回绑定的用户会话');const body=plainText?String(text).trim():toPlainChatText(text),before=new Set(scan.messages.map(m=>m.id));
+    try{const scan=await this.scan();if(!matchesPeer(scan.peer,owner))throw new Error('请先在 Safari 选回绑定的用户会话');const body=plainText?String(text).trim():toPlainChatText(text),before=new Set(scan.messages.map(m=>m.id));
       const prepared=await this.inTab(this.frameCode(this.framePath)+this.ownerCheck(owner)+`const info=(${inspectComposers.toString()}).call(w)[0];if(!info)throw new Error('未找到私信输入框');if(info.text)throw new Error('私信输入框有未发送的草稿，请先处理');const e=w.document.querySelectorAll('[contenteditable="true"],textarea')[info.index];e.focus();if(!w.document.execCommand('insertText',false,${JSON.stringify(body)}))throw new Error('Safari 无法填写输入框');return e.tagName==='TEXTAREA'?e.value:e.innerText;`);
-      if(comparableChatText(prepared)!==comparableChatText(body))throw new Error('输入内容未能完整核验，请检查未发送的草稿');checkWork();const again=await this.scan();if(again.peer?.chatKey!==owner.chatKey||again.peer?.peerUid!==owner.peerUid)throw new Error('会话已切换，请检查未发送的草稿');
+      if(comparableChatText(prepared)!==comparableChatText(body))throw new Error('输入内容未能完整核验，请检查未发送的草稿');checkWork();const again=await this.scan();if(!matchesPeer(again.peer,owner))throw new Error('会话已切换，请检查未发送的草稿');
       checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;submitted=true;
       await this.inTab(this.frameCode(this.framePath)+this.ownerCheck(owner)+`const info=(${inspectComposers.toString()}).call(w)[0];if(!info)throw new Error('未找到输入框');const e=w.document.querySelectorAll('[contenteditable="true"],textarea')[info.index],draft=e.tagName==='TEXTAREA'?e.value:e.innerText;if(String(draft).replace(/\\s+/g,' ').trim()!==${JSON.stringify(comparableChatText(body))})throw new Error('草稿已变化，请人工核实');e.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));return true;`);
-      for(let i=0;i<15;i++){await sleep(400);const after=await this.scan();if(after.peer?.chatKey!==owner.chatKey||after.peer?.peerUid!==owner.peerUid)throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body));if(matches.length===1)return {messageId:matches[0].id};if(matches.length>1)throw new UncertainDelivery('检测到多条相同回复，无法确认本次送达');}
+      for(let i=0;i<15;i++){await sleep(400);const after=await this.scan();if(!matchesPeer(after.peer,owner))throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body));if(matches.length===1)return {messageId:matches[0].id};if(matches.length>1)throw new UncertainDelivery('检测到多条相同回复，无法确认本次送达');}
       throw new UncertainDelivery('已尝试发送，但未能确认回执；不会自动重复发送');
     }catch(e){if(submitted)e.uncertain=true;throw e;}finally{this.sending=false;}
   }
   async react(owner,messageId,{probeOnly=false,emojis=['👌','[奋斗]','🎉']}={}){
+    checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');if(!/^\d{5,32}$/.test(messageId||''))return {supported:false,reason:'无法定位原消息'};this.sending=true;let submitted=false;
-    try{const scan=await this.scan();if(scan.peer?.chatKey!==owner.chatKey||scan.peer?.peerUid!==owner.peerUid)throw new Error('请选回绑定的用户会话');
+    try{const scan=await this.scan();if(!matchesPeer(scan.peer,owner))throw new Error('请选回绑定的用户会话');
       const opened=await this.inTab(this.frameCode(this.framePath)+this.ownerCheck(owner)+`const row=[...w.document.querySelectorAll('[data-bridge-message-id]')].find(e=>e.getAttribute('data-bridge-message-id')===${JSON.stringify(messageId)});if(!row)return false;const e=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row,r=e.getBoundingClientRect(),x=r.x+Math.min(24,r.width/4),y=r.y+Math.min(24,r.height/4),top=w.document.elementFromPoint(x,y);if(!top||!(top===e||e.contains(top)))return false;(${captureMessageMenu.toString()}).call(w);e.dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:x,clientY:y}));return true;`);
       if(!opened)return {supported:false,notSubmitted:true,retryable:true,reason:'原消息未显示或被弹层遮挡'};await sleep(250);const token=String(Date.now());let choices=await this.evaluate(inspectReactionChoices,token),choice;for(const emoji of emojis){choice=choices.choices.find(c=>c.emoji===emoji);if(choice)break;}
       if(!choice&&await this.evaluate(markMoreReactions)){await this.inTab(this.frameCode(this.framePath)+this.ownerCheck(owner)+`w.document.querySelector('[data-bridge-more-reactions="true"]')?.click();return true;`);await sleep(200);choices=await this.evaluate(inspectReactionChoices,token);for(const emoji of emojis){choice=choices.choices.find(c=>c.emoji===emoji);if(choice)break;}}
       if(probeOnly)return {supported:!!choice,probeOnly:true};if(!choice)return {supported:false,reason:'Safari 中此消息菜单没有可核验的贴表情选项'};if(choice.selected)return {supported:true,verified:true,emoji:choice.emoji};
       const before=await this.evaluate(inspectMessageReactions,{messageId,emoji:choice.emoji});if(before.count)return {supported:false,reason:'原消息已有同款表情，避免重复点击撤销'};
-      submitted=true;await this.inTab(this.frameCode(this.framePath)+this.ownerCheck(owner)+`const e=w.document.querySelector('[data-bridge-reaction-choice="${token}-${choice.index}"]');if(!e)throw new Error('表情菜单已变化');e.click();return true;`);
-      for(let i=0;i<10;i++){await sleep(300);const current=await this.scan();if(current.peer?.chatKey!==owner.chatKey||current.peer?.peerUid!==owner.peerUid)throw new UncertainDelivery('表情回应后会话已切换');const after=await this.evaluate(inspectMessageReactions,{messageId,emoji:choice.emoji});if(after.count>before.count)return {supported:true,verified:true,emoji:choice.emoji};}
+      checkWork();submitted=true;await this.inTab(this.frameCode(this.framePath)+this.ownerCheck(owner)+`const e=w.document.querySelector('[data-bridge-reaction-choice="${token}-${choice.index}"]');if(!e)throw new Error('表情菜单已变化');e.click();return true;`);
+      for(let i=0;i<10;i++){await sleep(300);const current=await this.scan();if(!matchesPeer(current.peer,owner))throw new UncertainDelivery('表情回应后会话已切换');const after=await this.evaluate(inspectMessageReactions,{messageId,emoji:choice.emoji});if(after.count>before.count)return {supported:true,verified:true,emoji:choice.emoji};}
       throw new UncertainDelivery('已尝试贴表情，但未能核验结果，不重复点击');
     }catch(e){if(submitted)e.uncertain=true;throw e;}finally{if(this.page)await this.inTab(this.frameCode(this.framePath)+this.ownerCheck(owner)+`w.document.removeEventListener('contextmenu',w.__douyinBridgeContextListener,true);delete w.__douyinBridgeContextListener;delete w.__douyinBridgeVisibleBefore;delete w.__douyinBridgeContextEvent;w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true;`).catch(()=>{});this.sending=false;}
   }

@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);let state=null,targets=[],threads=[],dirty=false,busy=false;
-let catalog=null,preferencesDirty=false;
+let catalog=null,preferencesDirty=false,observedAiChat=null;
 const panelPending=new Set();let refreshAgain=false;
 const archiveButton=(kind,item)=>`<button class="secondary" data-archive-kind="${kind}" data-archive-id="${escape(item.id)}" data-archive-value="${!item.archived}">${item.archived?'恢复显示':'归档'}</button>`+(kind==='task'&&item.kind!=='control'?`<button class="interrupt-button" data-interrupt-task="${escape(item.id)}" aria-label="中断任务 ${item.number||''}" ${item.canInterrupt?'':'disabled'}>中断</button>`:'');
 const chatLink=(url,label='需求对话')=>/^codex:\/\/threads\/[a-f\d-]{36}$/i.test(url||'')?`<a class="chat-link" href="${escape(url)}">Codex · ${escape(label)}</a>`:'';
@@ -9,6 +9,14 @@ const cleanError=s=>String(s||'').replace(/\x1b\[[\d;]*[A-Za-z]/g,'');
 const openedDetails=new Set();
 document.addEventListener('toggle',e=>{const key=e.target.dataset?.foldKey;if(!key||!e.target.isConnected)return;if(e.target.open)openedDetails.add(key);else openedDetails.delete(key);},true);
 function restoreDetails(){for(const detail of document.querySelectorAll('[data-fold-key]'))detail.open=openedDetails.has(detail.dataset.foldKey);}
+function renderAiChats(){
+  const data=state.aiChats||{chats:[],messages:[]},owner=state.config.owner;
+  $('chatsSummary').textContent='已启用 '+data.chats.filter(c=>c.enabled).length+' 个聊天'+(data.selecting?' · 正在选择聊天':'');
+  $('aiChatSelection').hidden=!data.selecting;$('finishAiSelection').hidden=!data.selecting;
+  $('aiChatList').innerHTML=data.chats.map(c=>{const agentAllowed=c.type==='single'&&c.chatKey===owner?.chatKey&&c.peerUid===owner?.peerUid;return `<div class="ai-chat-item"><strong>${escape(c.displayName)}</strong> <span class="pill">${c.type==='group'?'群聊':'单聊'} · ${c.enabled?'已启用':'已停用'}</span><small>${c.mode==='agent'?'个人 Agent · 现有用户授权模式':c.type==='group'?'普通聊天 · 仅原生 @ 助手时回复':'普通聊天 · 仅回复本聊天'}</small><div class="button-row"><label>使用方式 <select data-ai-mode="${escape(c.chatKey)}"><option value="chat" ${c.mode==='chat'?'selected':''}>普通聊天 AI</option>${agentAllowed?`<option value="agent" ${c.mode==='agent'?'selected':''}>个人 Agent · 现有模式</option>`:''}</select></label><button class="secondary" data-ai-toggle="${escape(c.chatKey)}">${c.enabled?'停用此聊天':'启用此聊天'}</button></div></div>`;}).join('')||'<p class="empty">选择需要启用 AI 的单聊或群聊。其他聊天保持静默。</p>';
+  const names={new:'排队中',preparing:'准备聊天',submitted:'正在回复',replying:'结果已生成，正在发送',delivery_uncertain:'送达需核实，不自动重发',done:'已送达',cancelled:'已停止',failed:'处理失败',uncertain:'需要核实',blocked:'队列已满'};
+  $('botHistory').innerHTML=data.messages.map(m=>`<div class="item"><strong>${escape(m.name)}</strong> <span class="pill">${names[m.status]||escape(m.status)}</span><small>${new Date(m.created).toLocaleString('zh-CN',{hour12:false})}</small><p>${escape(m.result?.slice(0,300)||'尚未生成回复')}</p>${(m.uncertainReplies||[]).map(id=>`<div class="button-row"><button class="secondary" data-delivered="${escape(id)}">这段已在抖音收到</button><button class="secondary" data-resend="${escape(id)}">确认这段未收到，重新发送</button></div>`).join('')}</div>`).join('')||'<p class="empty">普通聊天尚无新交流记录。</p>';
+}
 function deliveryError(s){s=cleanError(s);return /intercepts pointer events|OVERLAY_BLOCKED/.test(s)?'抖音弹层遮挡原消息，尚未点击表情。关闭视频预览或弹窗后可恢复。':/locator\.click: Timeout/.test(s)?'原消息暂不可操作，未确认贴表情。请检查弹层遮挡或消息位置。':s.length>220?s.slice(0,220)+'…':s;}
 function renderRetries(w){
   const clock=at=>Number.isFinite(at)&&at>0?new Date(at).toLocaleString('zh-CN',{hour12:false}):'时间未记录';
@@ -102,13 +110,13 @@ async function refresh(){
     $('scanInfo').textContent=r.scan?`当前：${r.scan.title||'未选会话'} · 识别消息 ${r.scan.diagnostics?.parsed||0} 条`:'浏览器打开后会检查当前会话';
     if(!dirty){targets=state.config.targets;$('maxMinutes').value=state.config.maxVideoSeconds/60;$('visualFps').value=state.config.visualFps||4;$('ackMode').value='auto';renderTargets();}
     if(!preferencesDirty){const c=state.config;$('defaultModel').value=c.model||'';renderEfforts(c.reasoningEffort||'');$('fastMode').checked=!!c.fastMode;$('autoRoute').checked=c.autoRoute!==false;$('contextBudget').value=c.contextBudget||48000;}
-    renderNeeds();renderPanels();
+    renderNeeds();renderPanels();renderAiChats();
     $('knowledgeList').innerHTML=state.knowledge.map(k=>`<div class="item"><strong>${escape(k.title)}</strong>${k.archived?'<span class="pill">已归档</span>':''}<p>${escape(r.processing&&r.visualProgress?.id===k.id?'正在按完整时间轴分析视觉内容，等待本次结论。':k.visualStatus==='partial'?`视觉已完成 ${k.visualCompleted}/${k.visualTotal} 段，尚未覆盖全片，可继续重分析。`:k.visualStatus==='legacy'?'此视频尚未完成连续视觉分析，请重新分析后查看完整结论。':k.summary?.slice(0,150)||'视频已保存，等待连续视觉分析完成。')}</p><div class="button-row"><button data-note="${escape(k.id)}" class="secondary">学习笔记</button><button data-visual="${escape(k.id)}" class="secondary">查看连续画面</button><button data-reanalyze="${escape(k.id)}" ${r.processing?'disabled':''}>重新分析视觉</button>${archiveButton('knowledge',k)}</div></div>`).join('')||'<p class="empty">此范围没有学习资料。</p>';
     if(r.processing&&r.visualProgress){const p=r.visualProgress;$('listenTitle').textContent=`连续视觉分析 ${p.completed}/${p.total||'…'} 段 · ${p.fps} 帧/秒`;}
     if(state.config.ignoreMessages)$('listenTitle').textContent='新消息已静默忽略；发送 /结束忽略 恢复接收';
     const work=state.work||[],business=work.filter(w=>w.kind!=='control'),commands=work.filter(w=>w.kind==='control');
     $('taskList').innerHTML=business.map(renderWorkCard).join('')||'<p class="empty">收到任务后，这里会把执行进度、文字回复和表情回执放在同一张卡片内。</p>';
-    const legacy=state.outbox.filter(o=>!['sent','superseded'].includes(o.status)&&!JSON.parse(o.payload||'{}').operationId);
+    const legacy=state.outbox.filter(o=>!['sent','superseded'].includes(o.status)&&!JSON.parse(o.payload||'{}').operationId&&!JSON.parse(o.payload||'{}').chatbot);
     $('outboxList').innerHTML=(commands.length?`<details data-fold-key="commands"><summary>命令回执（${commands.length}）</summary>${commands.map(renderWorkCard).join('')}</details>`:'')+(legacy.length?`<details data-fold-key="legacy"><summary>历史回复回执（${legacy.length}）</summary>${legacy.map(o=>`<div class="item"><p>${escape(o.body.slice(0,100))}</p><small>${escape(deliveryError(o.error))}</small>${o.status==='uncertain'?`<button data-delivered="${o.id}">已在抖音收到</button> <button data-resend="${o.id}">确认未收到，重新发送</button>`:''}</div>`).join('')}</details>`:'');
     const failed=state.messages.filter(m=>['failed','waiting_auth'].includes(m.status)&&m.kind==='video'&&work.some(w=>w.id===m.id));
     $('outboxList').innerHTML+=failed.slice(0,3).map(m=>`<div class="item"><small>视频处理失败：${escape(m.result)}</small><button data-retry="${escape(m.id)}">重试这条视频</button></div>`).join('');
@@ -118,6 +126,11 @@ async function refresh(){
   }catch(e){notice(e.message,true);}finally{busy=false;if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
 }
 action('openBrowser',async()=>{notice('正在恢复已保存的抖音登录态和绑定会话。只有平台要求重新验证时才需登录。');await api('browser/open',{});});
+action('selectAiChat',async()=>{await api('ai-chats/select',{});observedAiChat=null;$('enableAiChat').disabled=true;$('observedChat').textContent='在抖音窗口打开目标聊天后，点击读取。';notice('轮询与发送已暂时暂停，请在抖音窗口选择需要配置的单聊或群聊。');});
+action('finishAiSelection',async()=>{await api('ai-chats/cancel',{});observedAiChat=null;notice('已恢复聊天轮询。');});
+action('observeAiChat',async()=>{const c=observedAiChat=await api('ai-chats/current',{});$('observedChat').textContent=`已核验：${c.displayName} · ${c.type==='group'?'群聊':'单聊'}`;const option=$('observedChatMode').querySelector('[value="agent"]');option.disabled=c.type!=='single'||c.chatKey!==state.config.owner?.chatKey||c.peerUid!==state.config.owner?.peerUid;$('observedChatMode').value=option.disabled?'chat':state.aiChats?.chats.find(v=>v.chatKey===c.chatKey)?.mode||'chat';$('enableAiChat').disabled=false;});
+action('enableAiChat',async()=>{if(!observedAiChat)throw new Error('请先读取当前聊天');await api('ai-chats/save',{token:observedAiChat.token,mode:$('observedChatMode').value,enabled:true});observedAiChat=null;notice('聊天模式已保存。监听开启后，只接收启用后的新消息。');});
+$('aiChatList').addEventListener('change',async e=>{const key=e.target.dataset.aiMode;if(!key)return;const chat=state.aiChats.chats.find(c=>c.chatKey===key);e.target.disabled=true;try{await api('ai-chats/save',{chatKey:key,mode:e.target.value,enabled:chat.enabled});notice('聊天方式已保存，仅影响此聊天；旧任务保留，不会交给普通聊天。');}catch(e){notice(e.message,true);}finally{await refresh();}});
 action('backupNow',async()=>{await api('storage/backup',{});notice(state?.runtime?.browserEngine==='safari'?'配置、需求记忆和任务记录已生成状态快照。原视频保留在固定数据目录；登录态由 Safari 管理。':'配置、需求记忆和任务记录已生成状态快照。原视频和登录态保留在固定数据目录。');});
 action('bindOwner',async()=>{const r=await api('bind',{});notice('已绑定：'+r.owner.displayName);});
 action('createCoordinator',async()=>{await api('coordinator',{});notice('固定调度聊天已建立。');});
@@ -138,6 +151,7 @@ $('ackMode').addEventListener('change',()=>dirty=true);
 $('targetList').addEventListener('click',e=>{const index=e.target.dataset.remove,id=targets[Number(index)]?.id;if(index!==undefined&&id)changeTargets(list=>list.filter(t=>t.id!==id)).catch(e=>notice(e.message,true));});
 document.addEventListener('click',async e=>{try{
   const d=e.target.dataset;
+  if(d.aiToggle){const chat=state.aiChats.chats.find(c=>c.chatKey===d.aiToggle);e.target.disabled=true;try{await api('ai-chats/save',{chatKey:chat.chatKey,mode:chat.mode,enabled:!chat.enabled});notice(chat.enabled?'此聊天已停用，未发送的旧回复已停止。':'此聊天已启用，从新消息开始处理。');await refresh();}finally{e.target.disabled=false;}}
   if(d.interruptTask){const button=e.target;button.disabled=true;try{const r=await api('tasks/interrupt',{id:d.interruptTask});notice(r.state==='stopped'?'任务 '+r.number+' 已中断。':r.state==='finished'?r.error:'本地处理已切断；Codex 停止情况需要核实，不会自动重跑。',r.state==='uncertain');await refresh();}finally{button.disabled=false;}}
   if(d.archiveKind){const button=e.target;button.disabled=true;try{const archived=d.archiveValue==='true';await api('archive',{kind:d.archiveKind,id:d.archiveId,archived});notice(archived?(d.archiveKind==='need'?'需求和对应的 Codex 需求对话已归档。':'已归档，记录和原始资料仍保留。'):'已恢复显示；暂停任务需要明确重试后才执行。');await refresh();}finally{button.disabled=false;}}
   if(d.switchNeed){const n=await api('needs/switch',{id:d.switchNeed});notice('已切换到：'+n.title);await refresh();}

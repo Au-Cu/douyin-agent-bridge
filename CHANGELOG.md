@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+
+- Add opt-in single/group reply-only chats alongside the existing bound-user personal Agent. Configure each observed chat in the local console; groups require an exact native mention of the verified assistant UID.
+- Isolate ordinary chat in a separate Codex process/profile, with ephemeral turns, bounded per-chat history, no personal memory, zero registered tools, and explicit denial of approvals/client tools. Keep the installed ChatGPT login without an API key or persisted external tokens.
+- Test the actual pinned CLI's model request tools and refusal of a forged shell call. Preserve owner binding, existing knowledge, task queues, reaction progress and uncertain delivery across upgrades.
+- Serialize multi-chat UI selection and sending, fence late replies after mode changes, and show ordinary chat delivery state without creating personal task/need numbers. Maintain paired Windows and macOS ARM64 releases, with native Safari on Mac.
+
 ## 0.9.2
 
 - Allow more time for the reaction menu to expand on slower Windows machines without retrying an uncertain reaction click.

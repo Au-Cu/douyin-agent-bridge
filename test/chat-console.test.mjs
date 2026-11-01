@@ -1,0 +1,22 @@
+import test from 'node:test';import assert from 'node:assert/strict';import http from 'node:http';import {readFile} from 'node:fs/promises';import {fileURLToPath} from 'node:url';import {join} from 'node:path';import {chromium} from 'playwright-core';
+const root=fileURLToPath(new URL('../',import.meta.url));
+test('console enables only the selected chat, limits group mode, keeps expanded history and fits mobile',async()=>{
+  const owner={chatKey:'owner',peerUid:'111111',displayName:'用户'},observed={chatKey:'group',peerUid:'group:group',displayName:'群聊长名称'.repeat(50),type:'group',selfUid:'999999',token:'fixture-token'};
+  const state={config:{owner,enabled:true,targets:[],visualFps:4,maxVideoSeconds:1800,uiPanels:{},uiConfigured:{}},counts:{knowledge:0,runningTasks:0,queuedTasks:0},conversations:{needs:[],budget:48000},runtime:{browser:'ready',codex:true},knowledge:[],tasks:[],outbox:[],messages:[],events:[],work:[],aiChats:{chats:[{...owner,type:'single',mode:'agent',enabled:true}],messages:[],selecting:false}};let saves=[];
+  const server=http.createServer(async(req,res)=>{const path=new URL(req.url,'http://localhost').pathname;if(path.startsWith('/api/')){res.setHeader('Content-Type','application/json');let b='';for await(const c of req)b+=c;const body=b?JSON.parse(b):{};
+    if(path==='/api/ai-chats/select')state.aiChats.selecting=true;
+    if(path==='/api/ai-chats/cancel')state.aiChats.selecting=false;
+    if(path==='/api/ai-chats/current'){res.end(JSON.stringify(observed));return;}
+    if(path==='/api/ai-chats/save'){saves.push(body);const c=state.aiChats.chats.find(c=>c.chatKey===body.chatKey);if(c)Object.assign(c,body);else state.aiChats.chats.push({...observed,...body});state.aiChats.selecting=false;}
+    if(path==='/api/ui/panels')Object.assign(state.config.uiPanels,body);
+    res.end(JSON.stringify(path==='/api/state'?state:path==='/api/models'?{models:[],defaults:{}}:path==='/api/approvals'?[]:{ok:true}));return;
+  }try{const asset=path==='/'?'index.html':path.slice(1);res.setHeader('Content-Type',asset.endsWith('.css')?'text/css':asset.endsWith('.js')?'text/javascript':'text/html');res.end(await readFile(join(root,'public',asset)));}catch{res.writeHead(404).end();}});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||'msedge',headless:true});
+  try{const page=await browser.newPage({viewport:{width:1280,height:860},reducedMotion:'reduce'}),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('http://127.0.0.1:'+server.address().port);await page.locator('#aiChatList .ai-chat-item').waitFor();
+    await page.locator('#selectAiChat').click();await page.locator('#aiChatSelection').waitFor({state:'visible'});await page.locator('#observeAiChat').click();await page.waitForFunction(()=>!document.querySelector('#enableAiChat').disabled);assert.equal(await page.locator('#observedChatMode option[value=agent]').evaluate(e=>e.disabled),true);assert.equal(await page.locator('#observedChatMode').inputValue(),'chat');
+    await page.locator('#enableAiChat').click();await page.waitForFunction(()=>document.querySelectorAll('.ai-chat-item').length===2);assert.deepEqual(saves,[{token:observed.token,mode:'chat',enabled:true}]);assert.equal(state.aiChats.chats[0].mode,'agent');
+    await page.locator('[data-fold-key="bot-history"]>summary').click();await page.waitForTimeout(5600);assert.equal(await page.locator('[data-fold-key="bot-history"]').evaluate(e=>e.open),true);
+    await page.locator('[data-ai-toggle=group]').click();await page.waitForFunction(()=>document.querySelector('[data-ai-toggle=group]').textContent.includes('启用'));assert.equal(saves.at(-1).enabled,false);assert.equal(state.aiChats.chats[0].enabled,true);
+    await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);assert.deepEqual(errors,[]);
+  }finally{await browser.close();await new Promise(r=>server.close(r));}
+});

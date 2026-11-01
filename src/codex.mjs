@@ -13,8 +13,8 @@ export function approvalResponse(request,allow) {
 }
 
 export class CodexClient extends EventEmitter {
-  constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome() }={}) {
-    super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome}); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
+  constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome(),restricted=false,spawnEnv={},authTokensProvider }={}) {
+    super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome,restricted,spawnEnv,authTokensProvider}); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
     this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.loaded=new Set();this.threadLocks=new Map();this.interrupting=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
   }
   async connect() {
@@ -28,7 +28,7 @@ export class CodexClient extends EventEmitter {
     if(this.ready&&!changed&&!this.needsReconnect)return;
     if(this.runs.size||this.pending.size)throw authError('pending');
     const recovered=this.generation>0&&(changed||this.needsReconnect);
-    const old=this.proc;this.proc=null;this.ready=false;this.lines?.close();old?.kill();
+    const old=this.proc;this.proc=null;this.ready=false;this.lines?.close();this.#stopProcess(old);
     this.early.clear();this.approvals.clear();this.profiles.clear();this.loaded.clear();this.usage.clear();
     this.loadedRevision=revision;this.needsReconnect=false;
     try{
@@ -63,7 +63,8 @@ export class CodexClient extends EventEmitter {
   }
   async #connect() {
     const command=resolveCodexCommand(this.executable);
-    const proc=this.proc=spawn(command.executable,[...command.prefix,...this.spawnArgs],{cwd:this.cwd,env:{...process.env,CODEX_HOME:this.codexHome},windowsHide:true,stdio:['pipe','pipe','pipe']});
+    const env={...process.env,...command.env,CODEX_HOME:this.codexHome,...this.spawnEnv};if(this.restricted)for(const key of ['OPENAI_API_KEY','OPENAI_BASE_URL','OPENAI_ORG_ID','OPENAI_PROJECT_ID'])delete env[key];
+    const proc=this.proc=spawn(command.executable,[...command.prefix,...this.spawnArgs],{cwd:this.cwd,env,windowsHide:true,stdio:['pipe','pipe','pipe']});
     this.generation++;
     proc.on('error',e=>this.#disconnect(e,proc));
     proc.on('exit',()=>this.#disconnect(Object.assign(new Error('Codex 连接已关闭'),{uncertain:true}),proc));
@@ -99,6 +100,10 @@ export class CodexClient extends EventEmitter {
       msg.error?p.reject(this.#noteFailure(Object.assign(new Error(msg.error.message||JSON.stringify(msg.error)),{remote:true,code:msg.error.code,rpcMethod:p.method,notSubmitted:writerConflict(msg.error.message)&&['thread/resume','turn/start'].includes(p.method)}))):p.resolve(msg.result); return;
     }
     if(msg.id!==undefined&&msg.method) {
+      if(this.restricted&&msg.method==='account/chatgptAuthTokens/refresh'&&this.authTokensProvider){try{this.send({id:msg.id,result:await this.authTokensProvider()});}catch{this.send({id:msg.id,error:{code:-32000,message:'请在本机 Codex 重新登录'}});}return;}
+      if(this.restricted){
+        this.send({id:msg.id,...(/requestApproval$/.test(msg.method)?{result:approvalResponse(msg,false)}:{error:{code:-32601,message:'Chat-only sessions have no client tools or user approvals.'}})});return;
+      }
       if(msg.method==='item/tool/call') {
         try {
           const run=[...this.runs.values()].find(r=>r.threadId===msg.params.threadId);
@@ -118,6 +123,9 @@ export class CodexClient extends EventEmitter {
     if(msg.method==='item/completed'&&msg.params?.item?.type==='agentMessage') {
       const p=msg.params; const r=[...this.runs.values()].find(r=>r.threadId===p.threadId);
       if(r)r.text=p.item.text||r.text;
+    }
+    if(this.restricted&&msg.method==='item/started'&&!['userMessage','agentMessage','reasoning','contextCompaction'].includes(msg.params?.item?.type)){
+      this.close();throw new Error('普通聊天的工具隔离校验失败，已停止连接，未交付模型输出');
     }
     if(msg.method==='thread/tokenUsage/updated'){
       const p=msg.params;this.usage.set(p.threadId,{turnId:p.turnId,...p.tokenUsage});
@@ -251,7 +259,8 @@ export class CodexClient extends EventEmitter {
     }catch(e){return {confirmed:false,error:e.message};}
     finally{if(confirmed){this.interrupting.delete(threadId);if(r){r.cleanup?.();clearTimeout(r.timer);this.runs.delete('starting:'+threadId);if(r.turnId)this.runs.delete(r.turnId);if(r.ephemeral&&this.ready)this.request('thread/unsubscribe',{threadId},3000).catch(()=>{});}}}
   }
-  close(){this.closed=true;clearInterval(this.authTimer);this.#disconnect(Object.assign(new Error('Codex 连接已关闭'),{uncertain:true}));const old=this.proc;this.proc=null;this.lines?.close();old?.kill();}
+  #stopProcess(proc){if(!proc)return;proc.stdin?.destroy();proc.kill();proc.stdout?.destroy();proc.stderr?.destroy();}
+  close(){this.closed=true;clearInterval(this.authTimer);this.#disconnect(Object.assign(new Error('Codex 连接已关闭'),{uncertain:true}));const old=this.proc;this.proc=null;this.lines?.close();this.#stopProcess(old);}
 }
 
 export const coordinatorTools=[
