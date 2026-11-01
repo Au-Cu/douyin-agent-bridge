@@ -15,6 +15,6 @@ test('Mac 启动器复用同一实例，拒绝其他资料停止，并正常恢�
 });
 
 test('Mac 版 Safari AppleScript 可以由系统编译，不依赖读取其他窗口',{skip:process.platform!=='darwin'},async()=>{
-  const {SafariDouyinAdapter}=await import('../src/safari.mjs');let source='';const adapter=new SafariDouyinAdapter({root:'unused',executeAppleScript:async text=>{source=text;return JSON.stringify({ok:true,value:true});}});adapter.windowId=123;adapter.marker='fixture';await adapter.inTab('return true;');
-  const file=join(mkdtempSync(join(project,'data','mac-osa-')),'test.scpt'),result=spawnSync('/usr/bin/osacompile',['-o',file,'-'],{input:source,encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);
+  const {SafariDouyinAdapter}=await import('../src/safari.mjs'),{scanConversation}=await import('../src/douyin.mjs');const sources=[];const adapter=new SafariDouyinAdapter({root:'unused',executeAppleScript:async text=>{sources.push(text);return JSON.stringify({ok:true,value:true});}});adapter.windowId=123;adapter.marker='fixture';await adapter.inTab('return true;');await adapter.inTab(`const f=(${scanConversation.toString()});return f.call(window);`);await adapter.inTab(`return ${JSON.stringify('第一段\n第二段 👌')};`);
+  const folder=mkdtempSync(join(project,'data','mac-osa-'));for(let i=0;i<sources.length;i++){const file=join(folder,`test-${i}.scpt`),result=spawnSync('/usr/bin/osacompile',['-o',file,'-'],{input:sources[i],encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);}
 });

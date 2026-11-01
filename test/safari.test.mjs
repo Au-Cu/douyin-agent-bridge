@@ -36,3 +36,10 @@ test('Safari 视频页只使用当前视频 ID 的原片地址并验证自有标
     const result=await a.resolveVideo({awemeId:'1234567890123'});assert.equal(result.url,'https://v.douyinvod.com/correct.mp4');assert.equal(result.seconds,4.2);assert.match(calls.at(-1),/douyin-codex-bridge-video/);assert.ok(await page.evaluate(()=>!!sessionStorage.getItem('douyin-codex-bridge-video')));
   }finally{await browser.close();}
 });
+
+test('Safari 只选择前景可操作的同源聊天 iframe',async()=>{
+  const browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||'msedge',headless:true}),page=await browser.newPage({viewport:{width:900,height:700}});try{
+    await page.route('https://www.douyin.com/**',r=>{const frame=r.request().url().endsWith('/frame');return r.fulfill({contentType:'text/html; charset=utf-8',body:frame?`<div class="RightPanelHeadertitle">用户</div><div class="messageMessageBoxcontentBox" data-direction="in" style="height:60px">前景</div><div contenteditable="true" style="width:300px;height:60px"></div><script>document.querySelector('.messageMessageBoxcontentBox').__reactProps$fixture={message:{serverId:'9000000000001',sender:'owner',conversationId:'bound-chat',createTime:Date.now(),content:JSON.stringify({text:'前景'})}};</script>`:`<div style="position:fixed;inset:0;z-index:10"><iframe src="https://www.douyin.com/frame" style="width:100%;height:100%;border:0"></iframe></div>`});});
+    await page.goto('https://www.douyin.com/chat');await page.frameLocator('iframe').locator('[contenteditable]').waitFor();const a=new SafariDouyinAdapter({root:'unused'});a.page={};a.windowId=1;a.inTab=async code=>page.evaluate(source=>eval('(()=>{'+source+'})()'),code);const scan=await a.scan();assert.equal(scan.peer?.chatKey,'bound-chat');assert.deepEqual(a.framePath,[0]);assert.equal((await a.composerState()).length,1);
+  }finally{await browser.close();}
+});
