@@ -13,7 +13,7 @@
   </details>
   <details class="panel config-panel" id="chatsPanel" data-panel="chats" open>
     <summary><span>启用 AI 的抖音聊天</span><small id="chatsSummary">个人 Agent 与普通聊天分别配置</small></summary>
-    <p class="hint">个人 Agent 就是现有的用户单聊模式。普通聊天使用独立上下文，可查公开资料、计算和查询时间；启用容器后还可在隔离环境验证 Python 代码。本机项目、个人文件、账户、终端、浏览器操作和电脑控制保持关闭。群聊仅在原生 @ 助手时触发，每段回复原生引用触发消息。</p>
+    <p class="hint">个人 Agent 就是现有的用户单聊模式。普通聊天使用独立上下文，可查公开资料、计算和查询时间；启用容器后还可在隔离环境验证 Python 代码。本机项目、个人文件、账户、终端、浏览器操作和电脑控制保持关闭。群聊可选仅被原生 @ 时回复或回复所有新消息，每段回复原生引用触发消息。</p>
     <div class="model-settings">
       <label>普通聊天默认模型<select id="chatModel"><option value="">使用 Codex 默认模型</option></select></label>
       <label>普通聊天推理强度<select id="chatEffort"><option value="">使用默认强度</option></select></label>
@@ -29,7 +29,7 @@
       <p class="hint">轮询与发送暂时暂停，最长 5 分钟。在助手的抖音窗口打开目标单聊或群聊，再读取。如果尚未核验助手身份，请从助手账号手动发一条普通消息。</p>
       <button id="observeAiChat" class="secondary">读取当前抖音聊天</button>
       <p id="observedChat" class="hint">尚未读取聊天</p>
-      <div class="button-row"><label>使用方式 <select id="observedChatMode"><option value="chat">普通聊天 AI · 仅回复</option><option value="agent">个人 Agent · 现有模式</option></select></label><button id="enableAiChat" disabled>保存并启用此聊天</button></div>
+      <div class="button-row"><label>使用方式 <select id="observedChatMode"><option value="chat">普通聊天 AI · 仅回复</option><option value="agent">个人 Agent · 现有模式</option></select></label><label id="observedGroupReplyLabel" hidden>群聊回复范围 <select id="observedGroupReply"><option value="mentions">仅被 @ 时回复</option><option value="all">回复所有新消息</option></select></label><button id="enableAiChat" disabled>保存并启用此聊天</button></div>
     </div>
     <div id="aiChatList" class="ai-chat-list"></div>
     <details data-fold-key="bot-history"><summary>普通聊天记录与送达状态</summary><p class="hint">每次使用临时 Codex 会话，仅带本聊天最近 6 次已送达交流。视频分享卡片只提供标题，普通聊天不会下载、学习视频或操作项目。</p><div id="botHistory"></div></details>

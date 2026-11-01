@@ -52,3 +52,8 @@ export function toPlainChatText(value){
 }
 
 export const comparableChatText=value=>String(value??'').replace(/\s+/g,' ').trim();
+
+export function matchesOutgoingText(message,body,{replyToMessageId='',replyToSender=''}={}){
+  if(comparableChatText(message.text)===comparableChatText(body))return true;
+  return !!replyToMessageId&&message.replyTo?.messageId===replyToMessageId&&!!replyToSender&&message.nativeReplyBody?.uid===replyToSender&&comparableChatText(message.nativeReplyBody.text)===comparableChatText(body);
+}

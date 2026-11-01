@@ -24,6 +24,7 @@ import {PeerBrowser} from './peer-browser.mjs';
 import {Chats} from './chats.mjs';
 import {ChatSandbox} from './chat-sandbox.mjs';
 import {CodeSandbox} from './code-sandbox.mjs';
+import {reconcileQuotedReply} from './reconcile-reply.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const startupSince=Date.now();
@@ -75,6 +76,7 @@ const server=http.createServer(async(req,res)=>{
       if(req.method==='GET'&&path==='/api/browser/scheduler-diagnostics')return json(res,adapter.diagnostics);
       if(req.method==='GET'&&path==='/api/browser/inbox-diagnostics'){const v=await adapter.inbox();return json(res,{rows:v.rows,entries:v.entries.map(({unread,source,shape})=>({unread,source,shape}))});}
       if(req.method==='GET'&&path==='/api/browser/quote-diagnostics')return json(res,adapter.lastQuoteDiagnostic||null);
+      if(req.method==='GET'&&path==='/api/browser/quote-schema'){const id=url.searchParams.get('chat'),peer=id?chats.get(id):null;if(id&&!peer)throw new Error('只能检查已配置的聊天');return json(res,await adapter.quoteSchema(peer));}
       const visualMatch=path.match(/^\/api\/knowledge\/([^/]+)\/visual$/);
       const sheetMatch=path.match(/^\/api\/knowledge\/([^/]+)\/sheet\/(\d+)$/);
       if(req.method==='GET'&&(visualMatch||sheetMatch)){
@@ -176,6 +178,7 @@ const server=http.createServer(async(req,res)=>{
         return json(res,{ok:true});
       }
       if(path==='/api/approval'){codex.approve(String(body.id),body.allow===true);return json(res,{ok:true});}
+      if(path==='/api/outbox/reconcile')return json(res,await reconcileQuotedReply({store,chats,adapter,id:body.id}));
       if(path==='/api/outbox/resolve'){
         const item=store.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(body.id));if(!item||item.status!=='uncertain')throw new Error('此回执无需人工处理');
         if(!['sent','pending'].includes(body.status))throw new Error('无效处理方式');

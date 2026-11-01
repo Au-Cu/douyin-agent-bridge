@@ -7,14 +7,14 @@ export function sandboxArgs(image,name){
 }
 export class CodeSandbox {
   constructor({root,executable='docker',backend='docker'}={}){Object.assign(this,{root,executable,backend});this.active=new Set();this.stops=new Map();this.finishing=new Map();this.status={ready:false,message:'尚未检查本机容器环境'};}
-  invocation(args){return this.backend==='wsl'?{executable:'wsl.exe',args:['--distribution','codex-chat-sandbox','--user','root','--exec','docker',...args]}:{executable:this.executable,args};}
+  invocation(args){return this.backend==='wsl'?{executable:'wsl.exe',args:['--distribution','codex-chat-sandbox','--user','root','--cd','/','--exec','docker',...args]}:{executable:this.executable,args};}
   command(args,options={}){const call=this.invocation(args);return exec(call.executable,call.args,{windowsHide:true,timeout:15000,maxBuffer:64000,...options});}
   async check(){
     try{let saved;try{saved=JSON.parse(await readFile(join(this.root,'code-sandbox.json'),'utf8'));if(saved.backend==='wsl'){if(process.platform!=='win32')throw new Error('此沙箱后端需要 Windows WSL');this.backend='wsl';}}catch(e){if(e.code!=='ENOENT')throw e;}const type=(await this.command(['info','--format','{{.OSType}}'])).stdout.trim();if(type!=='linux')throw new Error('需要 Linux 容器引擎');if(!/^sha256:[a-f0-9]{64}$/.test(saved?.image||''))throw new Error('尚未准备固定的 Python 镜像');const id=(await this.command(['image','inspect',saved.image,'--format','{{.Id}}'])).stdout.trim();if(id!==saved.image)throw new Error('Python 镜像未通过核验');this.image=id;this.status={ready:true,message:'Linux 容器已就绪：无宿主挂载、无网络、256MB、30秒'};}catch(e){this.image='';this.status={ready:false,message:e.code==='ENOENT'?'未安装 Docker；代码沙箱保持关闭':e.message.startsWith('需要')||e.message.startsWith('尚未')||e.message.startsWith('Python')?e.message:'容器引擎或固定镜像未就绪，请启动 Docker 并运行 npm run setup:sandbox'};}return this.status;
   }
-  async setup(){
+  async setup({useCached=false}={}){
     const type=(await this.command(['info','--format','{{.OSType}}'])).stdout.trim();if(type!=='linux')throw new Error('请先启动 Linux 容器引擎');
-    await this.command(['pull',imageTag],{timeout:5*60*1000});const image=(await this.command(['image','inspect',imageTag,'--format','{{.Id}}'])).stdout.trim();if(!/^sha256:[a-f0-9]{64}$/.test(image))throw new Error('Python 镜像标识未通过核验');await mkdir(this.root,{recursive:true});durableJson(join(this.root,'code-sandbox.json'),{image,source:imageTag,backend:this.backend,prepared:Date.now()});return this.check();
+    if(!useCached)await this.command(['pull',imageTag],{timeout:5*60*1000});const image=(await this.command(['image','inspect',imageTag,'--format','{{.Id}}'])).stdout.trim();if(!/^sha256:[a-f0-9]{64}$/.test(image))throw new Error('Python 镜像标识未通过核验');await mkdir(this.root,{recursive:true});durableJson(join(this.root,'code-sandbox.json'),{image,source:imageTag,backend:this.backend,prepared:Date.now()});return this.check();
   }
   async removeOwned(name){
     try{const label=(await this.command(['inspect',name,'--format','{{index .Config.Labels "douyin-codex-bridge.sandbox"}}'])).stdout.trim();if(label!==name)return false;await this.command(['rm','--force',name]);return true;}catch{return false;}

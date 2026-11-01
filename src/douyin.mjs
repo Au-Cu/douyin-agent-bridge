@@ -1,11 +1,11 @@
 import { chromium } from 'playwright-core';
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { toPlainChatText,comparableChatText } from './chat-text.mjs';
+import { toPlainChatText,comparableChatText,matchesOutgoingText } from './chat-text.mjs';
 import {createHash} from 'node:crypto';
 import {bindScanIdentity} from './chat-identity.mjs';
 import {inspectInbox} from './inbox.mjs';
-import {prepareQuote,inspectQuoteDraft} from './quote-reply.mjs';
+import {prepareQuote,inspectQuoteDraft,inspectQuoteSchema} from './quote-reply.mjs';
 
 // Executed inside the dedicated, locally logged-in browser. No cookies or tokens leave it.
 // Share-card extraction follows the publicly documented React message shape used by
@@ -86,7 +86,11 @@ export function scanConversation() {
     const videoEl=row.querySelector('video');
     const mediaUrl=p.video?.play_addr?.url_list?.[0]||p.video_url||videoEl?.currentSrc||'';
     const kind=awemeId||videoEl?'video':text?'text':'unsupported';
-    messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,mentionedUids,...(replyTo?{replyTo}:{})});
+    // Native group replies may prepend an @ token. Only structured rich-text
+    // ranges identify that prefix; never strip an arbitrary @name by regex.
+    const mentionPrefix=replyTo?.messageId&&Array.isArray(p.richTextInfos)?p.richTextInfos.find(r=>Number(r.location)===0&&Number.isSafeInteger(Number(r.length))&&Number(r.length)>0&&Number(r.length)<rawText.length&&/^\d{5,32}$/.test(id(r.info?.uid))&&rawText.startsWith('@')):null;
+    const nativeReplyBody=mentionPrefix?{uid:id(mentionPrefix.info.uid),text:clean(rawText.slice(Number(mentionPrefix.length)))}:null;
+    messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,mentionedUids,...(replyTo?{replyTo}:{}),...(nativeReplyBody?{nativeReplyBody}:{})});
   }
   messages.sort((a,b)=>a.created-b.created);
   const interactiveRows=rows.filter(row=>{const e=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row,r=e.getBoundingClientRect(),x=r.x+Math.min(24,r.width/4),y=r.y+Math.min(24,r.height/4);if(x<0||y<0||x>=innerWidth||y>=innerHeight)return false;const hit=document.elementFromPoint(x,y);return !!hit&&(e===hit||e.contains(hit));}).length;
@@ -279,6 +283,7 @@ export class DouyinAdapter {
     }return {opened:true,frames};
   }
   async inbox(){if(!this.chatFrame)return {entries:[],rows:0};return this.chatFrame.evaluate(inspectInbox);}
+  async quoteSchema(){return this.chatFrame?this.chatFrame.evaluate(inspectQuoteSchema):null;}
   async send(owner,text,{plainText=false,replyToMessageId=''}={}) {
     checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');
@@ -297,14 +302,14 @@ export class DouyinAdapter {
       scan=await this.scan();
       if(!matchesPeer(scan.peer,owner))throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
       if(replyToMessageId){const quote=await surface.evaluate(inspectQuoteDraft);if(quote.ids.length!==1||quote.ids[0]!==replyToMessageId)throw new Error('引用草稿已变化，已取消发送');}
-      const before=new Set(scan.messages.map(m=>m.id));
+      const before=new Set(scan.messages.map(m=>m.id)),replyToSender=scan.messages.find(m=>m.id===replyToMessageId)?.sender||'';
       checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;
       submitted=true;
       await this.page.keyboard.press('Enter');
       for(let i=0;i<15;i++) {
         await new Promise(r=>setTimeout(r,400));const after=await this.scan();
         if(!matchesPeer(after.peer,owner))throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');
-        const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body));
+        const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&matchesOutgoingText(m,body,{replyToMessageId,replyToSender}));
         if(matches.length===1){if(replyToMessageId&&matches[0].replyTo?.messageId!==replyToMessageId)throw new UncertainDelivery('消息已发出，但未能核验它引用了指定原消息；不会自动重发');return {messageId:matches[0].id};}
         if(matches.length>1)throw new UncertainDelivery('检测到多条相同回复，无法确认本次发送的消息；不会自动重发');
       }

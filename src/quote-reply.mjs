@@ -1,3 +1,15 @@
+// Diagnostic schemas contain property names and editor structure only. Never
+// return draft text, message content, account state or arbitrary React values.
+export function inspectQuoteSchema(){
+  const scope=this?.document?this:globalThis,document=scope.document,items=[],seen=new WeakSet();
+  const keys=v=>v&&typeof v==='object'?Object.keys(v).filter(k=>/^[a-zA-Z_]/.test(k)).slice(0,24):[];
+  const shape=v=>({keys:keys(v),objects:Object.fromEntries(keys(v).filter(k=>v[k]&&typeof v[k]==='object'&&k!=='children').map(k=>[k,keys(v[k])]))});
+  const roots=[...document.querySelectorAll('[class*="MsgInputReference"],[contenteditable="true"],textarea')].filter(e=>e.getClientRects().length);
+  for(const root of roots.slice(0,12)){let e=root;for(let p=0;p<5&&e;p++,e=e.parentElement)for(const key of Object.keys(e).filter(k=>/^__react(?:Fiber|Props)\$/.test(k))){let f=e[key];for(let j=0;j<12&&f;j++,f=f.return){if(seen.has(f))break;seen.add(f);const states=[];let s=f.memoizedState;for(let h=0;h<16&&s&&typeof s==='object';h++,s=s.next){if(s.memoizedState&&typeof s.memoizedState==='object')states.push(shape(s.memoizedState));}items.push({component:typeof f.type==='string'?f.type:f.type?.displayName||f.type?.name||'',props:shape(f.memoizedProps||f),states});}}}
+  const mentions=[];for(const e of document.querySelectorAll('[data-bridge-message-id]'))for(const k of Object.keys(e).filter(k=>/^__react(?:Fiber|Props)\$/.test(k))){let f=e[k];for(let n=0;n<8&&f;n++,f=f.return){const m=(f.memoizedProps||f).message;if(!m?.parsedContent)continue;const p=m.parsedContent;mentions.push({contentKeys:keys(p),richText:Array.isArray(p.richTextInfos)?p.richTextInfos.slice(0,3).map(shape):shape(p.richTextInfos),mentions:Array.isArray(p.mention_users)?p.mention_users.slice(0,3).map(shape):shape(p.mention_users)});break;}if(mentions.length>=4)break;}
+  return {items:items.slice(0,60),mentions:mentions.slice(-6),editors:[...document.querySelectorAll('[contenteditable="true"],textarea')].filter(e=>e.getClientRects().length).map(e=>({tag:e.tagName,children:[...e.querySelectorAll('*')].slice(0,32).map(c=>({tag:c.tagName,className:String(c.className).slice(0,100),attributes:[...c.attributes].map(a=>a.name),textLength:(c.textContent||'').length}))}))};
+}
+
 export function inspectQuoteDraft(){
   const scope=this?.document?this:globalThis,document=scope.document,ids=new Set(),shapes=[];
   const safeId=x=>x!=null&&(typeof x!=='number'||Number.isSafeInteger(x))&&/^\d{5,32}$/.test(String(x))?String(x):'';
@@ -5,7 +17,11 @@ export function inspectQuoteDraft(){
   const previews=[...document.querySelectorAll('[class*="reply" i],[class*="reference" i],[class*="refMsg" i],[data-e2e*="reply"]')].filter(e=>e.getClientRects().length&&!e.closest('[data-bridge-message-id],[role="menu"],[class*="MessageOperatePopBody"]')&&((e.innerText||'').trim()&&/refmsg|reference|replypreview|replymessage/i.test(String(e.className))||/^回复[：:\s]|^引用[：:\s]/.test((e.innerText||'').trim())));
   const inputs=[...document.querySelectorAll('[contenteditable="true"],textarea')].filter(e=>e.getClientRects().length),roots=[...inputs,...previews];
   const inspect=(v,depth=0)=>{if(!v||typeof v!=='object'||depth>2)return;for(const k of ['referenced_message_id','referencedMessageId','refMessageId','ref_message_id']){const id=safeId(v[k]);if(id)ids.add(id);}for(const key of fields){const ref=v[key];if(!ref||typeof ref!=='object')continue;shapes.push({key,fields:Object.keys(ref).slice(0,16)});for(const k of ['serverId','serverMessageId','messageId','msgId','id']){const id=safeId(ref[k]);if(id)ids.add(id);}inspect(ref,depth+1);}};
-  const checked=new WeakSet();for(const root of roots.slice(0,20)){let e=root;for(let p=0;p<7&&e;p++,e=e.parentElement)for(const key of Object.keys(e).filter(k=>/^__react(?:Fiber|Props)\$/.test(k))){let f=e[key];for(let j=0;j<12&&f;j++,f=f.return){if(checked.has(f))break;checked.add(f);inspect(f.memoizedProps||f);let state=f.memoizedState;for(let h=0;h<8&&state&&typeof state==='object';h++,state=state.next)inspect(state.memoizedState);}}}
+  const checked=new WeakSet();for(const root of roots.slice(0,20)){let e=root;for(let p=0;p<7&&e;p++,e=e.parentElement)for(const key of Object.keys(e).filter(k=>/^__react(?:Fiber|Props)\$/.test(k))){let f=e[key];for(let j=0;j<12&&f;j++,f=f.return){if(checked.has(f))break;checked.add(f);const props=f.memoizedProps||f;inspect(props);
+    // The native MsgInputReference component receives the original SDK Message
+    // instance. Its serverId is a prototype getter, absent from Object.keys.
+    if(typeof props.setReferencedMsg==='function'&&props.message){const m=props.message;for(const k of ['serverId','serverMessageId','messageId','msgId','id']){const id=safeId(m[k]);if(id){ids.add(id);shapes.push({key:'nativeQuotedMessage',fields:[k]});break;}}}
+    let state=f.memoizedState;for(let h=0;h<8&&state&&typeof state==='object';h++,state=state.next)inspect(state.memoizedState);}}}
   for(const e of previews)for(const k of ['data-message-id','data-reference-id','data-reply-id']){const id=safeId(e.getAttribute(k));if(id)ids.add(id);}
   return {ids:[...ids],visible:previews.length>0,previewClasses:previews.slice(0,8).map(e=>String(e.className).slice(0,160)),shapes:shapes.slice(0,12)};
 }
@@ -24,7 +40,7 @@ export function markQuoteAction(token){
 }
 export async function prepareQuote(io,messageId){
   if(!/^\d{5,32}$/.test(messageId||''))throw new Error('没有有效的群聊原消息编号，未发送回复');
-  const existing=await io.evaluate(inspectQuoteDraft);if(existing.visible||existing.ids.length)throw new Error('输入框已有引用草稿，请先处理后再发送');
+  const existing=await io.evaluate(inspectQuoteDraft);if(existing.ids.length===1&&existing.ids[0]===messageId)return;if(existing.visible||existing.ids.length)throw new Error('输入框已有引用草稿，请先处理后再发送');
   let found=false;for(let i=0;i<12;i++){await io.verify();const located=await io.evaluate(locateQuoteSource,{messageId,scroll:i>0});if(located.found){found=true;break;}if(i>0&&!located.moved)break;await io.wait(250);}
   if(!found)throw new Error('原消息暂不在可读取的历史中，未发送无引用回复');
   await io.openMenu();const token=String(Date.now());await io.wait(150);const n=await io.evaluate(markQuoteAction,token);io.diagnostic({stage:'menu',matches:n});if(n!==1)throw new Error('未找到唯一的原生“回复”入口，未发送无引用回复');await io.choose(token);

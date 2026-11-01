@@ -7,7 +7,7 @@ import {matchesPeer} from './douyin.mjs';
 
 export const sameChat=matchesPeer;
 export function acceptsChatMessage(message,chat,since){
-  return chat.enabled&&chat.mode==='chat'&&message.direction==='in'&&message.conversation===chat.chatKey&&message.sender&&message.sender!==chat.selfUid&&message.created>0&&message.created>=Math.max(since,chat.enabledAt||0)-1500&&['text','video'].includes(message.kind)&&(chat.type==='group'?!!chat.selfUid&&Array.isArray(message.mentionedUids)&&message.mentionedUids.includes(chat.selfUid):message.sender===chat.peerUid);
+  return chat.enabled&&chat.mode==='chat'&&message.direction==='in'&&message.conversation===chat.chatKey&&message.sender&&message.sender!==chat.selfUid&&message.created>0&&message.created>=Math.max(since,chat.enabledAt||0,chat.replyModeChangedAt||0)-1500&&['text','video'].includes(message.kind)&&(chat.type==='group'?!!chat.selfUid&&(chat.groupReplyMode==='all'||Array.isArray(message.mentionedUids)&&message.mentionedUids.includes(chat.selfUid)):message.sender===chat.peerUid);
 }
 export class Chats {
   constructor({store,adapter,sandbox,preferences,canChangeAgent=()=>true}){
@@ -37,17 +37,25 @@ export class Chats {
     const token=randomUUID(),value={...peer,type:legacy?'single':peer.type,...(legacy?{legacy:true}:{}),token};this.observations.set(token,{value,seen:scan.messages.map(m=>m.id),expires:Date.now()+5*60*1000});
     for(const [key,v] of this.observations)if(v.expires<Date.now())this.observations.delete(key);return value;
   }
-  configure({token,chatKey,mode,enabled}){
+  configure({token,chatKey,mode,enabled,groupReplyMode}){
     if(!['agent','chat'].includes(mode)||typeof enabled!=='boolean')throw new Error('请选择个人 Agent 或普通聊天 AI，并明确启用状态');
     const observed=token&&this.observations.get(token),old=this.get(String(chatKey||observed?.value.chatKey||''));
     if(token&&(!observed||observed.expires<Date.now()))throw new Error('聊天身份已过期，请重新读取当前聊天');
     const peer=observed?.value||old;if(!peer)throw new Error('请先从实际打开的抖音聊天读取身份');
+    if(groupReplyMode!==undefined&&(!['mentions','all'].includes(groupReplyMode)||peer.type!=='group'))throw new Error('群聊回复范围只能选择仅被 @ 时回复或回复所有新消息');
+    const replyMode=peer.type==='group'?(groupReplyMode??old?.groupReplyMode??'mentions'):'mentions';
     const owner=this.store.config.owner,isOwner=owner?.chatKey===peer.chatKey&&owner?.peerUid===peer.peerUid;
     if(mode==='agent'&&(!isOwner||peer.type==='group'))throw new Error('个人 Agent 使用现有绑定用户的单聊；其他单聊或群聊请选择普通聊天 AI');
     if(enabled&&mode==='chat'&&(!peer.selfUid||!['single','group'].includes(peer.type)))throw new Error('普通聊天的账号或聊天类型尚未核验，请重新读取');
     if(isOwner&&(old?.mode!==mode||old?.enabled!==enabled)&&!this.canChangeAgent())throw new Error('个人 Agent 仍有任务或回复正在执行，请先完成或中断后更改模式');
     if(enabled&&!old?.enabled&&this.list().filter(c=>c.enabled).length>=20)throw new Error('最多同时启用 20 个聊天，请先停用不需要的聊天');
-    const revision=randomUUID(),entry={chatKey:peer.chatKey,peerUid:peer.peerUid,displayName:String(peer.displayName||'抖音聊天').slice(0,150),type:peer.type,selfUid:peer.selfUid||'',legacy:!!peer.legacy,mode,enabled,enabledAt:enabled?Date.now():old?.enabledAt||0,revision};
+    if(old&&old.mode===mode&&old.enabled===enabled&&sameChat(peer,old)){
+      // A trigger-policy change affects future messages only. Keep the current
+      // reply, revision and context instead of cancelling work already running.
+      const entry={...old,groupReplyMode:replyMode,...((old.groupReplyMode||'mentions')!==replyMode?{replyModeChangedAt:Date.now()}:{})};
+      this.store.saveConfig({aiChats:[...this.store.config.aiChats.filter(c=>c.chatKey!==entry.chatKey),entry]});this.endSelection();return entry;
+    }
+    const revision=randomUUID(),entry={chatKey:peer.chatKey,peerUid:peer.peerUid,displayName:String(peer.displayName||'抖音聊天').slice(0,150),type:peer.type,selfUid:peer.selfUid||'',legacy:!!peer.legacy,mode,enabled,groupReplyMode:replyMode,enabledAt:enabled?Date.now():old?.enabledAt||0,revision};
     if(observed)for(const id of observed.seen)this.seen(entry.chatKey,id);
     const list=this.store.config.aiChats.filter(c=>c.chatKey!==entry.chatKey);this.store.saveConfig({aiChats:[...list,entry]});
     this.controllers.get(entry.chatKey)?.abort();this.controllers.delete(entry.chatKey);
@@ -94,7 +102,7 @@ export class Chats {
   set(id,status,result){if(result===undefined)this.store.db.prepare('UPDATE bot_messages SET status=?,updated=? WHERE id=?').run(status,Date.now(),id);else this.store.db.prepare('UPDATE bot_messages SET status=?,result=?,updated=? WHERE id=?').run(status,String(result).slice(0,12000),Date.now(),id);}
   context(row){const history=this.store.db.prepare("SELECT body,result FROM bot_messages WHERE peer=? AND revision=? AND status='done' AND id<>? ORDER BY created DESC LIMIT 6").all(row.peer,row.revision,row.id).reverse().map(r=>({user:JSON.parse(r.body),reply:r.result.slice(0,2000)}));while(JSON.stringify(history).length>10000)history.shift();const body=JSON.parse(row.body);let quoted;
     if(body.replyTo?.messageId){const link=this.store.db.prepare("SELECT o.payload FROM outgoing_message_links l JOIN outbox o ON o.id=l.outbox_id WHERE l.peer=? AND l.platform_id=?").get(row.peer,body.replyTo.messageId);if(link){const p=JSON.parse(link.payload);if(p.chatbot&&p.chatRevision===row.revision){const origin=this.store.db.prepare("SELECT body,result FROM bot_messages WHERE id=? AND peer=? AND status='done'").get(p.botId,row.peer);if(origin)quoted={user:JSON.parse(origin.body),reply:origin.result.slice(0,8000)};}}}
-    return {conversation:this.get(row.peer)?.type==='group'?'群聊中直接 @ 助手的交流':'普通单聊',recent:history,...(quoted?{quotedFeedback:quoted}:{}),message:body,...(body.kind==='video'?{attachmentNote:'只收到视频分享卡片的标题，没有观看画面或口播。不得冒充已看过视频。此模式无下载或视频分析工具。'}:{})};
+    const chat=this.get(row.peer);return {conversation:chat?.type==='group'?(chat.groupReplyMode==='all'?'群聊中的新消息，已由本机用户配置为回复所有新消息':'群聊中直接 @ 助手的交流'):'普通单聊',recent:history,...(quoted?{quotedFeedback:quoted}:{}),message:body,...(body.kind==='video'?{attachmentNote:'只收到视频分享卡片的标题，没有观看画面或口播。不得冒充已看过视频。此模式无下载或视频分析工具。'}:{})};
   }
   async run(row,chat){
     this.set(row.id,'preparing');let submitted=false;

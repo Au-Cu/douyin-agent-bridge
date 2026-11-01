@@ -80,5 +80,6 @@ export class PeerBrowser {
   uiDiagnostics(){return this.serial(()=>this.adapter.uiDiagnostics(),{kind:'inspect'});}
   composerState(){return this.serial(()=>this.adapter.composerState(),{kind:'inspect'});}
   inbox(){return this.serial(()=>this.adapter.inbox?.()||{entries:[],rows:0},{kind:'inspect'});}
+  quoteSchema(peer){return this.serial(async()=>{if(peer)await this.select(peer);return this.adapter.quoteSchema?.()||null;},{kind:'inspect'});}
   close(){if(this.closing)return this.closed;this.closing=true;return this.closed=this.serial(async()=>{await Promise.allSettled([...this.media]);return this.adapter.close();},{kind:'close',priority:-10,allowClosing:true});}
 }
