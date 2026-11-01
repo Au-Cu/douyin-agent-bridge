@@ -111,7 +111,7 @@ export class BridgeEngine {
     if((!this.store.config.enabled&&!this.armedAt)||this.scanBusy||this.adapter.selecting||this.chats&&!this.chats.agentEnabled())return;
     this.scanBusy=true;
     try{
-    const owner=this.store.config.owner,scan=await (this.adapter.scanPeer?this.adapter.scanPeer(owner):this.adapter.scan());
+    const owner=this.store.config.owner,scan=await (this.adapter.scanPeer?this.adapter.scanPeer(owner,{background:true}):this.adapter.scan());if(!scan)return;
     const accepted=[],timeline=[...scan.messages].sort((a,b)=>a.created-b.created);
     for(const m of timeline){
       if(!this.store.config.enabled&&!(m.kind==='text'&&['interrupt','ignore_start','ignore_end'].includes(parseCommand(m.text)?.name)))continue;
@@ -482,7 +482,7 @@ export class BridgeEngine {
         this.store.mergeOutboxPayload(out.id,{receiptResult:{method:'reaction',...result}});method='reaction';
       }
       else if(out.kind==='video_ack'&&this.adapter.acknowledge){const result=await this.adapter.acknowledge(this.store.config.owner,JSON.parse(out.payload),out.body);method=result.method;this.store.mergeOutboxPayload(out.id,{receiptResult:result});}
-      else {const send=()=>this.adapter.send(target,out.body,{plainText:payload.plainText===true});if(payload.chatbot)textReceipt=await this.chats.delivery(payload,out.peer,send);else {const operationId=payload.operationId;textReceipt=await this.interrupts.run(operationId,()=>{this.context.getStore().delivery={id:out.id,submitted:false};return send();});}}
+      else {const send=()=>this.adapter.send(target,out.body,{plainText:payload.plainText===true,...(payload.replyToMessageId?{replyToMessageId:payload.replyToMessageId}:{})});if(payload.chatbot)textReceipt=await this.chats.delivery(payload,out.peer,send);else {const operationId=payload.operationId;textReceipt=await this.interrupts.run(operationId,()=>{this.context.getStore().delivery={id:out.id,submitted:false};return send();});}}
       if(out.kind==='text')this.store.confirmTextDelivery(out.id,textReceipt?.messageId);else this.store.delivery(out.id,'sent');
       const operationId=JSON.parse(out.payload||'{}').operationId;if(operationId)this.progress.sync(operationId);
       if(out.kind==='video_ack')this.store.event('已在抖音确认收到视频（'+(method==='reaction'?'消息表情回应':'私信文字')+'）');

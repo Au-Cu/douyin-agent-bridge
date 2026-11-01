@@ -81,7 +81,7 @@ export class Chats {
   }
   async scan(){
     if(!this.store.config.enabled||!this.armedAt||this.scanning||this.adapter.selecting)return;const bots=this.bots();if(!bots.length)return;const chat=bots[this.cursor++%bots.length];this.scanning=true;
-    try{const scan=await this.adapter.scanPeer(chat);if(!sameChat(scan.peer,chat)){this.warn(chat,'聊天身份、类型或助手账号不一致，普通聊天保持暂停');return;}for(const m of [...scan.messages].sort((a,b)=>a.created-b.created)){
+    try{const scan=await this.adapter.scanPeer(chat,{background:true});if(!scan)return;if(!sameChat(scan.peer,chat)){this.warn(chat,'聊天身份、类型或助手账号不一致，普通聊天保持暂停');return;}for(const m of [...scan.messages].sort((a,b)=>a.created-b.created)){
       this.ingest(chat,m);
     }}catch(e){this.warn(chat,'普通聊天暂未连接：'+e.message);}finally{this.scanning=false;}
   }
@@ -100,7 +100,7 @@ export class Chats {
     this.set(row.id,'preparing');let submitted=false;
     try{const config=await this.preferences.chatWork();const result=await this.sandbox.reply(this.context(row),{...config,signal:this.controller(chat).signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
       this.guard({chatbot:true,chatRevision:row.revision},row.peer);const text=toPlainChatText(result.text).slice(0,10000),parts=splitReply(text),group=randomUUID();if(!parts.length)throw new Error('模型没有返回文字');
-      this.store.db.exec('BEGIN IMMEDIATE');try{this.set(row.id,'replying',text);for(const [i,part] of parts.entries())this.store.enqueueReply(row.peer,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{payload:{chatbot:true,botId:row.id,chatRevision:row.revision,plainText:true,group,segment:i+1,totalSegments:parts.length},dedupe:'bot-result:'+row.id+':'+i});this.store.db.exec('COMMIT');}catch(e){this.store.db.exec('ROLLBACK');throw e;}
+      this.store.db.exec('BEGIN IMMEDIATE');try{this.set(row.id,'replying',text);for(const [i,part] of parts.entries())this.store.enqueueReply(row.peer,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{payload:{chatbot:true,botId:row.id,chatRevision:row.revision,plainText:true,...(chat.type==='group'?{replyToMessageId:JSON.parse(row.body).id}:{}),group,segment:i+1,totalSegments:parts.length},dedupe:'bot-result:'+row.id+':'+i});this.store.db.exec('COMMIT');}catch(e){this.store.db.exec('ROLLBACK');throw e;}
     }catch(e){const valid=this.get(row.peer)?.revision===row.revision;this.set(row.id,!valid?'cancelled':submitted&&e.uncertain?'uncertain':'failed',!valid?'聊天已停用，未交付本轮结果':submitted&&e.uncertain?'暂时无法确认运行状态，不会自动重跑':e.authKind?'本机 Codex 登录或额度暂不可用；处理结果保留在面板':String(e.message).slice(0,400));}
   }
   reconcile(){for(const row of this.store.db.prepare("SELECT * FROM bot_messages WHERE status IN ('replying','delivery_uncertain')").all()){const sent=this.store.db.prepare("SELECT status FROM outbox WHERE kind='text' AND json_extract(payload,'$.botId')=?").all(row.id);if(sent.length&&sent.every(s=>s.status==='sent')){this.set(row.id,'done');this.receipt(row,'done');}else if(sent.some(s=>s.status==='uncertain'))this.set(row.id,'delivery_uncertain');else if(sent.some(s=>s.status==='pending')&&row.status==='delivery_uncertain')this.set(row.id,'replying');}}

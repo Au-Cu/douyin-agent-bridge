@@ -13,8 +13,8 @@ export function approvalResponse(request,allow) {
 }
 
 export class CodexClient extends EventEmitter {
-  constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome(),restricted=false,spawnEnv={},authTokensProvider }={}) {
-    super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome,restricted,spawnEnv,authTokensProvider}); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
+  constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome(),restricted=false,spawnEnv={},authTokensProvider,allowedChatTools=[],allowPublicWeb=false }={}) {
+    super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome,restricted,spawnEnv,authTokensProvider,allowPublicWeb});this.allowedChatTools=new Set(allowedChatTools); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
     this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.loaded=new Set();this.threadLocks=new Map();this.interrupting=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
   }
   async connect() {
@@ -101,7 +101,7 @@ export class CodexClient extends EventEmitter {
     }
     if(msg.id!==undefined&&msg.method) {
       if(this.restricted&&msg.method==='account/chatgptAuthTokens/refresh'&&this.authTokensProvider){try{this.send({id:msg.id,result:await this.authTokensProvider()});}catch{this.send({id:msg.id,error:{code:-32000,message:'请在本机 Codex 重新登录'}});}return;}
-      if(this.restricted){
+      if(this.restricted&&!(msg.method==='item/tool/call'&&this.allowedChatTools.has(msg.params?.tool))){
         this.send({id:msg.id,...(/requestApproval$/.test(msg.method)?{result:approvalResponse(msg,false)}:{error:{code:-32601,message:'Chat-only sessions have no client tools or user approvals.'}})});return;
       }
       if(msg.method==='item/tool/call') {
@@ -124,7 +124,7 @@ export class CodexClient extends EventEmitter {
       const p=msg.params; const r=[...this.runs.values()].find(r=>r.threadId===p.threadId);
       if(r)r.text=p.item.text||r.text;
     }
-    if(this.restricted&&msg.method==='item/started'&&!['userMessage','agentMessage','reasoning','contextCompaction'].includes(msg.params?.item?.type)){
+    if(this.restricted&&msg.method==='item/started'&&!['userMessage','agentMessage','reasoning','contextCompaction'].includes(msg.params?.item?.type)&&!(this.allowPublicWeb&&msg.params?.item?.type==='webSearch')&&!(msg.params?.item?.type==='dynamicToolCall'&&this.allowedChatTools.has(msg.params.item.tool))){
       this.close();throw new Error('普通聊天的工具隔离校验失败，已停止连接，未交付模型输出');
     }
     if(msg.method==='thread/tokenUsage/updated'){

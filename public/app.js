@@ -111,7 +111,7 @@ async function refresh(){
     $('scanInfo').textContent=r.scan?`当前：${r.scan.title||'未选会话'} · 识别消息 ${r.scan.diagnostics?.parsed||0} 条`:'浏览器打开后会检查当前会话';
     if(!dirty){targets=state.config.targets;$('maxMinutes').value=state.config.maxVideoSeconds/60;$('visualFps').value=state.config.visualFps||4;$('ackMode').value='auto';renderTargets();}
     if(!preferencesDirty){const c=state.config;$('defaultModel').value=c.model||'';$('fastMode').checked=!!c.fastMode;renderEfforts(c.reasoningEffort||'');$('autoRoute').checked=c.autoRoute!==false;$('contextBudget').value=c.contextBudget||48000;}
-    if(!chatPreferencesDirty){const c=state.config;$('chatModel').value=c.chatModel||'';$('chatFast').checked=!!c.chatFastMode;renderChatEfforts(c.chatReasoningEffort||'');}
+    if(!chatPreferencesDirty){const c=state.config;$('chatModel').value=c.chatModel||'';$('chatFast').checked=!!c.chatFastMode;$('chatWeb').checked=c.chatWebSearch!==false;$('chatCode').checked=c.chatCodeSandbox===true;renderChatEfforts(c.chatReasoningEffort||'');}
     renderNeeds();renderPanels();renderAiChats();
     $('knowledgeList').innerHTML=state.knowledge.map(k=>`<div class="item"><strong>${escape(k.title)}</strong>${k.archived?'<span class="pill">已归档</span>':''}<p>${escape(r.processing&&r.visualProgress?.id===k.id?'正在按完整时间轴分析视觉内容，等待本次结论。':k.visualStatus==='partial'?`视觉已完成 ${k.visualCompleted}/${k.visualTotal} 段，尚未覆盖全片，可继续重分析。`:k.visualStatus==='legacy'?'此视频尚未完成连续视觉分析，请重新分析后查看完整结论。':k.summary?.slice(0,150)||'视频已保存，等待连续视觉分析完成。')}</p><div class="button-row"><button data-note="${escape(k.id)}" class="secondary">学习笔记</button><button data-visual="${escape(k.id)}" class="secondary">查看连续画面</button><button data-reanalyze="${escape(k.id)}" ${r.processing?'disabled':''}>重新分析视觉</button>${archiveButton('knowledge',k)}</div></div>`).join('')||'<p class="empty">此范围没有学习资料。</p>';
     if(r.processing&&r.visualProgress){const p=r.visualProgress;$('listenTitle').textContent=`连续视觉分析 ${p.completed}/${p.total||'…'} 段 · ${p.fps} 帧/秒`;}
@@ -139,8 +139,10 @@ action('createCoordinator',async()=>{await api('coordinator',{});notice('固定�
 action('reconnectCodex',async()=>{const r=await api('codex/reconnect',{});notice(r.deferred?'当前任务仍在执行，结束后会重新连接。':r.auth.status==='ready'?'已读取本机当前 Codex 登录，视频进度和目标名单已保留。':r.auth.message,!r.deferred&&r.auth.status!=='ready');});
 action('reloadModels',async()=>{await loadModels();notice('已读取当前 Codex 的模型与推理档位。');});
 action('savePreferences',async()=>{await api('preferences',{model:$('defaultModel').value,reasoningEffort:$('defaultEffort').value,fastMode:$('fastMode').checked,autoRoute:$('autoRoute').checked,contextBudget:Number($('contextBudget').value)});preferencesDirty=false;notice('默认配置已保存，从下一次调用起生效。');});
-action('saveChatPreferences',async()=>{await api('chat-preferences',{model:$('chatModel').value,reasoningEffort:$('chatEffort').value,fastMode:$('chatFast').checked});chatPreferencesDirty=false;notice('普通聊天默认配置已保存，从下一轮起生效。');});
-$('chatModel').addEventListener('change',()=>{chatPreferencesDirty=true;renderChatEfforts('');});for(const id of ['chatEffort','chatFast'])$(id).addEventListener('change',()=>chatPreferencesDirty=true);
+action('saveChatPreferences',async()=>{await api('chat-preferences',{model:$('chatModel').value,reasoningEffort:$('chatEffort').value,fastMode:$('chatFast').checked,webSearch:$('chatWeb').checked,codeSandbox:$('chatCode').checked});chatPreferencesDirty=false;notice('普通聊天配置已保存，从下一轮起生效。');});
+$('chatModel').addEventListener('change',()=>{chatPreferencesDirty=true;renderChatEfforts('');});for(const id of ['chatEffort','chatFast','chatWeb','chatCode'])$(id).addEventListener('change',()=>chatPreferencesDirty=true);
+action('checkCodeSandbox',async()=>{const r=await api('code-sandbox/check',{});$('codeSandboxState').textContent=r.message;notice(r.message,!r.ready);});
+action('setupCodeSandbox',async()=>{await api('code-sandbox/setup',{});notice('已开始准备 Python 容器镜像。完成后点“检查代码沙箱”，再保存启用；模型不会自行安装镜像。');});
 action('newNeed',async()=>{const n=await api('needs/new',{title:$('newNeedTitle').value.trim()});$('newNeedTitle').value='';notice('已新建并切换到需求 '+(n.number||'')+'：'+n.title);});
 $('defaultModel').addEventListener('change',()=>{preferencesDirty=true;renderEfforts('');});
 for(const id of ['defaultEffort','fastMode','autoRoute','contextBudget'])$(id).addEventListener('change',()=>preferencesDirty=true);

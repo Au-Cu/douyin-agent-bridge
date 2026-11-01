@@ -13,14 +13,17 @@
   </details>
   <details class="panel config-panel" id="chatsPanel" data-panel="chats" open>
     <summary><span>启用 AI 的抖音聊天</span><small id="chatsSummary">个人 Agent 与普通聊天分别配置</small></summary>
-    <p class="hint">个人 Agent 就是现有的用户单聊模式，可学习视频并按你的指令处理项目。普通聊天 AI 只能回复文字，使用独立上下文，没有项目、文件、电脑、插件或任务派发权限。群聊仅在消息原生 @ 到助手账号时回复，输入“@昵称”文字不算。</p>
+    <p class="hint">个人 Agent 就是现有的用户单聊模式。普通聊天使用独立上下文，可查公开资料、计算和查询时间；启用容器后还可在隔离环境验证 Python 代码。本机项目、个人文件、账户、终端、浏览器操作和电脑控制保持关闭。群聊仅在原生 @ 助手时触发，每段回复原生引用触发消息。</p>
     <div class="model-settings">
       <label>普通聊天默认模型<select id="chatModel"><option value="">使用 Codex 默认模型</option></select></label>
       <label>普通聊天推理强度<select id="chatEffort"><option value="">使用默认强度</option></select></label>
       <label class="check-label"><input type="checkbox" id="chatFast">普通聊天快速模式</label>
+      <label class="check-label"><input type="checkbox" id="chatWeb" checked>联网查询公开资料</label>
+      <label class="check-label"><input type="checkbox" id="chatCode">启用容器代码沙箱</label>
       <button id="saveChatPreferences">保存聊天默认配置</button>
     </div>
     <p id="chatEffectiveModel" class="hint">普通聊天独立选模型；留空跟随 Codex 默认，不跟随个人 Agent 的设置。保存后从下一轮起生效。</p>
+    <div class="button-row"><button id="checkCodeSandbox" class="secondary">检查代码沙箱</button><button id="setupCodeSandbox" class="secondary">准备容器镜像</button></div><p id="codeSandboxState" class="hint">代码沙箱需先安装并启动 Docker Linux 容器引擎，再准备固定 Python 镜像。无宿主目录挂载、无网络，限 256MB / 30秒。环境不通过核验时不执行代码。</p>
     <div class="button-row panel-tools"><button id="selectAiChat">配置一个单聊或群聊</button><button id="finishAiSelection" class="secondary" hidden>完成选择，恢复轮询</button></div>
     <div id="aiChatSelection" class="chat-selection" hidden>
       <p class="hint">轮询与发送暂时暂停，最长 5 分钟。在助手的抖音窗口打开目标单聊或群聊，再读取。如果尚未核验助手身份，请从助手账号手动发一条普通消息。</p>

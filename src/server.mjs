@@ -23,6 +23,7 @@ import {configurePanel,updatePanels} from './ui-state.mjs';
 import {PeerBrowser} from './peer-browser.mjs';
 import {Chats} from './chats.mjs';
 import {ChatSandbox} from './chat-sandbox.mjs';
+import {CodeSandbox} from './code-sandbox.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const startupSince=Date.now();
@@ -37,7 +38,8 @@ const preferences=new Preferences({store,codex});
 const conversations=new Conversations({store,codex,preferences});
 const visual=new VisualAnalyzer({codex,log,settings:()=>preferences.work()});
 const engine=new BridgeEngine({store,adapter,media,codex,visual,preferences,conversations});
-const chatSandbox=new ChatSandbox({root:store.root,codex,log}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
+const codeSandbox=new CodeSandbox({root:store.root}),chatSandbox=new ChatSandbox({root:store.root,codex,log,codeSandbox,capabilities:()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox})}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
+let sandboxPreparing=false;
 const token=randomBytes(32).toString('hex');let asrInstalling=false;let closing=false;
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
 if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口必须为 1024–65535 的整数');
@@ -70,6 +72,9 @@ const server=http.createServer(async(req,res)=>{
       if(req.method==='GET'&&path==='/api/browser/reaction-diagnostics')return json(res,{lastReceipt:adapter.lastReceipt||null,menu:adapter.lastReactionDiagnostic||null});
       if(req.method==='GET'&&path==='/api/browser/ui-diagnostics')return json(res,await adapter.uiDiagnostics());
       if(req.method==='GET'&&path==='/api/browser/selection-diagnostics')return json(res,adapter.lastSelectionDiagnostic||null);
+      if(req.method==='GET'&&path==='/api/browser/scheduler-diagnostics')return json(res,adapter.diagnostics);
+      if(req.method==='GET'&&path==='/api/browser/inbox-diagnostics'){const v=await adapter.inbox();return json(res,{rows:v.rows,entries:v.entries.map(({unread,source,shape})=>({unread,source,shape}))});}
+      if(req.method==='GET'&&path==='/api/browser/quote-diagnostics')return json(res,adapter.lastQuoteDiagnostic||null);
       const visualMatch=path.match(/^\/api\/knowledge\/([^/]+)\/visual$/);
       const sheetMatch=path.match(/^\/api\/knowledge\/([^/]+)\/sheet\/(\d+)$/);
       if(req.method==='GET'&&(visualMatch||sheetMatch)){
@@ -87,6 +92,8 @@ const server=http.createServer(async(req,res)=>{
       }
       if(req.method!=='POST')return json(res,{error:'未找到接口'},404);
       const body=await jsonBody(req);
+      if(path==='/api/code-sandbox/check')return json(res,await codeSandbox.check());
+      if(path==='/api/code-sandbox/setup'){if(!sandboxPreparing){sandboxPreparing=true;codeSandbox.setup().catch(()=>log('代码沙箱准备失败，请检查 Docker 引擎与镜像下载','attention')).finally(()=>sandboxPreparing=false);}return json(res,{preparing:sandboxPreparing});}
       if(path==='/api/ai-chats/select'){chats.beginSelection();return json(res,{ok:true});}
       if(path==='/api/ai-chats/cancel'){chats.endSelection();return json(res,{ok:true});}
       if(path==='/api/ai-chats/current')return json(res,await chats.observe());
@@ -107,7 +114,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/storage/backup')return json(res,await store.backup());
       if(path==='/api/codex/reconnect')return json(res,await codex.reconnect());
       if(path==='/api/preferences'){await preferences.update(body);let effective=null,effectiveError;try{effective=await preferences.work();}catch(e){effectiveError=e.message;}return json(res,{ok:true,config:store.config,effective,effectiveError});}
-      if(path==='/api/chat-preferences'){await preferences.updateChat(body);return json(res,{ok:true,effective:await preferences.chatWork()});}
+      if(path==='/api/chat-preferences'){if(body.codeSandbox===true&&!(await codeSandbox.check()).ready)throw new Error(codeSandbox.status.message);await preferences.updateChat(body);return json(res,{ok:true,effective:await preferences.chatWork()});}
       if(path==='/api/needs/new'){const n=await conversations.create(String(body.title||'新需求'));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
       if(path==='/api/needs/switch'){const n=await conversations.switchTo(String(body.id||''));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
       if(path==='/api/shutdown'){
@@ -211,5 +218,5 @@ if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browse
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
-async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();chats.stop();codex.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values()]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
+async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();chats.stop();codex.close();await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values()]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

@@ -1,25 +1,84 @@
+import {AsyncLocalStorage} from 'node:async_hooks';
 import {matchesPeer} from './douyin.mjs';
 import {checkWork} from './execution.mjs';
-// Serialize complete native UI operations, including selection and verification.
-// Without this mutex another chat scan could switch the composer during a send.
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// One lease covers selection, stable collection and the complete native send /
+// reaction verification. Inference uses copied messages and never holds it.
 export class PeerBrowser {
-  constructor(adapter){this.adapter=adapter;this.tail=Promise.resolve();this.multiple=false;this.selectionUntil=0;}
+  constructor(adapter,{now=Date.now,wait=sleep,settleMs=750,quietMs=300,readTimeoutMs=2500,reconcileMs=60000}={}){
+    Object.assign(this,{adapter,now,wait,settleMs,quietMs,readTimeoutMs,reconcileMs});this.multiple=false;this.selectionUntil=0;this.queue=[];this.polls=new Map();this.media=new Set();this.visited=new Map();this.writeBurst=0;this.stats={completed:0,coalesced:0,switches:0,skippedIdle:0,inboxChecks:0,maxWaitMs:0,maxOperationMs:0};
+  }
   get status(){return this.adapter.status;}get page(){return this.adapter.page;}get lastScan(){return this.adapter.lastScan;}get lastReceipt(){return this.adapter.lastReceipt;}get lastReactionDiagnostic(){return this.adapter.lastReactionDiagnostic;}
   get lastSelectionDiagnostic(){return this.adapter.lastSelectionDiagnostic;}
-  get sending(){return !!this.pending||!!this.adapter.sending;}
-  serial(fn){this.pending=(this.pending||0)+1;const p=this.tail.catch(()=>{}).then(fn).finally(()=>this.pending--);this.tail=p;return p;}
-  async select(peer){checkWork();const r=await this.adapter.scan();if(matchesPeer(r.peer,peer))return r;await this.adapter.restoreOwner(peer);checkWork();const after=await this.adapter.scan();if(!matchesPeer(after.peer,peer))throw new Error('未核验到选定的抖音聊天，操作已停止');return after;}
-  selection(active){this.selectionUntil=active?Date.now()+5*60*1000:0;}
-  get selecting(){return this.selectionUntil>Date.now();}
-  open(...args){return this.serial(()=>this.adapter.open(...args));}
-  scan(){return this.serial(()=>this.adapter.scan());}
-  scanPeer(peer){if(this.selecting)return Promise.reject(new Error('正在面板中选择抖音聊天，轮询暂时暂停'));if(!this.multiple)return this.adapter.scan();return this.serial(()=>{if(this.selecting)throw new Error('正在面板中选择抖音聊天，轮询暂时暂停');return this.select(peer);});}
-  send(peer,...args){return this.serial(async()=>{if(this.selecting)throw new Error('正在面板中选择聊天，发送暂时暂停');if(this.multiple)await this.select(peer);return this.adapter.send(peer,...args);});}
-  react(peer,...args){return this.serial(async()=>{checkWork();if(this.selecting)throw new Error('正在面板中选择聊天，贴表情暂时暂停');if(this.multiple)await this.select(peer);return this.adapter.react(peer,...args);});}
-  acknowledge(peer,...args){return this.serial(async()=>{if(this.multiple)await this.select(peer);return this.adapter.acknowledge(peer,...args);});}
-  resolveVideo(...args){return this.serial(()=>this.adapter.resolveVideo(...args));}
+  get lastQuoteDiagnostic(){return this.adapter.lastQuoteDiagnostic;}
+  get sending(){return !!this.active||this.queue.length>0||!!this.adapter.sending;}
+  get diagnostics(){return {...this.stats,active:this.active?.kind||'',activeForMs:this.active?this.now()-this.active.started:0,queued:this.queue.length,queuedKinds:this.queue.map(j=>j.kind),mediaActive:this.media.size};}
+  serial(fn,{kind='inspect',priority=0,peer,allowClosing=false}={}){
+    if(this.closing&&!allowClosing)return Promise.reject(new Error('浏览器连接正在关闭'));
+    const scope=AsyncLocalStorage.snapshot();
+    return new Promise((resolve,reject)=>{this.queue.push({run:()=>scope(fn),resolve,reject,kind,priority,peer,queued:this.now()});this.pump();});
+  }
+  pump(){
+    if(this.active||!this.queue.length)return;
+    // Prefer pending replies to routine navigation. After three writes, serve
+    // the oldest waiting read so a busy group cannot starve other inboxes.
+    const read=this.queue.findIndex(j=>j.priority<20);let index=this.writeBurst>=3&&read>=0?read:0;
+    if(!(this.writeBurst>=3&&read>=0))for(let i=1;i<this.queue.length;i++)if(this.queue[i].priority>this.queue[index].priority)index=i;
+    const job=this.active=this.queue.splice(index,1)[0];job.started=this.now();this.stats.maxWaitMs=Math.max(this.stats.maxWaitMs,job.started-job.queued);this.writeBurst=job.priority>=20?this.writeBurst+1:0;
+    Promise.resolve().then(job.run).then(job.resolve,job.reject).finally(()=>{this.stats.completed++;this.stats.maxOperationMs=Math.max(this.stats.maxOperationMs,this.now()-job.started);this.active=null;this.pump();});
+  }
+  async select(peer){
+    checkWork();const before=await this.adapter.scan();if(matchesPeer(before.peer,peer))return before;
+    await this.adapter.restoreOwner(peer);checkWork();let snapshot=await this.adapter.scan();
+    if(!matchesPeer(snapshot.peer,peer))throw new Error('未核验到选定的抖音聊天，操作已停止');
+    this.stats.switches++;
+    const start=this.now(),messages=new Map(),fingerprint=s=>JSON.stringify((s.messages||[]).map(m=>[m.id,m.text,m.awemeId]));let signature=fingerprint(snapshot),changed=start;
+    for(;;){
+      for(const m of snapshot.messages||[])if(!m.conversation||m.conversation===peer.chatKey)messages.set(m.id,m);
+      const elapsed=this.now()-start;if(elapsed>=this.readTimeoutMs||elapsed>=this.settleMs&&this.now()-changed>=this.quietMs)break;
+      await this.wait(Math.min(150,this.readTimeoutMs-elapsed));checkWork();snapshot=await this.adapter.scan();
+      if(!matchesPeer(snapshot.peer,peer))throw Object.assign(new Error('采集消息时会话或账号发生变化，已停止读取'),{code:'CHAT_CHANGED',notSubmitted:true});
+      const next=fingerprint(snapshot);if(next!==signature){signature=next;changed=this.now();}
+    }
+    return {...snapshot,messages:[...messages.values()].sort((a,b)=>(a.created||0)-(b.created||0))};
+  }
+  selection(active){this.selectionUntil=active?this.now()+5*60*1000:0;}
+  get selecting(){return this.selectionUntil>this.now();}
+  open(...args){return this.serial(()=>this.adapter.open(...args),{kind:'open',priority:10});}
+  scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect'});}
+  async wantsRead(peer){
+    if(matchesPeer(this.adapter.lastScan?.peer,peer))return true;
+    if(!this.adapter.inbox)return true;
+    if(!this.inboxCache||this.now()-this.inboxCache.at>=1000){try{this.inboxCache={at:this.now(),value:await this.adapter.inbox()};this.stats.inboxChecks++;}catch{return true;}}
+    const rows=this.inboxCache.value?.entries?.filter(e=>e.ids?.includes(peer.chatKey))||[];
+    if(rows.length!==1||rows[0].unread===null||rows[0].unread===undefined)return true;
+    if(rows[0].unread>0)return true;
+    if(!this.visited.has(peer.chatKey)||this.now()-this.visited.get(peer.chatKey)>=this.reconcileMs)return true;
+    this.stats.skippedIdle++;return false;
+  }
+  scanPeer(peer,{background=false}={}){
+    if(this.closing)return Promise.reject(new Error('浏览器连接正在关闭'));
+    if(this.selecting)return Promise.reject(new Error('正在面板中选择抖音聊天，轮询暂时暂停'));
+    const key=JSON.stringify([peer,background]),shared=this.polls.get(key);if(shared){this.stats.coalesced++;return shared;}
+    // Reading the already selected owner must remain available to /中断 while
+    // a reply awaits confirmation. observeOnly never changes cached UI handles.
+    if(!this.multiple||['send','reaction','acknowledge'].includes(this.active?.kind)&&matchesPeer(this.active.peer,peer)&&matchesPeer(this.adapter.lastScan?.peer,peer))return this.adapter.scan({observeOnly:true});
+    const pending=this.serial(async()=>{if(this.selecting)throw new Error('正在面板中选择抖音聊天，轮询暂时暂停');if(background&&!await this.wantsRead(peer))return null;const scan=await this.select(peer);this.visited.set(peer.chatKey,this.now());return scan;},{kind:'poll',peer});this.polls.set(key,pending);
+    pending.then(()=>this.polls.delete(key),()=>this.polls.delete(key));return pending;
+  }
+  mutate(kind,peer,fn){return this.serial(async()=>{checkWork();if(this.selecting)throw new Error('正在面板中选择聊天，操作暂时暂停');if(this.multiple)await this.select(peer);checkWork();return fn();},{kind,peer,priority:20});}
+  send(peer,...args){return this.mutate('send',peer,()=>this.adapter.send(peer,...args));}
+  react(peer,...args){return this.mutate('reaction',peer,()=>this.adapter.react(peer,...args));}
+  acknowledge(peer,...args){return this.mutate('acknowledge',peer,()=>this.adapter.acknowledge(peer,...args));}
+  async resolveVideo(...args){
+    // Both native adapters resolve media only in their own validated video tab.
+    // Release the chat lease after starting it, while retaining lifecycle cleanup.
+    const {task}=await this.serial(()=>{checkWork();const task=Promise.resolve().then(()=>this.adapter.resolveVideo(...args));this.media.add(task);task.then(()=>this.media.delete(task),()=>this.media.delete(task));return {task};},{kind:'video'});return task;
+  }
   download(...args){return this.adapter.download(...args);}
-  uiDiagnostics(){return this.serial(()=>this.adapter.uiDiagnostics());}
-  composerState(){return this.serial(()=>this.adapter.composerState());}
-  close(){return this.serial(()=>this.adapter.close());}
+  uiDiagnostics(){return this.serial(()=>this.adapter.uiDiagnostics(),{kind:'inspect'});}
+  composerState(){return this.serial(()=>this.adapter.composerState(),{kind:'inspect'});}
+  inbox(){return this.serial(()=>this.adapter.inbox?.()||{entries:[],rows:0},{kind:'inspect'});}
+  close(){if(this.closing)return this.closed;this.closing=true;return this.closed=this.serial(async()=>{await Promise.allSettled([...this.media]);return this.adapter.close();},{kind:'close',priority:-10,allowClosing:true});}
 }

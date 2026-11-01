@@ -73,8 +73,23 @@ jobs:
             dist/SHA256SUMS-macos-arm64.txt
             dist/source-manifest-macos-arm64.json
           if-no-files-found: error
+  sandbox-isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+      - name: Verify actual disposable container boundaries
+        run: node --test test/code-sandbox.test.mjs
+        env:
+          BRIDGE_LIVE_SANDBOX: '1'
+          BRIDGE_SANDBOX_SECRET_SENTINEL: 'must-not-enter-container'
   paired-release:
-    needs: [windows, macos-arm64]
+    needs: [windows, macos-arm64, sandbox-isolation]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1

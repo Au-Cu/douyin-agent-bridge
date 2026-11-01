@@ -40,7 +40,8 @@ export class Preferences{
     if('reasoningEffort'in patch)next.reasoningEffort=effortValue(patch.reasoningEffort);
     if('fastMode'in patch){if(typeof patch.fastMode!=='boolean')throw new Error('开关必须为开或关');next.fastMode=patch.fastMode;}
     await this.resolve(next,{textOnly:true});
-    this.store.saveConfig({chatModel:next.model,chatReasoningEffort:next.reasoningEffort,chatFastMode:next.fastMode});configurePanel(this.store,'chats');return this.store.config;
+    const extra={};for(const [key,target]of [['webSearch','chatWebSearch'],['codeSandbox','chatCodeSandbox']])if(key in patch){if(typeof patch[key]!=='boolean')throw new Error('聊天能力开关无效');extra[target]=patch[key];}
+    this.store.saveConfig({chatModel:next.model,chatReasoningEffort:next.reasoningEffort,chatFastMode:next.fastMode,...extra});configurePanel(this.store,'chats');return this.store.config;
   }
   async applyUpdate(patch){
     const next={...this.store.config};

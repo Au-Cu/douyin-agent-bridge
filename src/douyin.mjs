@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { toPlainChatText,comparableChatText } from './chat-text.mjs';
 import {createHash} from 'node:crypto';
 import {bindScanIdentity} from './chat-identity.mjs';
+import {inspectInbox} from './inbox.mjs';
+import {prepareQuote,inspectQuoteDraft} from './quote-reply.mjs';
 
 // Executed inside the dedicated, locally logged-in browser. No cookies or tokens leave it.
 // Share-card extraction follows the publicly documented React message shape used by
@@ -255,7 +257,7 @@ export class DouyinAdapter {
     }
     throw new Error('未恢复到绑定账号，发送保持暂停');
   }
-  async scan() {
+  async scan({observeOnly=false}={}) {
     if(!this.context)return {peer:null,messages:[],diagnostics:{},loginRequired:true};
     const candidates=this.context.pages().filter(p=>!p.isClosed()&&p.url().startsWith('https://www.douyin.com/chat'));
     const scans=[];
@@ -268,9 +270,7 @@ export class DouyinAdapter {
     const cookies=await this.context.cookies('https://www.douyin.com/'),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
     const marker=identityCookies.length?createHash('sha256').update(identityCookies.join(';')).digest('hex'):'';
     const value=bindScanIdentity(this,raw,marker);
-    if(best){this.page=best.page;this.chatFrame=best.frame;}
-    this.lastScan=value;
-    this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';return value;
+    if(!observeOnly){if(best){this.page=best.page;this.chatFrame=best.frame;}this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
   }
   async uiDiagnostics(){
     if(!this.page)return {opened:false};const frames=[];
@@ -278,7 +278,8 @@ export class DouyinAdapter {
       let host=null;try{if(f!==this.page.mainFrame())host=await(await f.frameElement()).evaluate(e=>{const r=e.getBoundingClientRect(),top=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {visible:!!e.getClientRects().length&&r.width>0&&r.height>0,hit:top===e||e.contains(top),className:String(e.className),parentClass:String(e.parentElement?.className||'').slice(0,100)};});frames.push({main:f===this.page.mainFrame(),host,...await f.evaluate(inspectChatSurface)});}catch{}
     }return {opened:true,frames};
   }
-  async send(owner,text,{plainText=false}={}) {
+  async inbox(){if(!this.chatFrame)return {entries:[],rows:0};return this.chatFrame.evaluate(inspectInbox);}
+  async send(owner,text,{plainText=false,replyToMessageId=''}={}) {
     checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');
     this.sending=true;let submitted=false,editor,surface,body;
@@ -290,10 +291,12 @@ export class DouyinAdapter {
       if(!composer)throw new Error('未找到私信输入框，抖音页面可能已改版');
       editor=surface.locator('[contenteditable="true"],textarea').nth(composer.index);
       if(composer.text)throw new Error('私信输入框有未发送的草稿，请先处理草稿');
+      if(replyToMessageId)await prepareQuote({evaluate:(fn,arg)=>surface.evaluate(fn,arg),wait:ms=>new Promise(r=>setTimeout(r,ms)),verify:async()=>{checkWork();if(!matchesPeer((await this.scan()).peer,owner))throw new Error('会话已切换，停止准备引用');},openMenu:async()=>{await surface.evaluate(captureMessageMenu);await surface.locator('[data-bridge-quote-source="true"]').last().click({button:'right',timeout:3000});},choose:async token=>{checkWork();await surface.locator('[data-bridge-quote-action="'+token+'"]').click({timeout:3000});},diagnostic:v=>{this.lastQuoteDiagnostic=v;}},replyToMessageId);
       body=plainText?String(text).trim():toPlainChatText(text);
       checkWork();await editor.click();checkWork();await this.page.keyboard.insertText(body);
       scan=await this.scan();
       if(!matchesPeer(scan.peer,owner))throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
+      if(replyToMessageId){const quote=await surface.evaluate(inspectQuoteDraft);if(quote.ids.length!==1||quote.ids[0]!==replyToMessageId)throw new Error('引用草稿已变化，已取消发送');}
       const before=new Set(scan.messages.map(m=>m.id));
       checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;
       submitted=true;
@@ -302,11 +305,11 @@ export class DouyinAdapter {
         await new Promise(r=>setTimeout(r,400));const after=await this.scan();
         if(!matchesPeer(after.peer,owner))throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');
         const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&comparableChatText(m.text)===comparableChatText(body));
-        if(matches.length===1)return {messageId:matches[0].id};
+        if(matches.length===1){if(replyToMessageId&&matches[0].replyTo?.messageId!==replyToMessageId)throw new UncertainDelivery('消息已发出，但未能核验它引用了指定原消息；不会自动重发');return {messageId:matches[0].id};}
         if(matches.length>1)throw new UncertainDelivery('检测到多条相同回复，无法确认本次发送的消息；不会自动重发');
       }
       throw new UncertainDelivery('已按下发送，但未能确认回执；不会自动重复发送');
-    } catch(e){if(submitted)e.uncertain=true;else if(workSignal()?.aborted&&editor&&surface&&body){try{const scan=await this.scan(),draft=(await surface.evaluate(inspectComposers))[0];if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid&&draft?.text===body)await editor.fill('');}catch{}}throw e;} finally {this.sending=false;}
+    } catch(e){if(submitted)e.uncertain=true;else if(workSignal()?.aborted&&editor&&surface&&body){try{const scan=await this.scan(),draft=(await surface.evaluate(inspectComposers))[0];if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid&&draft?.text===body)await editor.fill('');}catch{}}throw e;} finally {if(replyToMessageId&&surface)await surface.evaluate(()=>{document.removeEventListener('contextmenu',globalThis.__douyinBridgeContextListener,true);delete globalThis.__douyinBridgeContextListener;document.querySelectorAll('[data-bridge-quote-source],[data-bridge-quote-action]').forEach(e=>{e.removeAttribute('data-bridge-quote-source');e.removeAttribute('data-bridge-quote-action');});}).catch(()=>{});this.sending=false;}
   }
   async react(owner,messageId,{probeOnly=false,emojis=['👌','👀','👍']}={}) {
     checkWork();

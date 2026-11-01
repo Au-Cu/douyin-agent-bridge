@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0
+
+- Avoid routine chat switching when the exact native sidebar unread count is zero. Keep a one-minute reconciliation, stable message collection after navigation, coalesced polling and complete leases through sending/reaction verification. Independent video tabs no longer block the inbox.
+- Quote the triggering native group message in every reply segment, verify both the composer reference and the confirmed outgoing pointer, and never silently send an unanchored or duplicate uncertain reply.
+- Preserve isolated chat privileges while allowing public web search, a bounded arithmetic parser and clock. Add optional disposable Python containers with no host mounts, network, credentials, Docker socket or desktop; enforce image verification and resource/time limits without host fallback.
+- Keep personal Agent and chat model choices independent. Improve the chat prompt's completeness and factual tool use; limited capabilities do not change the selected model or reasoning effort.
+- Add actual CLI allowlist/injection tests, delayed-DOM and inbox scheduling tests, native quote fixtures for both adapters, and actual Linux container isolation checks alongside paired Windows/macOS ARM64 releases.
+
 ## 0.10.0
 
 - Add opt-in single/group reply-only chats alongside the existing bound-user personal Agent. Configure each observed chat in the local console; groups require an exact native mention of the verified assistant UID.
