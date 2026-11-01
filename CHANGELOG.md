@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0
+
+- Share the desktop app's actual app-server writer for authorized project dispatch through a local authenticated RPC broker. Translate request and callback IDs, route desktop tools to the desktop, preserve native approvals, reconcile exact turn results and restrict interruption to bridge-owned turns. Keep ordinary chat isolated.
+- Add Windows x64/ARM64 and Mac ARM64 setup/launch entry points. Desktop cutover requires an explicit user restart; never force-close another chat, delete writer locks or replay uncertain work. Recover only proven unsubmitted, non-archived, non-interrupted blocked tasks.
+- Repair stale isolated-chat authentication after account switches or prior quota errors. Import external tokens into memory on every reconnect, preserve account boundaries for running turns, distinguish login and quota failures, and never replay old failed replies automatically.
+- Retry the reproduced Windows first-navigation failure when reopening the Douyin window, preserving the existing profile and surfacing the window. Keep the shared Windows source package for x64/ARM64; no unsupported architecture diagnosis.
+- Verify broker ownership, callback translation, one-time approvals, disconnection fences, platform launcher stdio/Unicode/exit handling, and actual authenticated shared-writer/interrupt behavior in disposable self-check chats.
+
 ## 0.11.0
 
 - Avoid routine chat switching when the exact native sidebar unread count is zero. Keep a one-minute reconciliation, stable message collection after navigation, coalesced polling and complete leases through sending/reaction verification. Independent video tabs no longer block the inbox.

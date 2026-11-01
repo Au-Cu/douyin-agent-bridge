@@ -1,8 +1,8 @@
 import {operationContext,checkWork,interruptedError,raceWork} from './execution.mjs';
 const unfinished=new Set(['queued','running','sending','waiting','blocked','uncertain','failed_delivery','stopping']);
 export class Interruptions{
-  constructor({store,codex,progress}){
-    Object.assign(this,{store,codex,progress});this.scopes=new Map();this.requests=new Map();
+  constructor({store,codex,taskCodex=codex,progress}){
+    Object.assign(this,{store,codex,taskCodex,progress});this.scopes=new Map();this.requests=new Map();
     store.db.prepare("UPDATE interruptions SET state='uncertain',error='中断期间程序重启，停止结果需核实' WHERE state='stopping'").run();
     for(const r of store.db.prepare('SELECT * FROM interruptions').all())store.db.prepare('UPDATE operations SET status=?,phase=?,ended=1,outcome=? WHERE id=?').run(r.state==='stopped'?'cancelled':'uncertain',r.state==='stopped'?'用户已中断':'中断结果需要核实','cancelled',r.operation_id);
   }
@@ -43,7 +43,7 @@ export class Interruptions{
     // Reconcile an explicitly selected persisted turn only, never another turn
     // that happens to be running in the same target chat.
     const owned=new Map();if(op.submitted&&op.thread&&op.turn)owned.set(op.thread+':'+op.turn,{thread:op.thread,turn:op.turn});for(const t of tasks)if(t.turn&&['running','uncertain'].includes(t.status))owned.set(t.thread+':'+t.turn,{thread:t.thread,turn:t.turn});
-    for(const t of owned.values())if(![...(scope?.nativeRuns||[])].some(r=>r.threadId===t.thread&&r.turnId===t.turn))checks.push(this.codex.interrupt(t.thread,{turnId:t.turn,verifyOwnership:true}).then(result=>({...result,kind:'codex',external:true})));
+    for(const t of owned.values())if(![...(scope?.nativeRuns||[])].some(r=>r.threadId===t.thread&&r.turnId===t.turn)){const executor=tasks.some(task=>task.thread===t.thread&&task.turn===t.turn)?this.taskCodex:this.codex;checks.push(executor.interrupt(t.thread,{turnId:t.turn,verifyOwnership:true}).then(result=>({...result,kind:'codex',external:true})));}
     if(op.submitted&&!owned.size&&!scope?.nativeRuns?.size)checks.push(Promise.resolve({confirmed:false,error:'没有可核实的 Codex 回合编号'}));
     const results=await Promise.all(checks.map(p=>Promise.resolve(p).catch(e=>({confirmed:false,error:e.message}))));
     if(scope)scope.lastStopResults=results;

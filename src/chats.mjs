@@ -5,6 +5,14 @@ import {progressEmoji} from './progress.mjs';
 import {operationContext} from './execution.mjs';
 import {matchesPeer} from './douyin.mjs';
 
+export function chatFailureText(error,{model}={}){
+  const suffix=model?'（模型：'+model+'）':'';
+  if(error.authKind==='quota')return '普通聊天连接报告额度限制'+suffix+'；可在面板重新连接。新消息会重新核验登录，已提交任务不会自动重跑';
+  if(error.authKind==='login')return '普通聊天连接认证失效'+suffix+'；新消息会重新读取本机登录，已提交任务不会自动重跑';
+  if(error.authKind==='pending')return '本机登录已变更，正在等待当前任务结束后重新连接'+suffix;
+  return String(error.message).slice(0,400);
+}
+
 export const sameChat=matchesPeer;
 export function acceptsChatMessage(message,chat,since){
   return chat.enabled&&chat.mode==='chat'&&message.direction==='in'&&message.conversation===chat.chatKey&&message.sender&&message.sender!==chat.selfUid&&message.created>0&&message.created>=Math.max(since,chat.enabledAt||0,chat.replyModeChangedAt||0)-1500&&['text','video'].includes(message.kind)&&(chat.type==='group'?!!chat.selfUid&&(chat.groupReplyMode==='all'||Array.isArray(message.mentionedUids)&&message.mentionedUids.includes(chat.selfUid)):message.sender===chat.peerUid);
@@ -105,11 +113,11 @@ export class Chats {
     const chat=this.get(row.peer);return {conversation:chat?.type==='group'?(chat.groupReplyMode==='all'?'群聊中的新消息，已由本机用户配置为回复所有新消息':'群聊中直接 @ 助手的交流'):'普通单聊',recent:history,...(quoted?{quotedFeedback:quoted}:{}),message:body,...(body.kind==='video'?{attachmentNote:'只收到视频分享卡片的标题，没有观看画面或口播。不得冒充已看过视频。此模式无下载或视频分析工具。'}:{})};
   }
   async run(row,chat){
-    this.set(row.id,'preparing');let submitted=false;
-    try{const config=await this.preferences.chatWork();const result=await this.sandbox.reply(this.context(row),{...config,signal:this.controller(chat).signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
+    this.set(row.id,'preparing');let submitted=false,config;
+    try{config=await this.preferences.chatWork();const result=await this.sandbox.reply(this.context(row),{...config,signal:this.controller(chat).signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
       this.guard({chatbot:true,chatRevision:row.revision},row.peer);const text=toPlainChatText(result.text).slice(0,10000),parts=splitReply(text),group=randomUUID();if(!parts.length)throw new Error('模型没有返回文字');
       this.store.db.exec('BEGIN IMMEDIATE');try{this.set(row.id,'replying',text);for(const [i,part] of parts.entries())this.store.enqueueReply(row.peer,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{payload:{chatbot:true,botId:row.id,chatRevision:row.revision,plainText:true,...(chat.type==='group'?{replyToMessageId:JSON.parse(row.body).id}:{}),group,segment:i+1,totalSegments:parts.length},dedupe:'bot-result:'+row.id+':'+i});this.store.db.exec('COMMIT');}catch(e){this.store.db.exec('ROLLBACK');throw e;}
-    }catch(e){const valid=this.get(row.peer)?.revision===row.revision;this.set(row.id,!valid?'cancelled':submitted&&e.uncertain?'uncertain':'failed',!valid?'聊天已停用，未交付本轮结果':submitted&&e.uncertain?'暂时无法确认运行状态，不会自动重跑':e.authKind?'本机 Codex 登录或额度暂不可用；处理结果保留在面板':String(e.message).slice(0,400));}
+    }catch(e){const valid=this.get(row.peer)?.revision===row.revision;this.set(row.id,!valid?'cancelled':submitted&&e.uncertain?'uncertain':'failed',!valid?'聊天已停用，未交付本轮结果':submitted&&e.uncertain?'暂时无法确认运行状态，不会自动重跑':chatFailureText(e,config));}
   }
   reconcile(){for(const row of this.store.db.prepare("SELECT * FROM bot_messages WHERE status IN ('replying','delivery_uncertain')").all()){const sent=this.store.db.prepare("SELECT status FROM outbox WHERE kind='text' AND json_extract(payload,'$.botId')=?").all(row.id);if(sent.length&&sent.every(s=>s.status==='sent')){this.set(row.id,'done');this.receipt(row,'done');}else if(sent.some(s=>s.status==='uncertain'))this.set(row.id,'delivery_uncertain');else if(sent.some(s=>s.status==='pending')&&row.status==='delivery_uncertain')this.set(row.id,'replying');}}
   stop(){for(const c of this.controllers.values())c.abort();this.sandbox.close();}

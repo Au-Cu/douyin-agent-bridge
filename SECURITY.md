@@ -1,5 +1,7 @@
 # Private state and vulnerability reports
 
+Project dispatch in 0.12.0 uses the desktop's shared app-server through a local named pipe or Unix socket, guarded by a random capability in private `desktop-shared/` state. Never publish that directory. Request and callback IDs are translated per connection; native tools and approvals remain with the desktop. Interruption requires the exact bridge-owned turn. Disconnecting the bridge never terminates another desktop chat. Desktop cutover is manual; the launcher refuses to replace a running desktop. Ordinary chat remains on its separate restricted process and has no access to the shared transport.
+
 Report vulnerabilities through GitHub private vulnerability reporting when available. Otherwise describe the affected component in an issue without credentials or private account data.
 
 Never attach data/, browser profiles, cookies, Codex auth.json, signed media URLs, chat databases, private videos or complete diagnostic bundles to issues or pull requests. Use synthetic messages for reproductions.

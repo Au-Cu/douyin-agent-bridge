@@ -32,6 +32,7 @@
 - New supplement operation labels use the root task number and a durable suffix, such as 1-1 and 1-2; do not renumber historical tasks or consume another root number. Task commands must accept those labels.
 - /忽略 and /结束忽略 are silent gates for subsequent bound-user input. While ignoring, accept only the exact ending command; do not infer, dispatch, react or retain ignored content in model history. Persist only minimal ignored-message metadata for deduplication and retain the mode across restarts.
 - Keep the independent checker outside execution locks. Bound retries for known unsubmitted writer conflicts; never replay submitted uncertain execution.
+- Project target dispatch must use the desktop shared app-server, including exact turn results, native tools, approvals and owned-turn interruption. Never fall back to an independent writer or remove locks. Shared transport credentials stay in private data; ordinary chats must never use this transport. Closing a bridge client only closes its own connection. Desktop cutover is user controlled.
 - Use 用户 throughout Chinese interfaces, rules, documentation and outgoing replies.
 - Persist settings before acknowledging changes; use FULL SQLite durability, atomic recovery mirrors and consistent snapshots. Keep one writer per data directory. Migrations retain the original source, rebase evidence paths and never overwrite an existing account or memory.
 - Before publication run npm run release:check and npm run release:build. Only the allowlisted files in release-manifest.json may enter the source archive.

@@ -101,9 +101,10 @@ async function refresh(){
     $('browserInstructions').textContent=r.browserEngine==='safari'?'使用 Safari 登录助手账号；需要时先切换到助手专用的 Safari 个人资料，再与主号互关并发送私信。':'首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。';
     $('liveBadge').textContent=state.config.enabled?'正在监听':'尚未监听';$('liveBadge').className='badge'+(state.config.enabled?' active':'');
     if(state.config.ignoreMessages)$('liveBadge').textContent='忽略新消息 · /结束忽略 恢复';
-    $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接',blocked:'被弹层遮挡'})[r.browser]||r.browser;
+    $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接',blocked:'被弹层遮挡',open_error:'打开失败，可重试'})[r.browser]||r.browser;
     $('ownerStatus').textContent=state.config.owner?'已绑定：'+state.config.owner.displayName:'尚未绑定用户会话';
     $('codexStatus').textContent=r.auth?.reconnectPending?'等待切换连接':r.auth?.status==='login'?'请重新登录':r.auth?.status==='quota'?'额度暂不可用':r.codex?'已连接':'等待连接';$('coordinatorStatus').textContent=state.config.coordinator?'当前需求对话已就绪':state.config.uiConfigured?.setup?'收到新需求时创建对话':'尚未建立调度聊天';
+    if(r.taskCodex){$('coordinatorStatus').textContent+=' · 项目派发'+(r.taskCodex.ready?'已连接':'等待共享连接');}
     $('asrStatus').textContent=r.asrReady?'已就绪':r.asrInstalling?'正在安装':'尚未安装';$('setupAsr').disabled=r.asrInstalling||r.asrReady;
     $('createCoordinator').disabled=!!state.config.coordinator;
     $('knowledgeCount').textContent=state.counts.knowledge;$('taskCount').textContent='执行中 '+state.counts.runningTasks+' · 排队 '+state.counts.queuedTasks;
@@ -127,6 +128,9 @@ async function refresh(){
     const approvals=await api('approvals');$('approvalList').innerHTML=approvals.map(a=>`<div class="approval"><strong>待确认操作 #${escape(a.id)}</strong><pre>${escape(a.description)}</pre><button data-approve="${escape(a.id)}">同意本次</button> <button data-decline="${escape(a.id)}">拒绝</button></div>`).join('');
   }catch(e){notice(e.message,true);}finally{busy=false;if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
 }
+action('prepareDesktopShared',async()=>{const r=await api('desktop/prepare',{});$('desktopSharedState').textContent='入口已准备。先结束桌面中的工作并完全退出，再运行：'+r.launcher+'。之后点击检查共享连接。';notice('共享入口已准备，当前聊天和任务未被中断。');});
+action('recoverDesktopTasks',async()=>{const r=await api('desktop/recover',{});notice('已恢复 '+r.recovered+' 项可证明未提交的写入受阻任务；结果不明、归档及中断的任务保持原状态。');});
+action('checkDesktopShared',async()=>{const r=await api('desktop/check',{});$('desktopSharedState').textContent=r.message;notice(r.message,!r.ready);});
 action('openBrowser',async()=>{notice('正在恢复已保存的抖音登录态和绑定会话。只有平台要求重新验证时才需登录。');await api('browser/open',{});});
 action('selectAiChat',async()=>{await api('ai-chats/select',{});observedAiChat=null;$('enableAiChat').disabled=true;$('observedChat').textContent='在抖音窗口打开目标聊天后，点击读取。';notice('轮询与发送已暂时暂停，请在抖音窗口选择需要配置的单聊或群聊。');});
 action('finishAiSelection',async()=>{await api('ai-chats/cancel',{});observedAiChat=null;notice('已恢复聊天轮询。');});

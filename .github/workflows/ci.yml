@@ -65,6 +65,7 @@ jobs:
           /usr/bin/ditto -x -k dist/*-macos-arm64-source.zip "$RUNNER_TEMP/mac-source-check"
           test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/start-mac.command"
           test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/install-mac.command"
+          test -x "$RUNNER_TEMP/mac-source-check/douyin-codex-bridge-$(node -p "require('./package.json').version")/start-shared-codex-mac.command"
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: macos-arm64-source

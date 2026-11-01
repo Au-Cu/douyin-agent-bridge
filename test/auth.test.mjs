@@ -71,6 +71,11 @@ test('关闭时正在检查登录文件也不能在关闭后启动新的子进�
   await assert.rejects(h.client.connect(),e=>e.code==='CODEX_CLIENT_CLOSED');assert.equal(h.client.generation,0);
 });
 
+test('隔离聊天每次重连先重新导入内存登录，绝不依赖或写入 auth 文件',async()=>{
+  const h=setup(),c=new CodexClient({codexHome:h.client.codexHome,executable:process.execPath,spawnArgs:[fileURLToPath(new URL('./fixture-auth-rpc.mjs',import.meta.url))],restricted:true,authTokensProvider:async()=>({accessToken:'FAKE_ACCESS',chatgptAccountId:'fake-account'})});
+  try{await c.connect();await c.reconnect();assert.equal(c.authState.status,'ready');const log=h.logs();for(const launch of [1,2]){const rows=log.filter(r=>r.launch===launch);assert.ok(rows.findIndex(r=>r.method==='account/login/start')<rows.findIndex(r=>r.method==='account/read'));}assert.deepEqual(JSON.parse(readFileSync(join(c.codexHome,'auth.json'),'utf8')),{account:'first'});}finally{h.client.close();c.close();}
+});
+
 test('写入锁按聊天隔离：A 运行时 B 可完成，同一 A 不能重入，也不重复恢复本机已加载聊天',async()=>{
   const h=setup();try{let started;const ready=new Promise(r=>started=r),a=h.client.run('chat-A',input('hold'),{onStarted:started});await ready;
     await assert.rejects(h.client.run('chat-A',input('duplicate')),e=>e.code==='THREAD_BUSY'&&e.notSubmitted===true);

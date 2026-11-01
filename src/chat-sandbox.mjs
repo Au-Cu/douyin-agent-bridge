@@ -35,13 +35,14 @@ export class ChatSandbox {
     if(this.preparing)return this.preparing;
     this.preparing=this._prepare().finally(()=>{this.preparing=null;});return this.preparing;
   }
+  invalidate(){this.fingerprint='';}
   async _prepare(){
     const installed=JSON.parse(await readFile(new URL('../node_modules/@openai/codex/package.json',import.meta.url),'utf8'));if(installed.version!=='0.166.0')throw new Error('普通聊天仅支持已验证的 Codex CLI 0.166.0，请运行 npm ci 恢复固定版本');
     await this.codex.ensureAuthenticated();
     let models;try{models=JSON.parse(await readFile(join(this.codexHome,'models_cache.json'),'utf8')).models;}catch{throw new Error('本机 Codex 模型目录不可读取，普通聊天保持关闭；请刷新模型名单后重试');}
     const caps=this.capabilities(),permissions={webSearch:caps.webSearch===true,publicTools:caps.publicTools===true,codeSandbox:caps.codeSandbox===true};if(permissions.codeSandbox&&!(await this.codeSandbox?.check())?.ready)throw new Error('代码沙箱尚未就绪，未向模型开放代码执行');
     const tools=[...(permissions.publicTools?publicChatTools:[]),...(permissions.codeSandbox?[sandboxTool]:[])],catalog=chatCatalog(models),folder=join(this.root,'chat-only'),cwd=join(folder,'empty-workspace'),path=join(folder,'models.json'),config=chatConfig({},path,permissions),fingerprint=createHash('sha256').update(JSON.stringify({catalog,config,permissions,revision:await credentialRevision(this.codexHome)})).digest('hex');
-    if(this.client&&!this.client.closed&&this.fingerprint===fingerprint)return this.client;
+    if(this.client&&!this.client.closed&&this.client.ready&&this.client.authState.status==='ready'&&!this.client.authState.reconnectPending&&this.fingerprint===fingerprint)return this.client;
     if(this.active){await new Promise(resolve=>this.idle.push(resolve));if(this.closed)throw new Error('普通聊天连接已关闭');return this._prepare();}
     this.client?.close();await mkdir(cwd,{recursive:true});await writeFile(path,JSON.stringify(catalog),{mode:0o600});
     if(this.closed)throw new Error('普通聊天连接已关闭');
@@ -50,10 +51,11 @@ export class ChatSandbox {
     // Only the current access token travels over local stdio, in memory. No
     // refresh token or auth file is copied, linked, logged or persisted here.
     const isolatedHome=join(folder,'codex-home');await mkdir(isolatedHome,{recursive:true});
-    const access=async()=>{let a;try{a=JSON.parse(await readFile(join(this.codexHome,'auth.json'),'utf8'));}catch{throw new Error('无法读取本机 Codex 登录，请重新登录后重试');}const t=a.tokens;if(!t?.access_token||!t.account_id)throw new Error('此登录暂不支持隔离聊天，请使用本机 ChatGPT 登录；无需 API key');return {accessToken:t.access_token,chatgptAccountId:t.account_id};};
+    let expectedAccount;
+    const access=async({previousAccountId}={})=>{let a;try{a=JSON.parse(await readFile(join(this.codexHome,'auth.json'),'utf8'));}catch{throw new Error('无法读取本机 Codex 登录，请重新登录后重试');}const t=a.tokens;if(!t?.access_token||!t.account_id)throw new Error('此登录暂不支持隔离聊天，请使用本机 ChatGPT 登录；无需 API key');if(expectedAccount&&t.account_id!==expectedAccount||previousAccountId&&t.account_id!==previousAccountId)throw new Error('本机登录已变更，当前聊天不会跨账号续跑，请发送新消息重试');expectedAccount=t.account_id;let plan;try{const claims=JSON.parse(Buffer.from(t.access_token.split('.')[1],'base64url').toString('utf8'));plan=claims['https://api.openai.com/auth']?.chatgpt_plan_type;}catch{}return {accessToken:t.access_token,chatgptAccountId:t.account_id,...(typeof plan==='string'?{chatgptPlanType:plan}:{})};};
     if(this.closed)throw new Error('普通聊天连接已关闭');const client=this.starting=new this.Client({executable:'codex',cwd,codexHome:isolatedHome,spawnArgs:chatArgs(config),restricted:true,log:this.log,authTokensProvider:access,allowedChatTools:tools.map(t=>t.name),allowPublicWeb:permissions.webSearch});
     try{
-      await client.connect();await client.request('account/login/start',{type:'chatgptAuthTokens',...await access()});const account=await client.request('account/read',{refreshToken:false});if(account.account?.type!=='chatgpt')throw new Error('隔离聊天未能核验本机 ChatGPT 登录');client.auth={status:'ready',message:'共享本机 Codex 登录，权限已隔离'};
+      await client.connect();const account=await client.request('account/read',{refreshToken:false});if(account.account?.type!=='chatgpt')throw new Error('隔离聊天未能核验本机 ChatGPT 登录');client.auth={status:'ready',message:'共享本机 Codex 登录，权限已隔离'};
       const effective=(await client.request('config/read',{includeLayers:false})).config||{};
       if(effective.features?.shell_tool!==false||effective.web_search!==config.web_search||Object.values(effective.mcp_servers||{}).some(s=>s.enabled!==false)||effective.features?.hooks!==false||effective.features?.plugins!==false||effective.model_catalog_json!==path)throw new Error('普通聊天权限配置未通过核验，已停止启用');
     }catch(e){client.close();throw e;}

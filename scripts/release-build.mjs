@@ -23,7 +23,7 @@ try {
 } finally { $zip.Dispose() }
 `;
 const powershell=join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-if(platform==='macos-arm64')for(const name of ['install-mac.command','start-mac.command','stop-mac.command'])await chmod(join(root,name),0o755);
+if(platform==='macos-arm64')for(const name of ['install-mac.command','start-mac.command','stop-mac.command','start-shared-codex-mac.command'])await chmod(join(root,name),0o755);
 await new Promise((resolve,reject)=>{const p=platform==='windows'?spawn(powershell,['-NoProfile','-NonInteractive','-Command',command],{env:{...process.env,BRIDGE_BUILD_SOURCE:stage,BRIDGE_BUILD_OUTPUT:temporary},windowsHide:true,stdio:'inherit'}):spawn('/usr/bin/ditto',['-c','-k','--keepParent',root,temporary],{stdio:'inherit'});p.on('error',reject);p.on('exit',c=>c===0?resolve():reject(new Error('ZIP creation failed, exit code '+c)));});
 await rename(temporary,archive);
 const hash=createHash('sha256');for await(const b of createReadStream(archive))hash.update(b);const digest=hash.digest('hex');
