@@ -232,7 +232,7 @@ Mac 使用普通 Safari 窗口及其当前个人资料的登录状态，而非�
 
 Mac 使用 `start-mac.command` 和 `stop-mac.command`；终端中可运行 `node scripts/mac-launcher.mjs start --port 39362` 或 `node scripts/mac-launcher.mjs stop`。Mac 默认数据目录为 `~/.local/share/douyin-codex-bridge/data`；Safari 的登录数据由 Safari 自己管理，不包含在桥接快照中。Mac 启停同样会核验数据目录，避免误停其他资料实例。
 
-从 0.5.0 起，Windows 默认使用固定目录 `%LOCALAPPDATA%\DouyinCodexBridge\data`。它与源码、ZIP 解压位置和“启动助手.cmd”所在目录分开，因此更新代码、换启动入口、退出和重启不会换成一套空资料。面板“数据与恢复”显示实际位置。旧版首次升级会在新目录没有账号或记忆时迁移当前副本的 `data/`，保留旧目录，并修正视频与视觉证据的路径；请先停止旧程序。若有多个旧目录，应先选择包含完整资料的一份迁移，不自动覆盖已存在的记忆。
+从 0.12.1 起，Windows 默认使用固定目录 `%USERPROFILE%\.douyin-codex-bridge\data`，避开打包应用对 AppData 的文件重定向。桌面 Codex 内启动和双击 CMD 启动读取同一个位置，与源码或解压位置无关。面板“数据与恢复”显示实际路径。新目录为空时，优先发现旧 `%LOCALAPPDATA%\DouyinCodexBridge\data` 及 Codex 应用私有目录中的原资料；没有这些资料时再迁移当前副本的 `data/`。迁移保留旧目录，复制模型、浏览器资料、需求、知识和共享配置，并重定位证据路径。多套不同的旧资料不会自动合并；先停止旧助手和共享桌面服务，再用 `node scripts/storage.mjs --migrate-from "完整旧数据目录"` 明确选择一套。已有账号或记忆的目标不会被覆盖。
 
 设置和记录即时写入采用 FULL 同步的 SQLite；配置另有原子写入的 JSON 镜像与上次有效副本。程序启动、正常停止和运行中每 30 分钟生成状态快照，保留最近 32 份，也可点“备份配置与记录”。快照包含配置、需求、学习索引和任务记录；原片和画面保存在固定目录内，Windows 登录资料也在其中，Mac 登录资料由 Safari 管理。需要完整离线备份时，正常停止后复制整个固定数据目录。数据库损坏时停止启动，不用空库替代，也不静默回滚到旧快照重放任务。
 

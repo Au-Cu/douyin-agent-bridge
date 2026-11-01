@@ -1,4 +1,4 @@
-import {readFile,writeFile,mkdir,chmod,lstat} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,chmod,lstat,realpath} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import {join,dirname,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -18,10 +18,10 @@ async function installedDesktop(){
 }
 export async function prepareDesktopShared(root,{original=process.env.CODEX_APP_RUNTIME_CLI_PATH,app}={}){
   const installed=await installedDesktop();original||=installed.original;app||=installed.app;
-  root=resolve(root);const folder=dirname(sharedConfigFile(root));await mkdir(folder,{recursive:true,mode:0o700});
+  root=resolve(root);let folder=dirname(sharedConfigFile(root));await mkdir(folder,{recursive:true,mode:0o700});folder=await realpath(folder);root=dirname(folder);
   let config;try{config=JSON.parse(await readFile(sharedConfigFile(root),'utf8'));}catch(e){if(e.code!=='ENOENT')throw new Error('已有桌面连接配置损坏，已保留原文件');}
   if(!original||config?.wrapper&&resolve(original)===resolve(config.wrapper))original=config?.original;
-  if(!original||!existsSync(original))throw new Error('请在 Codex 中运行一次 npm run setup:desktop，或通过 --codex 指定桌面自带 Codex 可执行文件。');original=resolve(original);
+  if(!original||!existsSync(original))throw new Error('请在 Codex 中运行一次 npm run setup:desktop，或通过 --codex 指定桌面自带 Codex 可执行文件。');original=await realpath(original);
   const key=createHash('sha256').update(resolve(root)).digest('hex').slice(0,18),socketFolder=process.platform==='win32'?null:join('/tmp','douyin-codex-'+(process.getuid?.()??0)+'-'+key);
   if(socketFolder){await mkdir(socketFolder,{recursive:true,mode:0o700});const s=await lstat(socketFolder);if(s.uid!==process.getuid()||!s.isDirectory()||s.isSymbolicLink())throw new Error('本机共享通信目录不属于当前用户');await chmod(socketFolder,0o700);}
   const endpoint=process.platform==='win32'?'\\\\.\\pipe\\douyin-codex-'+key:join(socketFolder,'rpc.sock');

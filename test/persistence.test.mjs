@@ -3,7 +3,7 @@ import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,existsSync,statSync,ren
 import {join,resolve} from 'node:path';import {fileURLToPath} from 'node:url';import {fork} from 'node:child_process';import {once} from 'node:events';
 import {DatabaseSync} from 'node:sqlite';
 import {Store} from '../src/store.mjs';import {Needs} from '../src/needs.mjs';import {BridgeEngine} from '../src/engine.mjs';
-import {resolveDataRoot,migrateData,prepareDataRoot} from '../src/data-root.mjs';
+import {resolveDataRoot,migrateData,prepareDataRoot,windowsLegacyData} from '../src/data-root.mjs';
 import {createHash} from 'node:crypto';import {VisualAnalyzer} from '../src/visual.mjs';
 const base=fileURLToPath(new URL('../data/test-runs/',import.meta.url));mkdirSync(base,{recursive:true});const temp=()=>mkdtempSync(join(base,'persistence-'));
 
@@ -24,11 +24,17 @@ test('重复启动同一数据目录先拒绝，不能把第一个进程正在�
 });
 
 test('固定目录与代码文件夹无关；显式配置仍可隔离多套账号及测试数据',async()=>{
-  const parent=temp(),env={LOCALAPPDATA:parent},a=resolveDataRoot({env,platform:'win32'}),b=resolveDataRoot({env,platform:'win32'});assert.equal(a,b);assert.equal(a,resolve(parent,'DouyinCodexBridge','data'));
+  const parent=temp(),env={LOCALAPPDATA:join(parent,'virtual')},a=resolveDataRoot({env,platform:'win32',home:parent}),b=resolveDataRoot({env:{LOCALAPPDATA:join(parent,'external')},platform:'win32',home:parent});assert.equal(a,b);assert.equal(a,resolve(parent,'.douyin-codex-bridge','data'));
   const isolated=join(parent,'独立资料 空格');assert.equal(resolveDataRoot({env:{...env,BRIDGE_DATA_DIR:isolated}}),resolve(isolated));
   const old=join(parent,'code','data'),legacy=new Store(old);legacy.saveConfig({model:'legacy-model'});legacy.close();
   const selected=await prepareDataRoot(join(parent,'code'),{root:isolated,env:{BRIDGE_DATA_DIR:isolated}});assert.equal(selected,resolve(isolated));assert.equal(existsSync(join(isolated,'bridge.sqlite')),false,'explicit clean profiles do not import another account');
 });
+
+test('Windows discovers packaged legacy state and migrates into one non-virtualized home, preserving model defaults and shared setup',async()=>{
+  const parent=temp(),local=join(parent,'AppData','Local'),source=join(local,'Packages','OpenAI.Codex_fixture','LocalCache','Local','DouyinCodexBridge','data'),old=new Store(source);old.saveConfig({model:'kept-agent',chatModel:'kept-chat',aiChats:[{chatKey:'group',enabled:true}]});old.close();mkdirSync(join(source,'desktop-shared'));writeFileSync(join(source,'desktop-shared','connection.json'),JSON.stringify({version:1,wrapper:join(source,'desktop-shared','wrapper')}));writeFileSync(join(source,'desktop-shared','launcher-paths.txt'),join(source,'desktop-shared','connection.json'));writeFileSync(join(source,'code-sandbox.json'),'{"backend":"fixture"}');
+  assert.equal(await windowsLegacyData({env:{LOCALAPPDATA:local},home:parent}),source);const root=await prepareDataRoot(join(parent,'code'),{env:{LOCALAPPDATA:local},platform:'win32',home:parent});assert.equal(root,join(parent,'.douyin-codex-bridge','data'));assert.ok(existsSync(join(source,'bridge.sqlite')));const next=new Store(root);try{assert.equal(next.config.model,'kept-agent');assert.equal(next.config.chatModel,'kept-chat');assert.equal(next.config.aiChats.length,1);assert.equal(JSON.parse(readFileSync(join(root,'desktop-shared','connection.json'),'utf8')).wrapper,join(root,'desktop-shared','wrapper'));assert.equal(readFileSync(join(root,'desktop-shared','launcher-paths.txt'),'utf8'),join(root,'desktop-shared','connection.json'));assert.equal(JSON.parse(readFileSync(join(root,'code-sandbox.json'),'utf8')).backend,'fixture');}finally{next.close();}
+});
+test('two distinct legacy databases are preserved and never silently merged or replaced by an empty new profile',async()=>{const parent=temp(),local=join(parent,'local'),a=join(local,'DouyinCodexBridge','data'),b=join(local,'Packages','OpenAI.Codex_fixture','LocalCache','Local','DouyinCodexBridge','data');for(const [root,model]of [[a,'first'],[b,'second']]){const s=new Store(root);s.saveConfig({model});s.close();}await assert.rejects(prepareDataRoot(join(parent,'code'),{env:{LOCALAPPDATA:local},platform:'win32',home:parent}),/多套不同的旧资料/);assert.equal(existsSync(join(parent,'.douyin-codex-bridge','data','bridge.sqlite')),false);assert.ok(existsSync(join(a,'bridge.sqlite'))&&existsSync(join(b,'bridge.sqlite')));});
 
 test('迁移保留旧数据并重定位原视频、时间戳视觉记录、需求文件和排队任务中的路径',async()=>{
   const parent=temp(),source=join(parent,'旧副本','data'),target=join(parent,'固定资料'),s=new Store(source),folder=join(source,'knowledge','video');mkdirSync(folder,{recursive:true});
