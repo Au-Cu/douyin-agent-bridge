@@ -69,6 +69,7 @@ const server=http.createServer(async(req,res)=>{
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
       if(req.method==='GET'&&path==='/api/browser/reaction-diagnostics')return json(res,{lastReceipt:adapter.lastReceipt||null,menu:adapter.lastReactionDiagnostic||null});
       if(req.method==='GET'&&path==='/api/browser/ui-diagnostics')return json(res,await adapter.uiDiagnostics());
+      if(req.method==='GET'&&path==='/api/browser/selection-diagnostics')return json(res,adapter.lastSelectionDiagnostic||null);
       const visualMatch=path.match(/^\/api\/knowledge\/([^/]+)\/visual$/);
       const sheetMatch=path.match(/^\/api\/knowledge\/([^/]+)\/sheet\/(\d+)$/);
       if(req.method==='GET'&&(visualMatch||sheetMatch)){
@@ -89,6 +90,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/ai-chats/select'){chats.beginSelection();return json(res,{ok:true});}
       if(path==='/api/ai-chats/cancel'){chats.endSelection();return json(res,{ok:true});}
       if(path==='/api/ai-chats/current')return json(res,await chats.observe());
+      if(path==='/api/ai-chats/recover')return json(res,await chats.recover(body.chatKey));
       if(path==='/api/ai-chats/save'){
         if(body.enabled===true&&body.mode==='chat')await chatSandbox.prepare();
         const saved=chats.configure(body);configurePanel(store,'chats');return json(res,saved);
@@ -105,6 +107,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/storage/backup')return json(res,await store.backup());
       if(path==='/api/codex/reconnect')return json(res,await codex.reconnect());
       if(path==='/api/preferences'){await preferences.update(body);let effective=null,effectiveError;try{effective=await preferences.work();}catch(e){effectiveError=e.message;}return json(res,{ok:true,config:store.config,effective,effectiveError});}
+      if(path==='/api/chat-preferences'){await preferences.updateChat(body);return json(res,{ok:true,effective:await preferences.chatWork()});}
       if(path==='/api/needs/new'){const n=await conversations.create(String(body.title||'新需求'));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
       if(path==='/api/needs/switch'){const n=await conversations.switchTo(String(body.id||''));return json(res,{...n,resolvedWaiting:conversations.resolveWaiting(n)});}
       if(path==='/api/shutdown'){

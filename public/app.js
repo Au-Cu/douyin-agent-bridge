@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);let state=null,targets=[],threads=[],dirty=false,busy=false;
-let catalog=null,preferencesDirty=false,observedAiChat=null;
+let catalog=null,preferencesDirty=false,chatPreferencesDirty=false,observedAiChat=null;
 const panelPending=new Set();let refreshAgain=false;
 const archiveButton=(kind,item)=>`<button class="secondary" data-archive-kind="${kind}" data-archive-id="${escape(item.id)}" data-archive-value="${!item.archived}">${item.archived?'恢复显示':'归档'}</button>`+(kind==='task'&&item.kind!=='control'?`<button class="interrupt-button" data-interrupt-task="${escape(item.id)}" aria-label="中断任务 ${item.number||''}" ${item.canInterrupt?'':'disabled'}>中断</button>`:'');
 const chatLink=(url,label='需求对话')=>/^codex:\/\/threads\/[a-f\d-]{36}$/i.test(url||'')?`<a class="chat-link" href="${escape(url)}">Codex · ${escape(label)}</a>`:'';
@@ -11,7 +11,8 @@ document.addEventListener('toggle',e=>{const key=e.target.dataset?.foldKey;if(!k
 function restoreDetails(){for(const detail of document.querySelectorAll('[data-fold-key]'))detail.open=openedDetails.has(detail.dataset.foldKey);}
 function renderAiChats(){
   const data=state.aiChats||{chats:[],messages:[]},owner=state.config.owner;
-  $('chatsSummary').textContent='已启用 '+data.chats.filter(c=>c.enabled).length+' 个聊天'+(data.selecting?' · 正在选择聊天':'');
+  $('chatsSummary').textContent='已启用 '+data.chats.filter(c=>c.enabled).length+' 个聊天 · 聊天模型：'+(state.config.chatModel||'Codex 默认')+(data.selecting?' · 正在选择聊天':'');
+  $('chatEffectiveModel').textContent='已保存的普通聊天配置：'+(state.config.chatModel||catalog?.defaults?.model||'Codex 默认模型')+' · '+(effortLabels[state.config.chatReasoningEffort]||state.config.chatReasoningEffort||'模型默认强度')+' · 快速模式'+(state.config.chatFastMode?'开':'关')+'。从下一轮起生效，与个人 Agent 分开保存。';
   $('aiChatSelection').hidden=!data.selecting;$('finishAiSelection').hidden=!data.selecting;
   $('aiChatList').innerHTML=data.chats.map(c=>{const agentAllowed=c.type==='single'&&c.chatKey===owner?.chatKey&&c.peerUid===owner?.peerUid;return `<div class="ai-chat-item"><strong>${escape(c.displayName)}</strong> <span class="pill">${c.type==='group'?'群聊':'单聊'} · ${c.enabled?'已启用':'已停用'}</span><small>${c.mode==='agent'?'个人 Agent · 现有用户授权模式':c.type==='group'?'普通聊天 · 仅原生 @ 助手时回复':'普通聊天 · 仅回复本聊天'}</small><div class="button-row"><label>使用方式 <select data-ai-mode="${escape(c.chatKey)}"><option value="chat" ${c.mode==='chat'?'selected':''}>普通聊天 AI</option>${agentAllowed?`<option value="agent" ${c.mode==='agent'?'selected':''}>个人 Agent · 现有模式</option>`:''}</select></label><button class="secondary" data-ai-toggle="${escape(c.chatKey)}">${c.enabled?'停用此聊天':'启用此聊天'}</button></div></div>`;}).join('')||'<p class="empty">选择需要启用 AI 的单聊或群聊。其他聊天保持静默。</p>';
   const names={new:'排队中',preparing:'准备聊天',submitted:'正在回复',replying:'结果已生成，正在发送',delivery_uncertain:'送达需核实，不自动重发',done:'已送达',cancelled:'已停止',failed:'处理失败',uncertain:'需要核实',blocked:'队列已满'};
@@ -44,18 +45,18 @@ function renderTargets(){$('targetList').innerHTML=targets.map((t,i)=>`<div clas
 let targetTail=Promise.resolve();
 function changeTargets(change){const task=targetTail.catch(()=>{}).then(async()=>{const next=change(targets);await api('targets',{targets:next});targets=next;state.config.targets=next;renderTargets();notice('授权名单已即时保存，重启后会恢复。');});targetTail=task;return task;}
 function renderEfforts(value=$('defaultEffort').value){
-  const id=$('defaultModel').value||catalog?.defaults?.model,model=catalog?.models?.find(m=>m.model===id);
-  $('defaultEffort').innerHTML='<option value="">使用默认强度</option>'+(model?.supportedReasoningEfforts||[]).map(e=>`<option value="${escape(e.reasoningEffort)}">${escape(effortLabels[e.reasoningEffort]||e.reasoningEffort)}</option>`).join('');
-  $('defaultEffort').value=Array.from($('defaultEffort').options).some(o=>o.value===value)?value:'';
-  const fast=!!model?.serviceTiers?.some(t=>/fast/i.test(t.name)||['fast','priority'].includes(t.id));$('fastMode').disabled=!!catalog&&!fast;
-  if(catalog&&!fast)$('fastMode').checked=false;
+  renderModeEfforts('defaultModel','defaultEffort','fastMode',value);
 }
+function renderChatEfforts(value=$('chatEffort').value){renderModeEfforts('chatModel','chatEffort','chatFast',value);}
+function renderModeEfforts(modelId,effortId,fastId,value){const model=catalog?.models?.find(m=>m.model===($(modelId).value||catalog?.defaults?.model));$(effortId).innerHTML='<option value="">使用默认强度</option>'+(model?.supportedReasoningEfforts||[]).map(e=>`<option value="${escape(e.reasoningEffort)}">${escape(effortLabels[e.reasoningEffort]||e.reasoningEffort)}</option>`).join('');$(effortId).value=Array.from($(effortId).options).some(o=>o.value===value)?value:'';const fast=!!model?.serviceTiers?.some(t=>/fast/i.test(t.name)||['fast','priority'].includes(t.id));$(fastId).disabled=!!catalog&&!fast;if(catalog&&!fast)$(fastId).checked=false;}
 async function loadModels(){
   const selected=$('defaultModel').value||state?.config.model||'',effort=$('defaultEffort').value||state?.config.reasoningEffort||'';
+  const chatSelected=chatPreferencesDirty?$('chatModel').value:state?.config.chatModel||'',chatEffort=chatPreferencesDirty?$('chatEffort').value:state?.config.chatReasoningEffort||'';
   const data=await api('models');if(!Array.isArray(data.models))return;
   catalog=data;$('defaultModel').innerHTML='<option value="">Codex 默认'+(data.defaults?.model?'（'+escape(data.defaults.model)+'）':'')+'</option>'+data.models.map(m=>`<option value="${escape(m.model)}">${escape(m.displayName)} · ${escape(m.model)}</option>`).join('');
   if(selected&&!data.models.some(m=>m.model===selected))$('defaultModel').add(new Option(selected+'（当前账号不可用）',selected));
   $('defaultModel').value=selected;renderEfforts(effort);
+  $('chatModel').innerHTML='<option value="">Codex 默认'+(data.defaults?.model?'（'+escape(data.defaults.model)+'）':'')+'</option>'+data.models.map(m=>`<option value="${escape(m.model)}">${escape(m.displayName)} · ${escape(m.model)}</option>`).join('');if(chatSelected&&!data.models.some(m=>m.model===chatSelected))$('chatModel').add(new Option(chatSelected+'（当前账号不可用）',chatSelected));$('chatModel').value=chatSelected;renderChatEfforts(chatEffort);
   $('effectiveModel').textContent='Codex 当前默认：'+(data.defaults?.model||'未返回')+'；默认强度：'+(effortLabels[data.defaults?.effort]||data.defaults?.effort||'按模型默认')+'。配置从下一次调用起生效，正在执行的调用不切换。';
 }
 function renderNeeds(){
@@ -109,7 +110,8 @@ async function refresh(){
     $('toggleListen').textContent=state.config.enabled?'暂停监听':'开始监听';$('listenTitle').textContent=r.processing?'正在处理视频或指令':state.config.enabled?'手机里直接分享给助手即可':'准备好后开始监听';
     $('scanInfo').textContent=r.scan?`当前：${r.scan.title||'未选会话'} · 识别消息 ${r.scan.diagnostics?.parsed||0} 条`:'浏览器打开后会检查当前会话';
     if(!dirty){targets=state.config.targets;$('maxMinutes').value=state.config.maxVideoSeconds/60;$('visualFps').value=state.config.visualFps||4;$('ackMode').value='auto';renderTargets();}
-    if(!preferencesDirty){const c=state.config;$('defaultModel').value=c.model||'';renderEfforts(c.reasoningEffort||'');$('fastMode').checked=!!c.fastMode;$('autoRoute').checked=c.autoRoute!==false;$('contextBudget').value=c.contextBudget||48000;}
+    if(!preferencesDirty){const c=state.config;$('defaultModel').value=c.model||'';$('fastMode').checked=!!c.fastMode;renderEfforts(c.reasoningEffort||'');$('autoRoute').checked=c.autoRoute!==false;$('contextBudget').value=c.contextBudget||48000;}
+    if(!chatPreferencesDirty){const c=state.config;$('chatModel').value=c.chatModel||'';$('chatFast').checked=!!c.chatFastMode;renderChatEfforts(c.chatReasoningEffort||'');}
     renderNeeds();renderPanels();renderAiChats();
     $('knowledgeList').innerHTML=state.knowledge.map(k=>`<div class="item"><strong>${escape(k.title)}</strong>${k.archived?'<span class="pill">已归档</span>':''}<p>${escape(r.processing&&r.visualProgress?.id===k.id?'正在按完整时间轴分析视觉内容，等待本次结论。':k.visualStatus==='partial'?`视觉已完成 ${k.visualCompleted}/${k.visualTotal} 段，尚未覆盖全片，可继续重分析。`:k.visualStatus==='legacy'?'此视频尚未完成连续视觉分析，请重新分析后查看完整结论。':k.summary?.slice(0,150)||'视频已保存，等待连续视觉分析完成。')}</p><div class="button-row"><button data-note="${escape(k.id)}" class="secondary">学习笔记</button><button data-visual="${escape(k.id)}" class="secondary">查看连续画面</button><button data-reanalyze="${escape(k.id)}" ${r.processing?'disabled':''}>重新分析视觉</button>${archiveButton('knowledge',k)}</div></div>`).join('')||'<p class="empty">此范围没有学习资料。</p>';
     if(r.processing&&r.visualProgress){const p=r.visualProgress;$('listenTitle').textContent=`连续视觉分析 ${p.completed}/${p.total||'…'} 段 · ${p.fps} 帧/秒`;}
@@ -137,6 +139,8 @@ action('createCoordinator',async()=>{await api('coordinator',{});notice('固定�
 action('reconnectCodex',async()=>{const r=await api('codex/reconnect',{});notice(r.deferred?'当前任务仍在执行，结束后会重新连接。':r.auth.status==='ready'?'已读取本机当前 Codex 登录，视频进度和目标名单已保留。':r.auth.message,!r.deferred&&r.auth.status!=='ready');});
 action('reloadModels',async()=>{await loadModels();notice('已读取当前 Codex 的模型与推理档位。');});
 action('savePreferences',async()=>{await api('preferences',{model:$('defaultModel').value,reasoningEffort:$('defaultEffort').value,fastMode:$('fastMode').checked,autoRoute:$('autoRoute').checked,contextBudget:Number($('contextBudget').value)});preferencesDirty=false;notice('默认配置已保存，从下一次调用起生效。');});
+action('saveChatPreferences',async()=>{await api('chat-preferences',{model:$('chatModel').value,reasoningEffort:$('chatEffort').value,fastMode:$('chatFast').checked});chatPreferencesDirty=false;notice('普通聊天默认配置已保存，从下一轮起生效。');});
+$('chatModel').addEventListener('change',()=>{chatPreferencesDirty=true;renderChatEfforts('');});for(const id of ['chatEffort','chatFast'])$(id).addEventListener('change',()=>chatPreferencesDirty=true);
 action('newNeed',async()=>{const n=await api('needs/new',{title:$('newNeedTitle').value.trim()});$('newNeedTitle').value='';notice('已新建并切换到需求 '+(n.number||'')+'：'+n.title);});
 $('defaultModel').addEventListener('change',()=>{preferencesDirty=true;renderEfforts('');});
 for(const id of ['defaultEffort','fastMode','autoRoute','contextBudget'])$(id).addEventListener('change',()=>preferencesDirty=true);

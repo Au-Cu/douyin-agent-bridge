@@ -14,13 +14,14 @@ export function effortValue(value){
 export class Preferences{
   constructor({store,codex}){Object.assign(this,{store,codex});}
   async catalog(){return this.codex.models();}
-  async resolve(config=this.store.config,{light=false,preferWork=false}={}){
+  async resolve(config=this.store.config,{light=false,preferWork=false,textOnly=false}={}){
     const catalog=await this.catalog();
     const id=config.model||catalog.defaults.model;
     let model=catalog.models.find(m=>m.model===id||m.id===id);
     if(light&&!preferWork)model=catalog.models.find(m=>/luna/i.test(m.model))||model;
     if(!model)throw new Error('当前登录不可用所配置的模型，请发送 /模型 重新选择。');
-    if(!light&&model.inputModalities&&!model.inputModalities.includes('image'))throw new Error('视频理解需要支持图片输入的模型。');
+    if(!light&&!textOnly&&model.inputModalities&&!model.inputModalities.includes('image'))throw new Error('视频理解需要支持图片输入的模型。');
+    if(textOnly&&model.inputModalities&&!model.inputModalities.includes('text'))throw new Error('普通聊天需要支持文字输入的模型。');
     const supported=model.supportedReasoningEfforts.map(e=>e.reasoningEffort);
     const effort=light?(supported.includes('low')?'low':supported[0]):config.reasoningEffort||(config.model?model.defaultReasoningEffort:catalog.defaults.effort||model.defaultReasoningEffort);
     if(!supported.includes(effort))throw new Error('此模型不支持该推理强度，可用：'+supported.map(e=>effortNames[e]||e).join('、'));
@@ -29,8 +30,18 @@ export class Preferences{
     return {model:model.model,effort,serviceTier:!light&&config.fastMode?fastTier.id:'default'};
   }
   work(){return this.resolve();}
+  chatWork(){const c=this.store.config;return this.resolve({model:c.chatModel||'',reasoningEffort:c.chatReasoningEffort||'',fastMode:c.chatFastMode===true},{textOnly:true});}
   light(preferWork=false){return this.resolve(this.store.config,{light:true,preferWork});}
   update(patch){const task=(this.updating||Promise.resolve()).catch(()=>{}).then(()=>this.applyUpdate(patch));this.updating=task;return task;}
+  updateChat(patch){const task=(this.updating||Promise.resolve()).catch(()=>{}).then(()=>this.applyChatUpdate(patch));this.updating=task;return task;}
+  async applyChatUpdate(patch){
+    const c=this.store.config,next={model:c.chatModel||'',reasoningEffort:c.chatReasoningEffort||'',fastMode:c.chatFastMode===true};
+    if('model'in patch)next.model=chooseModel(String(patch.model),await this.catalog());
+    if('reasoningEffort'in patch)next.reasoningEffort=effortValue(patch.reasoningEffort);
+    if('fastMode'in patch){if(typeof patch.fastMode!=='boolean')throw new Error('开关必须为开或关');next.fastMode=patch.fastMode;}
+    await this.resolve(next,{textOnly:true});
+    this.store.saveConfig({chatModel:next.model,chatReasoningEffort:next.reasoningEffort,chatFastMode:next.fastMode});configurePanel(this.store,'chats');return this.store.config;
+  }
   async applyUpdate(patch){
     const next={...this.store.config};
     if('model'in patch)next.model=chooseModel(String(patch.model),await this.catalog());

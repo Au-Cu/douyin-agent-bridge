@@ -14,6 +14,13 @@
   <details class="panel config-panel" id="chatsPanel" data-panel="chats" open>
     <summary><span>启用 AI 的抖音聊天</span><small id="chatsSummary">个人 Agent 与普通聊天分别配置</small></summary>
     <p class="hint">个人 Agent 就是现有的用户单聊模式，可学习视频并按你的指令处理项目。普通聊天 AI 只能回复文字，使用独立上下文，没有项目、文件、电脑、插件或任务派发权限。群聊仅在消息原生 @ 到助手账号时回复，输入“@昵称”文字不算。</p>
+    <div class="model-settings">
+      <label>普通聊天默认模型<select id="chatModel"><option value="">使用 Codex 默认模型</option></select></label>
+      <label>普通聊天推理强度<select id="chatEffort"><option value="">使用默认强度</option></select></label>
+      <label class="check-label"><input type="checkbox" id="chatFast">普通聊天快速模式</label>
+      <button id="saveChatPreferences">保存聊天默认配置</button>
+    </div>
+    <p id="chatEffectiveModel" class="hint">普通聊天独立选模型；留空跟随 Codex 默认，不跟随个人 Agent 的设置。保存后从下一轮起生效。</p>
     <div class="button-row panel-tools"><button id="selectAiChat">配置一个单聊或群聊</button><button id="finishAiSelection" class="secondary" hidden>完成选择，恢复轮询</button></div>
     <div id="aiChatSelection" class="chat-selection" hidden>
       <p class="hint">轮询与发送暂时暂停，最长 5 分钟。在助手的抖音窗口打开目标单聊或群聊，再读取。如果尚未核验助手身份，请从助手账号手动发一条普通消息。</p>
@@ -25,11 +32,11 @@
     <details data-fold-key="bot-history"><summary>普通聊天记录与送达状态</summary><p class="hint">每次使用临时 Codex 会话，仅带本聊天最近 6 次已送达交流。视频分享卡片只提供标题，普通聊天不会下载、学习视频或操作项目。</p><div id="botHistory"></div></details>
   </details>
   <details class="panel config-panel" id="modelPanel" data-panel="model" open>
-    <summary><span>默认模型与需求对话</span><small id="modelSummary">设置模型和管理需求</small></summary>
+    <summary><span>个人 Agent 的模型与需求对话</span><small id="modelSummary">设置模型和管理需求</small></summary>
     <div class="button-row panel-tools"><button id="reloadModels" class="secondary">刷新模型名单</button></div>
-    <p class="hint">回复、视频理解和派发任务使用这组配置；需求判断使用独立的轻量临时会话。快速模式会按 Codex 规则增加用量。</p>
+    <p class="hint">个人 Agent 的回复、视频理解和派发任务使用这组配置；普通聊天在上方独立设置。需求判断使用独立的轻量临时会话。快速模式会按 Codex 规则增加用量。</p>
     <div class="model-settings">
-      <label>默认模型<select id="defaultModel"><option value="">使用 Codex 默认模型</option></select></label>
+      <label>个人 Agent 默认模型<select id="defaultModel"><option value="">使用 Codex 默认模型</option></select></label>
       <label>推理强度<select id="defaultEffort"><option value="">使用 Codex 默认强度</option></select></label>
       <label class="check-label"><input type="checkbox" id="fastMode">快速模式</label>
       <label class="check-label"><input type="checkbox" id="autoRoute" checked>自动按需求新建或找回对话</label>

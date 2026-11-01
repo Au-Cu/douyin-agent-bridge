@@ -2,6 +2,8 @@ import { chromium } from 'playwright-core';
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { toPlainChatText,comparableChatText } from './chat-text.mjs';
+import {createHash} from 'node:crypto';
+import {bindScanIdentity} from './chat-identity.mjs';
 
 // Executed inside the dedicated, locally logged-in browser. No cookies or tokens leave it.
 // Share-card extraction follows the publicly documented React message shape used by
@@ -10,6 +12,10 @@ export function scanConversation() {
   const scope=this?.document?this:globalThis,document=scope.document,location=scope.location,innerWidth=scope.innerWidth,innerHeight=scope.innerHeight,getComputedStyle=scope.getComputedStyle.bind(scope);
   const visible=e=>!!(e&&e.getClientRects().length);
   const clean=v=>String(v??'').replace(/\s+/g,' ').trim();
+  scope.__douyinBridgeDocumentIdentity||=String(Date.now())+'-'+Math.random().toString(36).slice(2);
+  // Safari cannot read HttpOnly cookies. A readable account-UID cookie is used
+  // only as an in-browser change marker; no cookie value is returned or logged.
+  let accountMarker='';try{const parts=document.cookie.split(';').map(s=>s.trim()).filter(s=>/^(?:uid_tt|uid_tt_ss)=/.test(s)).sort();if(parts.length){let a=2166136261,b=2246822519;for(const c of parts.join(';')){a=Math.imul(a^c.charCodeAt(0),16777619);b=Math.imul(b^c.charCodeAt(0),3266489917);}accountMarker=(a>>>0).toString(16)+(b>>>0).toString(16);}}catch{}
   const id=v=>v==null||typeof v==='number'&&!Number.isSafeInteger(v)?'':typeof v==='object'?(v.toString?.()!=='[object Object]'?String(v):''):String(v);
   function reactMessage(node) {
     let el=node;
@@ -89,7 +95,7 @@ export function scanConversation() {
   const type=conversationTypes.size===1?([...conversationTypes][0]===2?'group':'single'):'unknown';
   const ownIds=[...new Set(messages.filter(m=>m.direction==='out').map(m=>m.sender))],selfUid=ownIds.length===1?ownIds[0]:'';
   const peer=current?{chatKey:chatKey||'peer:'+current.sender,peerUid:type==='group'?'group:'+chatKey:last?.sender||'',displayName:clean(title?.textContent)||last?.sender||chatKey,type,selfUid}:null;
-  return {url:location.href,title:clean(title?.textContent),peer,messages,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity,conversationType:type,selfIdentified:!!selfUid},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
+  return {url:location.href,title:clean(title?.textContent),peer,messages,accountMarker,documentInstance:scope.__douyinBridgeDocumentIdentity,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity,conversationType:type,selfIdentified:!!selfUid,selfIdentityConflict:ownIds.length>1},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
 }
 
 export async function foregroundFrame(frame){
@@ -208,11 +214,15 @@ export function inspectMessageReactions({messageId,emoji}) {
   return {found:true,count:nodes.filter(e=>pattern.test([e.textContent,e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('alt'),e.getAttribute('src')].filter(Boolean).join(' '))).length};
 }
 
-export function markOwnerConversation(name){
+export function markOwnerConversation(target){
   const scope=this?.document?this:globalThis,document=scope.document;
+  const name=typeof target==='string'?target:target?.displayName||'',chatKey=typeof target==='object'?String(target.chatKey||''):'';
   document.querySelectorAll('[data-bridge-owner-choice]').forEach(e=>e.removeAttribute('data-bridge-owner-choice'));
-  const rows=[...document.querySelectorAll('[class*="conversationConversationItemwrapper"]')].filter(e=>e.getClientRects().length);
-  const matches=rows.filter(e=>(e.innerText||'').split(/\n+/)[0].trim()===name);
+  const rows=[...new Set(document.querySelectorAll('[class*="conversationConversationItemwrapper"],[data-e2e*="conversation-item"],[data-conversation-id]'))].filter(e=>e.getClientRects().length);
+  const identity=row=>{const ids=new Set(),keys=new Set();for(const e of [row,...row.querySelectorAll('*')].slice(0,14))for(const key of Object.keys(e).filter(k=>/^__react(?:Fiber|Props)\$/.test(k))){let fiber=e[key];for(let i=0;i<5&&fiber;i++,fiber=fiber.return){const p=fiber.memoizedProps||fiber;if(!p||typeof p!=='object')continue;Object.keys(p).forEach(k=>keys.add(k));for(const [v,explicit]of [[p,false],[p.conversation,true],[p.conv,true],[p.conversationInfo,true],[p.item,false],[p.data,false],[p.item?.conversation,true],[p.data?.conversation,true]]){if(!v||typeof v!=='object')continue;for(const k of ['conversationId','conversation_id','conversationShortId','conversation_short_id','shortId',...(explicit?['id']:[])]){const id=v[k];if(id!=null&&(typeof id!=='number'||Number.isSafeInteger(id))&&String(id)!=='[object Object]')ids.add(String(id));}}}}const attr=row.getAttribute('data-conversation-id');if(attr)ids.add(attr);return {matches:!!chatKey&&ids.has(chatKey),keys:[...keys].slice(0,24),identityFields:ids.size};};
+  const inspected=rows.map(e=>({e,...identity(e)})),byId=inspected.filter(r=>r.matches),byName=rows.filter(e=>(e.innerText||'').split(/\n+/)[0].trim()===name);
+  const matches=byId.length?byId.map(r=>r.e):byName;
+  scope.__douyinBridgeChoiceDiagnostic={rows:rows.length,idMatches:byId.length,nameMatches:byName.length,shapes:inspected.slice(0,5).map(({e,keys,identityFields})=>({className:String(e.className).slice(0,180),keys,identityFields}))};
   if(matches.length===1)matches[0].setAttribute('data-bridge-owner-choice','true');
   return matches.length;
 }
@@ -237,7 +247,7 @@ export class DouyinAdapter {
       for(const frame of this.page.frames()){
         if(!/^https:\/\/(www\.)?douyin\.com\//.test(frame.url()))continue;
         if(!await foregroundFrame(frame))continue;
-        const count=await frame.evaluate(markOwnerConversation,owner.displayName);
+        const count=await frame.evaluate(markOwnerConversation,owner);this.lastSelectionDiagnostic=await frame.evaluate(()=>globalThis.__douyinBridgeChoiceDiagnostic||null);
         if(count>1)throw new Error('联系人重名，需手动选择后核验账号');
         if(count===1&&(!clicked||attempt===10)){await frame.locator('[data-bridge-owner-choice="true"]').click({timeout:3000});clicked=true;}
       }
@@ -254,7 +264,10 @@ export class DouyinAdapter {
       try{if(await foregroundFrame(frame))scans.push({page,frame,value:await frame.evaluate(scanConversation)});}catch{}
     }
     const best=scans.sort((a,b)=>Number(b.value.diagnostics.interactiveRows>0)-Number(a.value.diagnostics.interactiveRows>0)||b.value.messages.length-a.value.messages.length)[0];
-    const value=best?.value||{peer:null,messages:[],diagnostics:{pages:candidates.length},loginRequired:true};
+    const raw=best?.value||{peer:null,messages:[],diagnostics:{pages:candidates.length},loginRequired:true};
+    const cookies=await this.context.cookies('https://www.douyin.com/'),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
+    const marker=identityCookies.length?createHash('sha256').update(identityCookies.join(';')).digest('hex'):'';
+    const value=bindScanIdentity(this,raw,marker);
     if(best){this.page=best.page;this.chatFrame=best.frame;}
     this.lastScan=value;
     this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';return value;

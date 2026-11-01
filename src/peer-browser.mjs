@@ -5,6 +5,7 @@ import {checkWork} from './execution.mjs';
 export class PeerBrowser {
   constructor(adapter){this.adapter=adapter;this.tail=Promise.resolve();this.multiple=false;this.selectionUntil=0;}
   get status(){return this.adapter.status;}get page(){return this.adapter.page;}get lastScan(){return this.adapter.lastScan;}get lastReceipt(){return this.adapter.lastReceipt;}get lastReactionDiagnostic(){return this.adapter.lastReactionDiagnostic;}
+  get lastSelectionDiagnostic(){return this.adapter.lastSelectionDiagnostic;}
   get sending(){return !!this.pending||!!this.adapter.sending;}
   serial(fn){this.pending=(this.pending||0)+1;const p=this.tail.catch(()=>{}).then(fn).finally(()=>this.pending--);this.tail=p;return p;}
   async select(peer){checkWork();const r=await this.adapter.scan();if(matchesPeer(r.peer,peer))return r;await this.adapter.restoreOwner(peer);checkWork();const after=await this.adapter.scan();if(!matchesPeer(after.peer,peer))throw new Error('未核验到选定的抖音聊天，操作已停止');return after;}

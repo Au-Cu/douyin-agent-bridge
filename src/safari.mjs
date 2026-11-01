@@ -6,6 +6,7 @@ import {durableJson} from './durable.mjs';
 import {toPlainChatText,comparableChatText} from './chat-text.mjs';
 import {scanConversation,inspectComposers,markOwnerConversation,captureMessageMenu,inspectReactionChoices,markMoreReactions,inspectMessageReactions,safeMediaUrl,UncertainDelivery,matchesPeer} from './douyin.mjs';
 import {checkWork,workSignal,operationContext} from './execution.mjs';
+import {bindScanIdentity,applyVerifiedIdentity} from './chat-identity.mjs';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const quote=s=>'"'+String(s).replaceAll('\\','\\\\').replaceAll('"','\\"')+'"';
@@ -45,15 +46,15 @@ export class SafariDouyinAdapter {
   async scan(){
     if(!this.page)return {peer:null,messages:[],diagnostics:{},loginRequired:true};
     try{const result=await this.inTab(`const scan=(${scanConversation.toString()}),all=[];function walk(w,path){try{if(!/^https:\\/\\/(www\\.)?douyin\\.com\\//.test(w.location.href))return;all.push({path,value:scan.call(w)});const frames=[...w.document.querySelectorAll('iframe')];for(let i=0;i<frames.length;i++){const f=frames[i],r=f.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,top=w.document.elementFromPoint(x,y);if(r.width&&r.height&&(top===f||f.contains(top)))try{walk(f.contentWindow,path.concat(i))}catch{}}}catch{}}walk(window,[]);all.sort((a,b)=>Number(b.value.diagnostics.interactiveRows>0)-Number(a.value.diagnostics.interactiveRows>0)||b.value.messages.length-a.value.messages.length);return all[0]||null;`);
-      const value=result?.value||{peer:null,messages:[],diagnostics:{pages:1},loginRequired:true};this.framePath=result?.path||[];this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';return value;
+      const value=bindScanIdentity(this,result?.value||{peer:null,messages:[],diagnostics:{pages:1},loginRequired:true});this.framePath=result?.path||[];this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';return value;
     }catch(e){this.status='blocked';throw e;}
   }
   async restoreOwner(owner){
     let clicked=false;for(let i=0;i<20;i++){const scan=await this.scan();if(matchesPeer(scan.peer,owner))return true;if(scan.loginRequired)return false;
-      const n=await this.evaluate(markOwnerConversation,owner.displayName);if(n>1)throw new Error('联系人重名，需手动选择后核验账号');if(n===1&&(!clicked||i===10)){await this.inTab(this.frameCode(this.framePath)+'const e=w.document.querySelector("[data-bridge-owner-choice=\\"true\\"]");if(e)e.click();return !!e;');clicked=true;}await sleep(500);
+      const n=await this.evaluate(markOwnerConversation,owner);this.lastSelectionDiagnostic=await this.inTab(this.frameCode(this.framePath)+'return w.__douyinBridgeChoiceDiagnostic||null;');if(n>1)throw new Error('联系人重名，需手动选择后核验账号');if(n===1&&(!clicked||i===10)){await this.inTab(this.frameCode(this.framePath)+'const e=w.document.querySelector("[data-bridge-owner-choice=\\"true\\"]");if(e)e.click();return !!e;');clicked=true;}await sleep(500);
     }throw new Error('未恢复到绑定账号，发送保持暂停');
   }
-  ownerCheck(owner){return `const observed=(${scanConversation.toString()}).call(w);if(!(${matchesPeer.toString()})(observed.peer,${JSON.stringify(owner)}))throw new Error('会话已切换，操作已停止');`;}
+  ownerCheck(owner){return `const observed=(${applyVerifiedIdentity.toString()})((${scanConversation.toString()}).call(w),${JSON.stringify(this.verifiedIdentity||null)});if(!(${matchesPeer.toString()})(observed.peer,${JSON.stringify(owner)}))throw new Error('会话已切换，操作已停止');`;}
   async uiDiagnostics(){return {opened:!!this.page,frames:this.lastScan?[{main:!this.framePath?.length,...this.lastScan.diagnostics}]:[]};}
   async composerState(){await this.scan();return this.page?this.evaluate(inspectComposers):[];}
   async send(owner,text,{plainText=false}={}){

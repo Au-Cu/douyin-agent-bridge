@@ -57,21 +57,32 @@ export class Chats {
   }
   arm(since=Date.now()){this.armedAt=since;}
   seen(peer,id){return this.store.db.prepare('INSERT OR IGNORE INTO bot_seen VALUES(?,?,?)').run(peer,id,Date.now()).changes>0;}
-  async baseline({resumeSince}={}){for(const chat of this.bots()){const scan=await this.adapter.scanPeer(chat);if(!sameChat(scan.peer,chat))throw new Error('普通聊天身份未通过核验，请重新读取该聊天');for(const m of scan.messages)if(resumeSince===undefined||m.created<resumeSince-1500)this.seen(chat.chatKey,m.id);}}
+  async baseline({resumeSince}={}){for(const chat of this.bots()){try{const scan=await this.adapter.scanPeer(chat);if(!sameChat(scan.peer,chat))throw new Error('普通聊天身份未通过核验，请重新读取该聊天');for(const m of scan.messages)if(resumeSince===undefined||m.created<resumeSince-1500)this.seen(chat.chatKey,m.id);}catch(e){this.warn(chat,'此聊天暂未恢复，其他聊天继续监听：'+e.message);}}}
   controller(chat){let c=this.controllers.get(chat.chatKey);if(!c||c.signal.aborted){c=new AbortController();this.controllers.set(chat.chatKey,c);}return c;}
   deliveryTarget(payload,peer){const chat=this.get(peer);return payload.chatbot&&chat?.enabled&&chat.mode==='chat'&&chat.revision===payload.chatRevision?chat:null;}
   guard(payload,peer){if(!this.deliveryTarget(payload,peer))throw Object.assign(new Error('此普通聊天已停用或切换模式，回复已停止'),{code:'CHAT_DISABLED',notSubmitted:true});}
   async delivery(payload,peer,fn){const target=this.deliveryTarget(payload,peer);if(!target)throw Object.assign(new Error('普通聊天配置已变更'),{code:'CHAT_DISABLED',notSubmitted:true});return operationContext.run({signal:this.controller(target).signal,guard:()=>this.guard(payload,peer),delivery:{submitted:false}},fn);}
   receipt(row,stage){const chat=this.get(row.peer);if(!chat||chat.revision!==row.revision)return;const message=JSON.parse(row.body);this.store.enqueueReply(row.peer,'',{kind:'progress_reaction',priority:100,payload:{chatbot:true,botId:row.id,chatRevision:row.revision,messageId:message.id,stage,emojis:progressEmoji[stage]},dedupe:'bot-reaction:'+row.id+':'+stage});}
+  ingest(chat,m,{since=this.armedAt,recover=false}={}){
+    if(!acceptsChatMessage(m,chat,since)||this.get(chat.chatKey)?.revision!==chat.revision)return false;
+    const id=chat.chatKey+':'+m.id;if(this.store.db.prepare('SELECT 1 FROM bot_messages WHERE id=?').get(id))return false;
+    const fresh=this.seen(chat.chatKey,m.id);if(!fresh&&!recover)return false;
+    const queue=this.store.db.prepare("SELECT count(*) n FROM bot_messages WHERE peer=? AND status IN ('new','preparing','submitted','replying')").get(chat.chatKey).n;
+    const status=queue>=30?'blocked':'new',body={id:m.id,kind:m.kind,text:String(m.text||'').slice(0,6000),title:String(m.title||'').slice(0,800),sender:m.sender,replyTo:m.replyTo||null};
+    const added=this.store.db.prepare('INSERT OR IGNORE INTO bot_messages VALUES(?,?,?,?,?,?,\'\',\'\',?,?)').run(id,chat.chatKey,chat.revision,JSON.stringify(body),status,status==='blocked'?'本聊天待处理消息过多，已停止追加模型调用':'',Date.now(),Date.now()).changes;
+    if(added)this.receipt({id,peer:chat.chatKey,revision:chat.revision,body:JSON.stringify(body)},'roger');return !!added;
+  }
+  async recover(key){
+    const chat=this.get(String(key));if(!this.store.config.enabled||!chat?.enabled||chat.mode!=='chat')throw new Error('请先开启该普通聊天的监听');
+    const scan=await this.adapter.scanPeer(chat);if(!sameChat(scan.peer,chat))throw new Error('未能核验已启用的聊天身份，未补收');
+    let recovered=0;const since=Math.max(chat.enabledAt||Date.now(),Date.now()-30*60*1000);
+    for(const m of scan.messages)if(this.ingest(chat,m,{since,recover:true}))recovered++;
+    return {recovered};
+  }
   async scan(){
     if(!this.store.config.enabled||!this.armedAt||this.scanning||this.adapter.selecting)return;const bots=this.bots();if(!bots.length)return;const chat=bots[this.cursor++%bots.length];this.scanning=true;
     try{const scan=await this.adapter.scanPeer(chat);if(!sameChat(scan.peer,chat)){this.warn(chat,'聊天身份、类型或助手账号不一致，普通聊天保持暂停');return;}for(const m of [...scan.messages].sort((a,b)=>a.created-b.created)){
-      if(!acceptsChatMessage(m,chat,this.armedAt))continue;
-      if(!this.seen(chat.chatKey,m.id))continue;
-      const id=chat.chatKey+':'+m.id;if(this.store.db.prepare('SELECT 1 FROM bot_messages WHERE id=?').get(id))continue;
-      const queue=this.store.db.prepare("SELECT count(*) n FROM bot_messages WHERE peer=? AND status IN ('new','preparing','submitted','replying')").get(chat.chatKey).n;
-      const status=queue>=30?'blocked':'new',body={id:m.id,kind:m.kind,text:String(m.text||'').slice(0,6000),title:String(m.title||'').slice(0,800),sender:m.sender,replyTo:m.replyTo||null};
-      this.store.db.prepare('INSERT OR IGNORE INTO bot_messages VALUES(?,?,?,?,?,?,\'\',\'\',?,?)').run(id,chat.chatKey,chat.revision,JSON.stringify(body),status,status==='blocked'?'本聊天待处理消息过多，已停止追加模型调用':'',Date.now(),Date.now());this.receipt({id,peer:chat.chatKey,revision:chat.revision,body:JSON.stringify(body)},'roger');
+      this.ingest(chat,m);
     }}catch(e){this.warn(chat,'普通聊天暂未连接：'+e.message);}finally{this.scanning=false;}
   }
   warn(chat,reason){this.warnings||=new Map();if(this.warnings.get(chat.chatKey)?.reason===reason&&Date.now()-this.warnings.get(chat.chatKey).at<60000)return;this.warnings.set(chat.chatKey,{reason,at:Date.now()});this.store.event(reason,'attention');}
@@ -87,7 +98,7 @@ export class Chats {
   }
   async run(row,chat){
     this.set(row.id,'preparing');let submitted=false;
-    try{const config=await this.preferences.work();const result=await this.sandbox.reply(this.context(row),{...config,signal:this.controller(chat).signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
+    try{const config=await this.preferences.chatWork();const result=await this.sandbox.reply(this.context(row),{...config,signal:this.controller(chat).signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
       this.guard({chatbot:true,chatRevision:row.revision},row.peer);const text=toPlainChatText(result.text).slice(0,10000),parts=splitReply(text),group=randomUUID();if(!parts.length)throw new Error('模型没有返回文字');
       this.store.db.exec('BEGIN IMMEDIATE');try{this.set(row.id,'replying',text);for(const [i,part] of parts.entries())this.store.enqueueReply(row.peer,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{payload:{chatbot:true,botId:row.id,chatRevision:row.revision,plainText:true,group,segment:i+1,totalSegments:parts.length},dedupe:'bot-result:'+row.id+':'+i});this.store.db.exec('COMMIT');}catch(e){this.store.db.exec('ROLLBACK');throw e;}
     }catch(e){const valid=this.get(row.peer)?.revision===row.revision;this.set(row.id,!valid?'cancelled':submitted&&e.uncertain?'uncertain':'failed',!valid?'聊天已停用，未交付本轮结果':submitted&&e.uncertain?'暂时无法确认运行状态，不会自动重跑':e.authKind?'本机 Codex 登录或额度暂不可用；处理结果保留在面板':String(e.message).slice(0,400));}
