@@ -248,7 +248,17 @@ export class DouyinAdapter {
     }
     this.page=this.context.pages().find(p=>p.url().startsWith('https://www.douyin.com/chat'))||this.context.pages()[0]||await this.context.newPage();
     await this.page.bringToFront();
-    try{await this.page.goto('https://www.douyin.com/chat?isPopup=1',{waitUntil:'domcontentloaded',timeout:60000});this.openFailed=false;this.status='waiting_login';}
+    try{
+      const navigate=()=>this.page.goto('https://www.douyin.com/chat?isPopup=1',{waitUntil:'domcontentloaded',timeout:60000});
+      try{await navigate();}catch(e){
+        // Chromium can commit its previous failed navigation's internal error
+        // page after goto has rejected. Only this proven navigation race gets
+        // one reset/retry; ordinary network/login errors still reach the panel.
+        if(!/interrupted by another navigation to ["']chrome-error:\/\/chromewebdata\//.test(e.message))throw e;
+        await this.page.goto('about:blank',{waitUntil:'domcontentloaded',timeout:15000});await navigate();
+      }
+      this.openFailed=false;this.status='waiting_login';
+    }
     catch(e){this.openFailed=true;this.status='open_error';throw e;}
     if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回用户会话：'+e.message));
   }
