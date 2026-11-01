@@ -52,6 +52,8 @@ jobs:
       - run: npm run setup:runtime
       - run: npm run setup:asr
       - run: node scripts/mac-native-smoke.mjs
+      - run: sudo /usr/bin/safaridriver --enable
+      - run: node scripts/mac-safari-smoke.mjs
       - run: node --test --test-concurrency=2 test/*.test.mjs
       - run: npm run test:portable
       - run: npm run release:check
