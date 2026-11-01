@@ -20,7 +20,16 @@ export class Progress{
     Object.assign(this,{store,codex,notify,classify,now,noticeInterval,stallAfter,writerLimit});this.db=store.db;this.checks=new Map();
     this.db.exec(`CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,peer TEXT,request TEXT,fingerprint TEXT,kind TEXT,need_id TEXT,status TEXT,phase TEXT,detail TEXT,created INTEGER,started INTEGER,changed INTEGER,last_notice INTEGER,ended INTEGER,outcome TEXT,parent TEXT,thread TEXT,turn TEXT,submitted INTEGER);
       CREATE TABLE IF NOT EXISTS operation_messages(message_id TEXT PRIMARY KEY,operation_id TEXT,relation TEXT,platform_id TEXT);
-      CREATE TABLE IF NOT EXISTS task_waits(task_id TEXT PRIMARY KEY,operation_id TEXT,reason TEXT,since INTEGER,attempts INTEGER,next_attempt INTEGER,paused INTEGER);`);
+      CREATE TABLE IF NOT EXISTS task_waits(task_id TEXT PRIMARY KEY,operation_id TEXT,reason TEXT,since INTEGER,attempts INTEGER,next_attempt INTEGER,paused INTEGER);
+      CREATE TABLE IF NOT EXISTS task_retry_events(id INTEGER PRIMARY KEY,task_id TEXT NOT NULL,operation_id TEXT NOT NULL,attempt INTEGER NOT NULL,at INTEGER NOT NULL,outcome TEXT NOT NULL,reason TEXT NOT NULL,next_attempt INTEGER NOT NULL DEFAULT 0,legacy INTEGER NOT NULL DEFAULT 0);
+      CREATE INDEX IF NOT EXISTS task_retry_events_operation ON task_retry_events(operation_id,id);`);
+    // Old releases retained only the most recent failure and next deadline. The
+    // last timestamp is recoverable from that deadline and the backoff formula;
+    // never manufacture the missing intermediate attempts or their reasons.
+    for(const w of this.db.prepare("SELECT * FROM task_waits w WHERE w.attempts>0 AND w.operation_id<>'' AND NOT EXISTS(SELECT 1 FROM task_retry_events e WHERE e.task_id=w.task_id)").all()){
+      const last=w.next_attempt-Math.min(60000,10000*2**(w.attempts-1));
+      if(last>=w.since&&last<=this.now())this.db.prepare("INSERT INTO task_retry_events(task_id,operation_id,attempt,at,outcome,reason,next_attempt,legacy) VALUES(?,?,?,?,'blocked',?,?,1)").run(w.task_id,w.operation_id,w.attempts,last,w.reason,w.paused?0:w.next_attempt);
+    }
     const columns=new Set(this.db.prepare('PRAGMA table_info(operations)').all().map(c=>c.name));if(!columns.has('number'))this.db.exec('ALTER TABLE operations ADD COLUMN number INTEGER');if(!columns.has('title'))this.db.exec("ALTER TABLE operations ADD COLUMN title TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS operations_number ON operations(number) WHERE number IS NOT NULL');
     this.db.prepare("UPDATE operations SET status='uncertain',phase='暂时无法确认运行状态',outcome='uncertain' WHERE status='running'").run();
@@ -170,12 +179,26 @@ export class Progress{
   canRun(id){if(this.store.isArchived('task',id)||this.stopped(id))return false;this.detachArchivedParents();if(!this.mayAttempt({id:'message:'+id}))return false;const op=this.get(id);if(!op?.parent)return true;const parent=this.get(op.parent);return !this.stopped(parent?.id)&&parent?.status==='done';}
   taskBlocked(task,reason){
     const context=JSON.parse(task.context||'{}'),id=context.operationId,old=this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(task.id),now=this.now(),attempts=(old?.attempts||0)+1,since=old?.since||now,paused=now-since>=this.writerLimit||attempts>=6;
-    this.db.prepare('INSERT OR REPLACE INTO task_waits VALUES(?,?,?,?,?,?,?)').run(task.id,id||'',reason,since,attempts,now+Math.min(60000,10000*2**(attempts-1)),Number(paused));
+    const next=now+Math.min(60000,10000*2**(attempts-1)),number=this.db.prepare('SELECT COALESCE(MAX(attempt),0)+1 AS n FROM task_retry_events WHERE task_id=?').get(task.id).n;
+    this.db.exec('BEGIN IMMEDIATE');try{
+      this.db.prepare('INSERT OR REPLACE INTO task_waits VALUES(?,?,?,?,?,?,?)').run(task.id,id||'',reason,since,attempts,next,Number(paused));
+      if(id)this.db.prepare("INSERT INTO task_retry_events(task_id,operation_id,attempt,at,outcome,reason,next_attempt) VALUES(?,?,?,?,'blocked',?,?)").run(task.id,id,number,now,reason,paused?0:next);
+      this.db.exec('COMMIT');
+    }catch(e){this.db.exec('ROLLBACK');throw e;}
     this.store.taskStatus(task.id,paused?'blocked':'queued',reason);if(id){this.db.prepare("UPDATE operations SET status='blocked',phase='派发受阻',detail=? WHERE id=?").run(reason,id);this.notice(id,`任务 ${task.id.slice(0,8)} ${this.status(id)}`,'blocked:'+createHash('sha256').update(reason).digest('hex').slice(0,8)+(paused?':paused':''));}
   }
   mayAttempt(task){const w=this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(task.id);return !w||!w.paused&&w.next_attempt<=this.now();}
   messageBlocked(message,reason){const id=this.forMessage(message.id)?.id;this.taskBlocked({id:'message:'+message.id,context:JSON.stringify({operationId:id})},reason);const w=this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get('message:'+message.id);this.store.messageStatus(message.id,w.paused?'blocked':'new',reason);}
-  clearWait(taskId){this.db.prepare('DELETE FROM task_waits WHERE task_id=?').run(taskId);}
+  clearWait(taskId,{outcome,reason=''}={}){
+    const wait=this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(taskId);
+    const last=outcome?this.db.prepare('SELECT * FROM task_retry_events WHERE task_id=? ORDER BY id DESC LIMIT 1').get(taskId):null;
+    // A manual /重试 clears the wait before the next attempt. The durable last
+    // event still identifies its operation and prevents losing that outcome.
+    this.db.exec('BEGIN IMMEDIATE');try{
+      if(last?.outcome==='blocked'||last?.outcome==='started'&&outcome==='uncertain')this.db.prepare('INSERT INTO task_retry_events(task_id,operation_id,attempt,at,outcome,reason) VALUES(?,?,?,?,?,?)').run(taskId,wait?.operation_id||last.operation_id,last.attempt+(last.outcome==='blocked'?1:0),this.now(),outcome,String(reason).slice(0,500));
+      this.db.prepare('DELETE FROM task_waits WHERE task_id=?').run(taskId);this.db.exec('COMMIT');
+    }catch(e){this.db.exec('ROLLBACK');throw e;}
+  }
   recoverAuth(){for(const w of this.db.prepare("SELECT * FROM task_waits WHERE reason='等待本机 Codex 登录或额度恢复'").all()){const t=this.db.prepare('SELECT * FROM tasks WHERE id=?').get(w.task_id);if(t&&!t.turn&&['queued','blocked'].includes(t.status)){this.clearWait(t.id);this.store.taskStatus(t.id,'queued','登录已恢复，继续确定未提交的任务');}}}
   retry(value){
     const numeric=String(value).trim().replace(/^任务\s*/,'').replace(/^#/,'');
@@ -233,7 +256,9 @@ export class Progress{
       const receipts=['roger','active','done'].map(stage=>{const group=rows.filter(r=>r.kind==='progress_reaction'&&JSON.parse(r.payload||'{}').stage===stage);return {stage,total:group.length,sent:group.filter(r=>r.status==='sent').length,pending:group.filter(r=>['pending','sending'].includes(r.status)).length,uncertain:group.filter(r=>r.status==='uncertain').length,unavailable:group.filter(r=>r.status==='unavailable').length,errors:[...new Set(group.filter(r=>r.error&&r.status!=='sent').map(r=>r.error))]};});
       const tasks=this.tasks(op.id),parent=this.get(op.parent),needId=op.need_id||parent?.need_id,links=new Map(),assistant=needId&&this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='needs'").get()?this.db.prepare('SELECT thread FROM needs WHERE id=?').get(needId)?.thread:null;
       for(const [id,label] of [[assistant,'需求对话'],[parent?.thread,'原任务对话'],...this.tasks(parent?.id||'').map(t=>[t.thread,'原任务目标：'+t.alias]),[op.thread,'本轮对话'],...tasks.map(t=>[t.thread,'目标：'+t.alias])])if(codexThreadUrl(id))links.set(id,{label,url:codexThreadUrl(id)});
-      return {id:op.id,number:op.number,title:op.title||operationTitle(op.request),kind:op.kind,status:op.status,canInterrupt:op.kind!=='control'&&!this.stopped(op.id)&&['queued','running','sending','waiting','blocked','uncertain','failed_delivery'].includes(op.status),archived:!!op.archived,links:[...links.values()],detail:this.status(op.id),receipts,replies:rows.filter(r=>r.kind==='text').map(r=>({id:r.id,status:r.status,error:r.error,notification:!!JSON.parse(r.payload||'{}').notification})),targets:tasks.map(t=>({alias:t.alias,status:t.status,result:t.result?.slice(0,300)}))};
+      const retryGroups=new Map(),events=this.db.prepare('SELECT e.*,t.alias,t.status AS task_status FROM task_retry_events e LEFT JOIN tasks t ON t.id=e.task_id WHERE e.operation_id=? ORDER BY e.id').all(op.id);
+      for(const e of events){if(!retryGroups.has(e.task_id)){const wait=this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(e.task_id);retryGroups.set(e.task_id,{label:e.alias?'目标：'+e.alias:'需求对话',taskStatus:e.task_status||op.status,wait:wait?.attempts?{paused:!!wait.paused,nextAttempt:wait.next_attempt}:null,events:[]});}retryGroups.get(e.task_id).events.push({attempt:e.attempt,at:e.at,outcome:e.outcome,reason:e.reason,legacy:!!e.legacy});}
+      return {id:op.id,number:op.number,title:op.title||operationTitle(op.request),kind:op.kind,status:op.status,canInterrupt:op.kind!=='control'&&!this.stopped(op.id)&&['queued','running','sending','waiting','blocked','uncertain','failed_delivery'].includes(op.status),archived:!!op.archived,links:[...links.values()],detail:this.status(op.id),receipts,retries:[...retryGroups.values()],replies:rows.filter(r=>r.kind==='text').map(r=>({id:r.id,status:r.status,error:r.error,notification:!!JSON.parse(r.payload||'{}').notification})),targets:tasks.map(t=>({alias:t.alias,status:t.status,result:t.result?.slice(0,300)}))};
     });
   }
 }

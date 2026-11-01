@@ -17,7 +17,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
   const reaction=(stage,sent,total=1,errors=[])=>({stage,sent,total,pending:0,uncertain:0,unavailable:sent===total?0:total-sent,errors});
   state.work=[{id:'operation-A',number:1,title:'修改首页',kind:'text',status:'blocked',detail:'只有首页任务等待写入权',receipts:[reaction('roger',0,1,['此消息菜单没有可核验的贴表情选项']),reaction('active',0,0),reaction('done',0,0)],replies:[],targets:[]},{id:'operation-B',number:2,title:'整理资料',kind:'text',status:'done',detail:'资料任务与回复已完成',receipts:['roger','active','done'].map(s=>reaction(s,1)),replies:[{id:'reply-B',status:'sent',notification:false}],targets:[]}];
   const catalog={defaults:{model:'fixture-sol',effort:'max'},models:[{model:'fixture-sol',displayName:'Fixture Sol',supportedReasoningEfforts:['low','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority',name:'Fast'}]}]};
-  state.work[0].canInterrupt=true;state.work.push({id:'command-C',title:'/帮助',kind:'control',status:'done',detail:'帮助已送达',receipts:[],replies:[],targets:[]});let interrupted;
+  state.work[0].canInterrupt=true;state.work[0].retries=[{label:'目标：网站',taskStatus:'queued',wait:{paused:false,nextAttempt:1793500000000},events:[{attempt:1,at:1793499900000,outcome:'blocked',reason:'写入锁被占用 <blocked>',legacy:false},{attempt:2,at:1793499960000,outcome:'blocked',reason:'写入锁仍被占用',legacy:false}]}];state.work.push({id:'command-C',title:'/帮助',kind:'control',status:'done',detail:'帮助已送达',receipts:[],replies:[],targets:[]});let interrupted;
   let preferencesSaved;
   const server=http.createServer(async(req,res)=>{
     const requestUrl=new URL(req.url,'http://localhost');
@@ -48,6 +48,7 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     await page.goto('http://127.0.0.1:'+server.address().port);
     await page.waitForFunction(()=>document.querySelector('#storagePanel')&&!document.querySelector('#storagePanel').open);
     await page.locator('[data-operation="operation-A"]').waitFor();const cardA=page.locator('[data-operation="operation-A"]'),cardB=page.locator('[data-operation="operation-B"]');assert.match(await cardA.textContent(),/任务 1：修改首页/);assert.match(await cardA.textContent(),/收到：未送达/);assert.doesNotMatch(await cardA.textContent(),/整理资料/);assert.match(await cardB.textContent(),/任务 2：整理资料/);assert.match(await cardB.textContent(),/完成：已送达/);assert.equal(await cardA.locator('.work-details').getAttribute('open'),null);
+    assert.match(await cardA.locator('.retry-summary').textContent(),/第 2 次 · 受阻，尚未提交/);assert.match(await cardA.locator('.retry-summary').textContent(),/计划下次重试/);assert.equal(await cardA.locator('.retry-details li').count(),2);assert.equal(await cardA.locator('.retry-details blocked').count(),0);await cardA.locator('.retry-details>summary').click();
     await page.getByRole('button',{name:'读取本机聊天'}).click();
     await page.waitForFunction(()=>document.querySelectorAll('#threadSelect option').length===3);
     await page.selectOption('#threadSelect','long-thread-id');
@@ -86,8 +87,8 @@ test('长聊天名从左侧显示、限定菜单宽度；缩小窗口和加入�
     await page.selectOption('#workStatus','all');await page.selectOption('#workScope','current');await page.locator('[data-operation="operation-A"] [data-archive-kind="task"]').click();await page.waitForFunction(()=>!document.querySelector('[data-operation="operation-A"]'));
     await page.selectOption('#workScope','archived');await page.locator('[data-operation="operation-A"]').waitFor();assert.match(await page.locator('#taskList').textContent(),/恢复显示/);await page.locator('[data-operation="operation-A"] [data-archive-kind="task"]').click();await page.waitForFunction(()=>!document.querySelector('[data-operation="operation-A"]'));
     await page.selectOption('#workScope','current');await page.locator('[data-operation="operation-A"]').waitFor();
-    await page.selectOption('#workStatus','all');await page.locator('[data-fold-key="commands"]>summary').click();await page.locator('[data-operation="operation-A"] .work-details>summary').click();await page.waitForTimeout(5700);
-    assert.equal(await page.locator('[data-fold-key="commands"]').evaluate(e=>e.open),true);assert.equal(await page.locator('[data-operation="operation-A"] .work-details').evaluate(e=>e.open),true);
+    await page.selectOption('#workStatus','all');await page.locator('[data-fold-key="commands"]>summary').click();await page.locator('[data-operation="operation-A"] .work-details>summary').click();await page.locator('[data-operation="operation-A"] .retry-details>summary').click();await page.waitForTimeout(5700);
+    assert.equal(await page.locator('[data-fold-key="commands"]').evaluate(e=>e.open),true);assert.equal(await page.locator('[data-operation="operation-A"] .work-details').evaluate(e=>e.open),true);assert.equal(await page.locator('[data-operation="operation-A"] .retry-details').evaluate(e=>e.open),true);
     await page.getByRole('button',{name:'中断任务 1',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-operation="operation-A"]').textContent.includes('已取消'));assert.equal(interrupted,'operation-A');
     assert.deepEqual(errors,[]);
   }finally{

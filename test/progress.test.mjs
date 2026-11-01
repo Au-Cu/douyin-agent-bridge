@@ -47,14 +47,32 @@ test('active writer 在提交前退避并保留原因；到界限暂停，重试
     const m=msg('3000000000001','/派 网站 修改首页');h.s.incoming(m);await h.engine.processNext();const task=h.s.queuedTasks()[0];let attempts=0;
     h.c.run=async(id,input,o)=>{attempts++;o.onSubmitted();throw Object.assign(new Error('already has an active writer'),{remote:true,notSubmitted:true});};
     await h.engine.runTask();assert.match(h.s.queuedTasks()[0].result,/active writer/);assert.match(h.engine.progress.status(m.id),/尚未提交/);
+    let history=h.engine.progress.cards().find(c=>c.id===m.id).retries[0];assert.deepEqual(history.events.map(e=>[e.attempt,e.at,e.outcome]),[[1,1000000,'blocked']]);assert.deepEqual(history.wait,{paused:false,nextAttempt:1010000});
     await h.engine.runTask();assert.equal(attempts,1);
     for(let i=0;i<5;i++){h.advance(61000);await h.engine.runTask();}
     const blocked=h.s.db.prepare('SELECT * FROM tasks WHERE id=?').get(task.id);assert.equal(blocked.status,'blocked');assert.equal(blocked.turn,'');assert.equal(attempts,6);assert.match(h.engine.progress.status(m.id),/调度已暂停/);
+    history=h.engine.progress.cards().find(c=>c.id===m.id).retries[0];assert.deepEqual(history.events.map(e=>e.attempt),[1,2,3,4,5,6]);assert.equal(history.events.at(-1).at,1305000);assert.equal(history.wait.paused,true);
     assert.equal(h.s.snapshot().outbox.some(o=>JSON.parse(o.payload).stage==='active'),false);
     const messages=h.s.snapshot().outbox.filter(o=>o.kind==='text').length;h.engine.busy=true;h.advance(120000);await h.engine.progress.inspect();assert.equal(h.s.snapshot().outbox.filter(o=>o.kind==='text').length,messages);
     h.engine.progress.retry(task.id.slice(0,8));assert.equal(h.s.queuedTasks()[0].id,task.id);
     h.c.run=async(id,input,o)=>{o.onSubmitted();o.onStarted('submitted-turn');throw Object.assign(new Error('connection lost; already has an active writer'),{uncertain:true});};
     await h.engine.runTask();assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(task.id).status,'uncertain');assert.equal(h.s.queuedTasks().length,0);assert.throws(()=>h.engine.progress.retry(task.id.slice(0,8)),/结果不明/);
+    // Manual resume never erases old evidence, even when this retry becomes uncertain.
+    history=h.engine.progress.cards().find(c=>c.id===m.id).retries[0];assert.equal(history.events.length,8);assert.deepEqual(history.events.slice(-2).map(e=>[e.attempt,e.outcome]),[[7,'started'],[7,'uncertain']]);assert.equal(history.wait,null);
+  }finally{h.s.close();}
+});
+
+test('写入恢复只在实际开始后记为成功，记录跨重启保留；旧等待只恢复可证明的最后一次',async()=>{
+  const root=mkdtempSync(join(base,'retry-history-'));let h=harness(root);
+  try{
+    const m=msg('3100000000001','/派 网站 修改首页');h.s.incoming(m);await h.engine.processNext();const task=h.s.queuedTasks()[0];
+    h.c.run=async()=>{throw Object.assign(new Error('already has an active writer'),{notSubmitted:true});};
+    await h.engine.runTask();h.advance(61000);await h.engine.runTask();
+    h.s.db.prepare('DELETE FROM task_retry_events').run();h.s.close();h=harness(root);
+    let history=h.engine.progress.cards().find(c=>c.id===m.id).retries[0];assert.equal(history.events.length,1);assert.deepEqual({attempt:history.events[0].attempt,at:history.events[0].at,legacy:history.events[0].legacy},{attempt:2,at:1061000,legacy:true});
+    h.advance(122000);h.c.run=async(id,input,o)=>{o.onSubmitted();o.onStarted('resumed-turn');return {text:'完成',turnId:'resumed-turn'};};await h.engine.runTask();
+    history=h.engine.progress.cards().find(c=>c.id===m.id).retries[0];assert.deepEqual(history.events.map(e=>[e.attempt,e.outcome]),[[2,'blocked'],[3,'started']]);assert.equal(history.wait,null);
+    h.s.close();h=harness(root);history=h.engine.progress.cards({scope:'all'}).find(c=>c.id===m.id).retries[0];assert.deepEqual(history.events.map(e=>e.outcome),['blocked','started']);assert.equal(h.s.db.prepare('SELECT turn FROM tasks WHERE id=?').get(task.id).turn,'resumed-turn');
   }finally{h.s.close();}
 });
 

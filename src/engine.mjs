@@ -313,7 +313,7 @@ export class BridgeEngine {
       if(route){const prepared=await this.conversations.prepareInput(route,input,message);route=prepared.route;input=prepared.input;inputTokens=prepared.inputTokens;}
       const workThread=route?.threadId||this.store.config.coordinator;
       this.progress.stage(operationId,'生成答复','',{thread:workThread});
-      const result=await this.codex.run(workThread,input,{assistant:true,...(this.preferences?await this.preferences.work():{effort:learned?'medium':undefined}),onSubmitted:()=>{this.assertNotArchived(operationId);this.progress.stage(operationId,'提交本轮需求','',{thread:workThread,submitted:true});},onStarted:turn=>this.progress.stage(operationId,'生成答复','',{running:true,thread:workThread,turn,submitted:true}),toolHandler:async call=>{
+      const result=await this.codex.run(workThread,input,{assistant:true,...(this.preferences?await this.preferences.work():{effort:learned?'medium':undefined}),onSubmitted:()=>{this.assertNotArchived(operationId);this.progress.stage(operationId,'提交本轮需求','',{thread:workThread,submitted:true});},onStarted:turn=>{this.progress.clearWait('message:'+row.id,{outcome:'started',reason:'已开始执行'});this.progress.stage(operationId,'生成答复','',{running:true,thread:workThread,turn,submitted:true});},toolHandler:async call=>{
         if(call.tool==='need_context')return route?this.conversations.context(route):{notice:'尚未按需求分组'};
         if(call.tool==='knowledge_search')return (route?this.conversations.related(route.needId,call.arguments.query):this.store.search(call.arguments.query)).map(k=>({...k,transcript:k.transcript.slice(0,16000),visualAnalysis:this.visualText(k).slice(0,24000),visualPath:join(dirname(k.path),'visual-analysis.md')}));
         if(call.tool==='dispatch_task'){
@@ -332,6 +332,7 @@ export class BridgeEngine {
       if(e.code==='ARCHIVED_TASK'){this.store.messageStatus(row.id,'blocked','用户已归档，未提交工作暂停');return;}
       const auth=authFailure(e);
       if(writerConflict(e)&&(!this.progress.get(operationId)?.submitted||e.notSubmitted)){this.progress.db.prepare('UPDATE operations SET submitted=0,turn=\'\' WHERE id=?').run(operationId);this.progress.messageBlocked(row,'Codex 聊天已有 active writer，暂未获得写入权');return;}
+      this.progress.clearWait('message:'+row.id,{outcome:this.progress.get(operationId)?.submitted&&e.uncertain?'uncertain':'failed',reason:e.message});
       if(!processing&&auth){
         const key=row.id+':'+auth;if(this.authNoticeKey!==key){this.authNoticeKey=key;this.reply(this.failureNotice(e,{video:row.kind==='video'}),{priority:90});}
       }else{
@@ -438,7 +439,7 @@ export class BridgeEngine {
       const result=await this.codex.run(task.thread,input,{
         ...(this.preferences?await this.preferences.work():{}),
         onSubmitted:()=>{this.assertNotArchived(context.operationId,{taskId:task.id});started=true;this.store.taskStatus(task.id,'running');this.progress.stage(context.operationId,'提交目标任务',task.alias,{thread:task.thread,submitted:true});},
-        onStarted:id=>{started=true;this.progress.clearWait(task.id);this.store.taskStatus(task.id,'running','',id);this.progress.stage(context.operationId,'执行目标任务',task.alias,{running:true,thread:task.thread,turn:id,submitted:true});}
+        onStarted:id=>{started=true;this.progress.clearWait(task.id,{outcome:'started',reason:'已开始执行'});this.store.taskStatus(task.id,'running','',id);this.progress.stage(context.operationId,'执行目标任务',task.alias,{running:true,thread:task.thread,turn:id,submitted:true});}
       });
       checkWork();
       this.store.taskStatus(task.id,'done',result.text,result.turnId);this.store.event('「'+task.alias+'」已返回执行结果');
@@ -450,6 +451,7 @@ export class BridgeEngine {
       if(e.code==='ARCHIVED_TASK'){this.store.taskStatus(task.id,'blocked','用户已归档，未提交工作暂停');return;}
       if(!started&&authFailure(e)){this.progress.taskBlocked(task,'等待本机 Codex 登录或额度恢复');return;}
       if(writerConflict(e)&&(!started||e.notSubmitted)){const id=JSON.parse(task.context||'{}').operationId;if(id)this.progress.db.prepare("UPDATE operations SET submitted=0,turn='' WHERE id=?").run(id);this.progress.taskBlocked(task,'Codex 拒绝写入：already has an active writer；尚未提交执行');return;}
+      this.progress.clearWait(task.id,{outcome:started||e.uncertain?'uncertain':'failed',reason:e.message});
       this.store.taskStatus(task.id,started||e.uncertain?'uncertain':'failed',e.message);this.store.event('任务未完成：'+e.message,'error');
       this.reply('「'+task.alias+'」任务暂未完成：'+e.message+(started?'。执行可能已经开始，请在原聊天查看；不会自动重做。':''));
     }
