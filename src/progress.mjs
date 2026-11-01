@@ -16,8 +16,8 @@ export function operationTitle(value){const raw=String(value||'').replace(/\s+/g
 const followupSchema={type:'object',properties:{relation:{type:'string',enum:['duplicate','supplement','independent']},operationId:{type:'string'}},required:['relation','operationId'],additionalProperties:false};
 
 export class Progress{
-  constructor({store,codex,notify,classify=null,now=Date.now,noticeInterval=60000,stallAfter=90000,writerLimit=5*60000}){
-    Object.assign(this,{store,codex,notify,classify,now,noticeInterval,stallAfter,writerLimit});this.db=store.db;this.checks=new Map();
+  constructor({store,codex,taskCodex=codex,notify,classify=null,now=Date.now,noticeInterval=60000,stallAfter=90000,writerLimit=5*60000}){
+    Object.assign(this,{store,codex,taskCodex,notify,classify,now,noticeInterval,stallAfter,writerLimit});this.db=store.db;this.checks=new Map();
     this.db.exec(`CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,peer TEXT,request TEXT,fingerprint TEXT,kind TEXT,need_id TEXT,status TEXT,phase TEXT,detail TEXT,created INTEGER,started INTEGER,changed INTEGER,last_notice INTEGER,ended INTEGER,outcome TEXT,parent TEXT,thread TEXT,turn TEXT,submitted INTEGER);
       CREATE TABLE IF NOT EXISTS operation_messages(message_id TEXT PRIMARY KEY,operation_id TEXT,relation TEXT,platform_id TEXT);
       CREATE TABLE IF NOT EXISTS task_waits(task_id TEXT PRIMARY KEY,operation_id TEXT,reason TEXT,since INTEGER,attempts INTEGER,next_attempt INTEGER,paused INTEGER);
@@ -241,7 +241,7 @@ export class Progress{
         }
         if(op.submitted&&(!op.ended||this.tasks(op.id).some(t=>t.status==='running'))&&this.now()-op.changed>=this.stallAfter){
           if(this.now()-(this.checks.get(op.id)?.checked||0)<30000)continue;
-          try{const r=await this.codex.request('thread/read',{threadId:op.thread},5000);this.checks.set(op.id,{checked:this.now(),state:r.thread?.status?.type||'unknown'});}
+          try{const executor=this.tasks(op.id).some(t=>t.thread===op.thread)?this.taskCodex:this.codex;const r=await executor.request('thread/read',{threadId:op.thread},5000);this.checks.set(op.id,{checked:this.now(),state:r.thread?.status?.type||'unknown'});}
           catch{this.checks.set(op.id,{checked:this.now(),state:'unknown'});}
         }
       }

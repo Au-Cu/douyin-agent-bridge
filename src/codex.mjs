@@ -6,6 +6,7 @@ import {credentialRevision,defaultCodexHome,authFailure,authError} from './codex
 import {assistantInstructions,instructionRevision,roleInstructions} from './prompts.mjs';
 import {writerConflict} from './progress.mjs';
 import {operationContext,checkWork,workSignal,raceWork,trackStop,interruptedError} from './execution.mjs';
+import {connectSharedCodex} from './shared-codex-transport.mjs';
 
 export function approvalResponse(request,allow) {
   if(request.method==='item/permissions/requestApproval')return {permissions:allow?(request.params.permissions||{}):{},scope:'turn'};
@@ -13,9 +14,9 @@ export function approvalResponse(request,allow) {
 }
 
 export class CodexClient extends EventEmitter {
-  constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome(),restricted=false,spawnEnv={},authTokensProvider,allowedChatTools=[],allowPublicWeb=false }={}) {
+  constructor({ cwd, executable=process.env.CODEX_BIN||'codex', spawnArgs=['app-server'], log=()=>{},codexHome=defaultCodexHome(),restricted=false,spawnEnv={},authTokensProvider,allowedChatTools=[],allowPublicWeb=false,sharedRoot,sharedRole='bridge' }={}) {
     super(); Object.assign(this,{cwd,executable,spawnArgs,log,codexHome,restricted,spawnEnv,authTokensProvider,allowPublicWeb});this.allowedChatTools=new Set(allowedChatTools); this.seq=0; this.pending=new Map(); this.runs=new Map(); this.early=new Map(); this.approvals=new Map();
-    this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.loaded=new Set();this.threadLocks=new Map();this.interrupting=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
+    this.sharedRoot=sharedRoot;this.sharedRole=sharedRole;this.generation=0;this.ephemeral=new Map();this.profiles=new Map();this.loaded=new Set();this.threadLocks=new Map();this.interrupting=new Map();this.usage=new Map();this.auth={status:'unknown',message:''};
   }
   async connect() {
     if(this.closed)throw Object.assign(new Error('Codex 客户端已关闭'),{code:'CODEX_CLIENT_CLOSED'});
@@ -33,6 +34,9 @@ export class CodexClient extends EventEmitter {
     this.loadedRevision=revision;this.needsReconnect=false;
     try{
       await this.#connect();
+      // External chat tokens live only in memory. Every new isolated process
+      // must import them again, including an authentication recovery reconnect.
+      if(this.restricted&&this.authTokensProvider)await this.request('account/login/start',{type:'chatgptAuthTokens',...await this.authTokensProvider()});
       const result=await this.request('account/read',{refreshToken:false});
       this.auth=result.requiresOpenaiAuth===true&&result.account===null?{status:'login',message:authError().message}:{status:'ready',message:'已读取本机 Codex 登录'};
       if(recovered&&this.auth.status==='ready'){this.log('已重新连接本机 Codex，保留原聊天与视频进度');this.emit('auth-reconnected');}
@@ -64,7 +68,7 @@ export class CodexClient extends EventEmitter {
   async #connect() {
     const command=resolveCodexCommand(this.executable);
     const env={...process.env,...command.env,CODEX_HOME:this.codexHome,...this.spawnEnv};if(this.restricted)for(const key of ['OPENAI_API_KEY','OPENAI_BASE_URL','OPENAI_ORG_ID','OPENAI_PROJECT_ID'])delete env[key];
-    const proc=this.proc=spawn(command.executable,[...command.prefix,...this.spawnArgs],{cwd:this.cwd,env,windowsHide:true,stdio:['pipe','pipe','pipe']});
+    const proc=this.proc=this.sharedRoot?await connectSharedCodex(this.sharedRoot,{role:this.sharedRole}):spawn(command.executable,[...command.prefix,...this.spawnArgs],{cwd:this.cwd,env,windowsHide:true,stdio:['pipe','pipe','pipe']});
     this.generation++;
     proc.on('error',e=>this.#disconnect(e,proc));
     proc.on('exit',()=>this.#disconnect(Object.assign(new Error('Codex 连接已关闭'),{uncertain:true}),proc));
@@ -97,10 +101,10 @@ export class CodexClient extends EventEmitter {
       const p=this.pending.get(msg.id); if(!p)return;
       clearTimeout(p.timer);this.pending.delete(msg.id);
       if(!msg.error){if(['thread/start','thread/resume'].includes(p.method)&&(msg.result?.thread?.id||p.threadId))this.loaded.add(msg.result?.thread?.id||p.threadId);if(['thread/unsubscribe','thread/archive'].includes(p.method))this.loaded.delete(p.threadId);}
-      msg.error?p.reject(this.#noteFailure(Object.assign(new Error(msg.error.message||JSON.stringify(msg.error)),{remote:true,code:msg.error.code,rpcMethod:p.method,notSubmitted:writerConflict(msg.error.message)&&['thread/resume','turn/start'].includes(p.method)}))):p.resolve(msg.result); return;
+      msg.error?p.reject(this.#noteFailure(Object.assign(new Error(msg.error.message||JSON.stringify(msg.error)),{remote:true,code:this.sharedRoot&&msg.error.code===-32011?'DESKTOP_NOT_CONNECTED':msg.error.code,rpcMethod:p.method,notSubmitted:(writerConflict(msg.error.message)||this.sharedRoot&&msg.error.code===-32011)&&['thread/resume','turn/start'].includes(p.method)}))):p.resolve(msg.result); return;
     }
     if(msg.id!==undefined&&msg.method) {
-      if(this.restricted&&msg.method==='account/chatgptAuthTokens/refresh'&&this.authTokensProvider){try{this.send({id:msg.id,result:await this.authTokensProvider()});}catch{this.send({id:msg.id,error:{code:-32000,message:'请在本机 Codex 重新登录'}});}return;}
+      if(this.restricted&&msg.method==='account/chatgptAuthTokens/refresh'&&this.authTokensProvider){try{this.send({id:msg.id,result:await this.authTokensProvider(msg.params)});}catch{this.send({id:msg.id,error:{code:-32000,message:'本机登录已变更，请在新一轮聊天中重新连接'}});}return;}
       if(this.restricted&&!(msg.method==='item/tool/call'&&this.allowedChatTools.has(msg.params?.tool))){
         this.send({id:msg.id,...(/requestApproval$/.test(msg.method)?{result:approvalResponse(msg,false)}:{error:{code:-32601,message:'Chat-only sessions have no client tools or user approvals.'}})});return;
       }
@@ -140,6 +144,7 @@ export class CodexClient extends EventEmitter {
       const r=[...this.runs.values()].find(r=>r.threadId===msg.params?.threadId);if(r){r.turnId=msg.params.turn.id;r.turnReady?.resolve(r.turnId);}
     }
     if(msg.method==='serverRequest/resolved')this.approvals.delete(String(msg.params?.requestId));
+    if(msg.method==='thread/closed')this.loaded.delete(msg.params?.threadId);
     this.emit('notification',msg);
   }
   #finish(r,turn) {
@@ -221,6 +226,7 @@ export class CodexClient extends EventEmitter {
     r.cleanup=()=>signal?.removeEventListener('abort',abort);signal?.addEventListener('abort',abort,{once:true});
     try {
       checkWork();
+      if(this.sharedRoot&&this.sharedRole==='bridge')await this.request('bridge/toolOwner',{threadId,enabled:typeof toolHandler==='function'});
       onSubmitted?.();
       checkWork();r.submitted=true;
       const out=await this.request('turn/start',{threadId,input,...(effort?{effort}:{}),...(model?{model}:{}),...(serviceTier?{serviceTierForTurn:serviceTier}:{}),...(outputSchema?{outputSchema}:{})});const turn=out.turn;

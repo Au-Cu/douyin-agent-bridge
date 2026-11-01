@@ -38,6 +38,14 @@ test('派发在提交前遇到登录失败时保留队列，提交后遇到同�
   h.codex.emit('auth-reconnected');await h.engine.runTask();assert.equal(submissions,1);assert.equal(h.s.snapshot().tasks[0].id,task);h.s.close();
 });
 
+test('项目派发只用共享执行器，提交先落盘，精确回合结果交付原任务',async()=>{
+  const h=harness(),shared=new EventEmitter();shared.connect=async()=>{};shared.ensureAuthenticated=async()=>{};shared.request=async()=>({thread:{status:{type:'idle'}}});let invoked=0;
+  const engine=new BridgeEngine({store:h.s,codex:h.codex,taskCodex:shared,adapter:{},media:{}});try{const id=engine.dispatch('项目','修改页面','交给项目修改页面');shared.run=async(thread,input,options)=>{invoked++;assert.equal(thread,'target-chat');assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status,'queued');options.onSubmitted();assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status,'running');options.onStarted('shared-exact-turn');assert.equal(h.s.db.prepare('SELECT turn FROM tasks WHERE id=?').get(id).turn,'shared-exact-turn');return {text:'SHARED_RESULT',turnId:'shared-exact-turn'};};await engine.runTask();assert.equal(invoked,1);assert.equal(h.calls.length,0);const task=h.s.db.prepare('SELECT * FROM tasks WHERE id=?').get(id);assert.equal(task.status,'done');assert.equal(task.turn,'shared-exact-turn');assert.equal(task.result,'SHARED_RESULT');assert.equal(engine.progress.taskCodex,shared);assert.equal(engine.interrupts.taskCodex,shared);}finally{h.s.close();}
+});
+test('桌面共享入口未启用时保留未提交状态，不回退另起写入进程',async()=>{
+  const h=harness(),shared=new EventEmitter();shared.ensureAuthenticated=async()=>{throw Object.assign(new Error('desktop missing'),{code:'DESKTOP_NOT_CONNECTED',notSubmitted:true});};const engine=new BridgeEngine({store:h.s,codex:h.codex,taskCodex:shared,adapter:{},media:{}});try{const id=engine.dispatch('项目','修改页面','交给项目修改页面');await engine.runTask();const task=h.s.db.prepare('SELECT * FROM tasks WHERE id=?').get(id);assert.equal(task.status,'queued');assert.equal(task.turn,'');assert.match(task.result,/桌面共享连接尚未就绪.*尚未提交/);assert.equal(h.calls.length,0);}finally{h.s.close();}
+});
+
 test('抖音重连指令可以在分析忙时处理，等待已有任务结束，不中断或重复提交',async()=>{
   const h=harness();h.engine.busy=true;let reconnects=0;h.codex.reconnect=async()=>{reconnects++;return {deferred:true,auth:{status:'ready'}};};
   const message={id:'reconnect-command',peer:'owner-chat',kind:'text',text:'/重新连接'};h.s.incoming(message);

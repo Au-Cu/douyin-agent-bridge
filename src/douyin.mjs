@@ -237,12 +237,19 @@ export function markOwnerConversation(target){
 export class DouyinAdapter {
   constructor({root,log=()=>{}}){Object.assign(this,{root,log});this.status='closed';this.sending=false;}
   async open(owner) {
-    if(this.context)return;
-    await mkdir(join(this.root,'browser-profile'),{recursive:true});
-    this.context=await chromium.launchPersistentContext(join(this.root,'browser-profile'),{channel:'msedge',headless:false,viewport:{width:1280,height:860},args:['--disable-notifications']});
-    this.context.on('close',()=>{this.context=null;this.page=null;this.status='closed';});
+    if(this.context&&this.page&&!this.page.isClosed?.()){
+      await this.page.bringToFront();
+      if(!this.openFailed&&this.page.url().startsWith('https://www.douyin.com/chat'))return;
+    }
+    if(!this.context){
+      await mkdir(join(this.root,'browser-profile'),{recursive:true});
+      const context=this.context=await chromium.launchPersistentContext(join(this.root,'browser-profile'),{channel:'msedge',headless:false,viewport:{width:1280,height:860},args:['--disable-notifications']});
+      context.on('close',()=>{if(this.context===context){this.context=null;this.page=null;this.status='closed';}});
+    }
     this.page=this.context.pages().find(p=>p.url().startsWith('https://www.douyin.com/chat'))||this.context.pages()[0]||await this.context.newPage();
-    await this.page.goto('https://www.douyin.com/chat?isPopup=1',{waitUntil:'domcontentloaded',timeout:60000});this.status='waiting_login';
+    await this.page.bringToFront();
+    try{await this.page.goto('https://www.douyin.com/chat?isPopup=1',{waitUntil:'domcontentloaded',timeout:60000});this.openFailed=false;this.status='waiting_login';}
+    catch(e){this.openFailed=true;this.status='open_error';throw e;}
     if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回用户会话：'+e.message));
   }
   async restoreOwner(owner){
