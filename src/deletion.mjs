@@ -32,7 +32,7 @@ export class ArchivedDeletion{
     const ops=operations.filter(o=>ids.has(o.id));
     for(const op of ops){
       if(op.status!=='merged'&&!this.store.isArchived('task',op.id))throw new Error('关联任务 '+(op.number||op.title||'命令回执')+' 尚未归档，请先归档后再删除。');
-      if(unsafe.has(op.status))throw new Error('关联任务仍在运行、发送或结果尚未核实，不能删除现场。');
+      if(unsafe.has(op.status))throw Object.assign(new Error('关联任务仍在运行、发送或结果尚未核实，不能删除现场。'),op.status==='failed_delivery'?{code:'DELIVERY_UNCONFIRMED'}:{});
       if(op.submitted&&!op.turn&&!['done','merged'].includes(op.status))throw new Error('关联任务已提交但缺少可核实的回合，不能删除现场。');
       const record=this.store.archiveRecord('task',op.id);if(record&&record.state!=='done')throw new Error('关联任务的归档状态尚未核实。');
     }
@@ -46,7 +46,7 @@ export class ArchivedDeletion{
     const messages=this.db.prepare('SELECT * FROM messages ORDER BY id').all().filter(m=>messageIds.has(m.id));
     if(messages.some(m=>unsafe.has(m.status)))throw new Error('关联消息仍在处理中或结果尚未核实，不能删除。');
     const outbox=this.db.prepare('SELECT * FROM outbox ORDER BY id').all().filter(o=>{const p=json(o.payload);return ids.has(p.operationId)||taskIds.has(p.taskId)||messageIds.has(p.messageId);});
-    if(outbox.some(o=>['sending','uncertain'].includes(o.status)))throw new Error('关联回复或表情的送达尚未核实，不能删除发送现场。');
+    if(outbox.some(o=>['sending','uncertain'].includes(o.status)))throw Object.assign(new Error('关联回复或表情的送达尚未核实，请先打开“核实送达”处理，不能直接删除发送现场。'),{code:'DELIVERY_UNCONFIRMED'});
     const outIds=new Set(outbox.map(o=>o.id));
     const references=this.db.prepare('SELECT * FROM reply_reference_links ORDER BY message_id').all().filter(r=>messageIds.has(r.message_id)||outIds.has(r.outbox_id));
     const outgoing=this.db.prepare('SELECT * FROM outgoing_message_links ORDER BY peer,platform_id').all().filter(l=>outIds.has(l.outbox_id));

@@ -343,7 +343,7 @@ export class DouyinAdapter {
       throw new UncertainDelivery('已按下发送，但未能确认回执；不会自动重复发送');
     } catch(e){if(submitted)e.uncertain=true;else if(workSignal()?.aborted&&editor&&surface&&body){try{const scan=await this.scan(),draft=(await surface.evaluate(inspectComposers))[0];if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid&&draft?.text===body)await editor.fill('');}catch{}}throw e;} finally {if(replyToMessageId&&surface)await surface.evaluate(()=>{document.removeEventListener('contextmenu',globalThis.__douyinBridgeContextListener,true);delete globalThis.__douyinBridgeContextListener;document.querySelectorAll('[data-bridge-quote-source],[data-bridge-quote-action]').forEach(e=>{e.removeAttribute('data-bridge-quote-source');e.removeAttribute('data-bridge-quote-action');});}).catch(()=>{});this.sending=false;}
   }
-  async react(owner,messageId,{probeOnly=false,emojis=['👌','👀','👍']}={}) {
+  async react(owner,messageId,{probeOnly=false,verifyOnly=false,emojis=['👌','👀','👍']}={}) {
     checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');
     if(!/^\d{5,32}$/.test(messageId||''))return {supported:false,reason:'无法定位原视频消息'};
@@ -405,6 +405,7 @@ export class DouyinAdapter {
       }
       const choice=selected?.choice;
       if(probeOnly)return {supported:!!choice,probeOnly:true};
+      if(verifyOnly)return {supported:!!choice,verified:!!choice?.selected,readOnly:true,emoji:choice?.emoji,reason:choice?.selected?'已核验原消息菜单中的本账号选中状态':'未取得本账号已选择该表情的证据；未点击表情。'};
       if(!choice)return {supported:false,reason:'此消息菜单没有可核验的贴表情选项'};
       if(choice.selected)return {supported:true,verified:true,emoji:choice.emoji};
       const before=await surface.evaluate(inspectMessageReactions,{messageId,emoji:choice.emoji});

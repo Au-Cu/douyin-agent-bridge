@@ -97,7 +97,7 @@ export class Chats {
   }
   async scan(){
     if(!this.store.config.enabled||!this.armedAt||this.scanning||this.adapter.selecting)return;const bots=this.bots();if(!bots.length)return;const chat=bots[this.cursor++%bots.length];this.scanning=true;
-    try{const scan=await this.adapter.scanPeer(chat,{background:true});if(!scan)return;if(!sameChat(scan.peer,chat)){this.warn(chat,'聊天身份、类型或助手账号不一致，普通聊天保持暂停');return;}for(const m of [...scan.messages].sort((a,b)=>a.created-b.created)){
+    try{const scan=await this.adapter.scanPeer(chat,{background:true});if(!scan)return;if(!sameChat(scan.peer,chat)){this.warn(chat,'聊天身份、类型或助手账号不一致，普通聊天保持暂停');return;}this.deliveryReview?.observe(scan);for(const m of [...scan.messages].sort((a,b)=>a.created-b.created)){
       this.ingest(chat,m);
     }}catch(e){this.warn(chat,'普通聊天暂未连接：'+e.message);}finally{this.scanning=false;}
   }
@@ -119,6 +119,6 @@ export class Chats {
       this.store.db.exec('BEGIN IMMEDIATE');try{this.set(row.id,'replying',text);for(const [i,part] of parts.entries())this.store.enqueueReply(row.peer,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{payload:{chatbot:true,botId:row.id,chatRevision:row.revision,plainText:true,...(chat.type==='group'?{replyToMessageId:JSON.parse(row.body).id}:{}),group,segment:i+1,totalSegments:parts.length},dedupe:'bot-result:'+row.id+':'+i});this.store.db.exec('COMMIT');}catch(e){this.store.db.exec('ROLLBACK');throw e;}
     }catch(e){const valid=this.get(row.peer)?.revision===row.revision;this.set(row.id,!valid?'cancelled':submitted&&e.uncertain?'uncertain':'failed',!valid?'聊天已停用，未交付本轮结果':submitted&&e.uncertain?'暂时无法确认运行状态，不会自动重跑':chatFailureText(e,config));}
   }
-  reconcile(){for(const row of this.store.db.prepare("SELECT * FROM bot_messages WHERE status IN ('replying','delivery_uncertain')").all()){const sent=this.store.db.prepare("SELECT status FROM outbox WHERE kind='text' AND json_extract(payload,'$.botId')=?").all(row.id);if(sent.length&&sent.every(s=>s.status==='sent')){this.set(row.id,'done');this.receipt(row,'done');}else if(sent.some(s=>s.status==='uncertain'))this.set(row.id,'delivery_uncertain');else if(sent.some(s=>s.status==='pending')&&row.status==='delivery_uncertain')this.set(row.id,'replying');}}
+  reconcile(){for(const row of this.store.db.prepare("SELECT * FROM bot_messages WHERE status IN ('replying','delivery_uncertain')").all()){const sent=this.store.db.prepare("SELECT status,payload FROM outbox WHERE kind='text' AND json_extract(payload,'$.botId')=?").all(row.id);if(sent.length&&sent.every(s=>s.status==='sent')){this.set(row.id,'done');this.receipt(row,'done');}else if(sent.some(s=>s.status==='uncertain'))this.set(row.id,'delivery_uncertain');else if(sent.some(s=>['pending','sending'].includes(s.status))&&row.status==='delivery_uncertain')this.set(row.id,'replying');else if(sent.some(s=>JSON.parse(s.payload||'{}').deliveryReview?.resolution==='abandoned'))this.set(row.id,'cancelled');}}
   stop(){for(const c of this.controllers.values())c.abort();this.sandbox.close();}
 }

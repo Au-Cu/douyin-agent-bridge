@@ -3,6 +3,13 @@ import { launchTestBrowser } from './browser.mjs';
 import { DouyinAdapter,captureMessageMenu,inspectReactionChoices,markOwnerConversation } from '../src/douyin.mjs';
 const owner={chatKey:'bound-chat',peerUid:'bound-owner'};
 
+test('Edge 只读核验原消息表情，未选中和已选中均不得点击或撤销',async t=>{
+  const browser=await launchTestBrowser(t);if(!browser)return;try{const page=await browser.newPage();await page.setContent('<div data-bridge-message-id="8000000000001" style="padding:30px">原消息</div>');
+    await page.evaluate(()=>{window.emojiClicks=0;window.selfSelected=false;document.querySelector('[data-bridge-message-id]').addEventListener('contextmenu',e=>{e.preventDefault();document.querySelectorAll('[role="menu"]').forEach(n=>n.remove());const menu=document.createElement('div');menu.setAttribute('role','menu');menu.style.width='300px';menu.innerHTML='<button aria-label="[OK]">👌</button>';menu.firstChild.setAttribute('aria-pressed',String(window.selfSelected));menu.firstChild.onclick=()=>window.emojiClicks++;document.body.append(menu);});});const a=new DouyinAdapter({root:'unused'});a.page=page;a.chatFrame=page;a.scan=async()=>({peer:owner});
+    for(const selected of [false,true]){await page.evaluate(value=>window.selfSelected=value,selected);const r=await a.react(owner,'8000000000001',{verifyOnly:true,emojis:['👌']});assert.equal(r.verified,selected);assert.equal(r.readOnly,true);assert.equal(await page.evaluate(()=>window.emojiClicks),0);}
+  }finally{await browser.close();}
+});
+
 test('原生无文字圆形展开按钮也能打开完整表情；探测不点击实际表情',async t=>{
   const browser=await launchTestBrowser(t);if(!browser)return;try{const page=await browser.newPage();await page.setContent('<div data-bridge-message-id="8000000000001" style="padding:30px">原消息</div>');
     await page.evaluate(()=>{window.emojiClicks=0;document.querySelector('[data-bridge-message-id]').addEventListener('contextmenu',e=>{e.preventDefault();document.querySelectorAll('[role="menu"]').forEach(n=>n.remove());const menu=document.createElement('div');menu.setAttribute('role','menu');menu.className='MessageOperatePopBodywrapper';menu.style.width='300px';menu.innerHTML='<div class="PopBodyEmojiQuickReplyrow"><img class="PopBodyEmojiQuickReplyemojiImg" alt="[微笑]" width="32" height="32"><img class="PopBodyEmojiQuickReplyemojiImg" alt="[色]" width="32" height="32"><div class="quickArrow"><svg width="32" height="32"><circle cx="16" cy="16" r="14"/><path d="M10 13L16 20L22 13"/></svg></div></div>';

@@ -115,6 +115,7 @@ export class BridgeEngine {
     this.scanBusy=true;
     try{
     const owner=this.store.config.owner,scan=await (this.adapter.scanPeer?this.adapter.scanPeer(owner,{background:true}):this.adapter.scan());if(!scan)return;
+    this.deliveryReview?.observe(scan);
     const accepted=[],timeline=[...scan.messages].sort((a,b)=>a.created-b.created);
     for(const m of timeline){
       if(!this.store.config.enabled&&!(m.kind==='text'&&['interrupt','ignore_start','ignore_end'].includes(parseCommand(m.text)?.name)))continue;
@@ -536,6 +537,7 @@ export class BridgeEngine {
     const normalizedBody=out.body.replaceAll(String.fromCharCode(0x4e3b,0x4eba),'用户');
     if(normalizedBody!==out.body){this.store.updatePendingOutbox(out.id,{body:normalizedBody,payload:JSON.parse(out.payload||'{}'),priority:out.priority});out.body=normalizedBody;}
     this.outboxBusy=true;this.store.delivery(out.id,'sending');
+    if(out.kind==='text')this.store.mergeOutboxPayload(out.id,{deliveryAttempt:{started:Date.now(),ended:0}});
     try{
       let method='text',textReceipt;
       if(out.kind==='progress_reaction'){
@@ -551,7 +553,7 @@ export class BridgeEngine {
       if(out.kind==='video_ack')this.store.event('已在抖音确认收到视频（'+(method==='reaction'?'消息表情回应':'私信文字')+'）');
     }
     catch(e){let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}this.store.delivery(out.id,status,e.message);}
-    finally{this.outboxBusy=false;}
+    finally{if(out.kind==='text'){const row=this.store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(out.id);if(row){const attempt=JSON.parse(row.payload||'{}').deliveryAttempt;this.store.mergeOutboxPayload(out.id,{deliveryAttempt:{...attempt,ended:Date.now()}});}}this.outboxBusy=false;}
   }
   start(){this.timer=setInterval(()=>{for(const task of [()=>this.scan(),()=>this.chats?.scan(),()=>this.chats?.process(),()=>this.processNext(),()=>this.runTask(),()=>this.deliver()])Promise.resolve(task()).catch(e=>this.store.event(e.message,'error'));},3000);this.watchdog=setInterval(()=>{this.interrupts.reconcile();this.progress.inspect().catch(e=>this.store.event('独立进度检查暂不可用','attention'));this.reconcileTasks().catch(()=>this.store.event('原任务回合结果暂未核实，保留现场','attention'));},5000);}
   stop(){this.stopping=true;clearInterval(this.timer);clearInterval(this.watchdog);this.store.saveConfig({enabled:false});}

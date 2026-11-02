@@ -26,7 +26,7 @@ import {PeerBrowser} from './peer-browser.mjs';
 import {Chats} from './chats.mjs';
 import {ChatSandbox} from './chat-sandbox.mjs';
 import {CodeSandbox} from './code-sandbox.mjs';
-import {reconcileQuotedReply} from './reconcile-reply.mjs';
+import {DeliveryReview} from './delivery-review.mjs';
 import {prepareDesktopShared} from './desktop-shared-setup.mjs';
 import {runtimeClients} from './runtime-clients.mjs';
 import {DshChatSandbox} from './dsh/chat-sandbox.mjs';
@@ -50,6 +50,7 @@ const engine=new BridgeEngine({store,adapter,media,codex,taskCodex,visual,prefer
 const deletion=new ArchivedDeletion({store,engine,conversations});
 const codeSandbox=new CodeSandbox({root:store.root}),chatCapabilities=()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox}),chatSandbox=new ChatRuntime({store,sandboxes:{codex:new ChatSandbox({root:store.root,codex:localCodex,log,codeSandbox,capabilities:chatCapabilities}),dsh:new DshChatSandbox({root:store.root,dsh,log,codeSandbox,capabilities:chatCapabilities})}}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
 preferences.chatCatalogProvider=harness=>harness==='dsh'?chatSandbox.catalog(harness):codex.models('codex');
+const deliveryReview=new DeliveryReview({store,adapter,engine,chats});engine.deliveryReview=deliveryReview;chats.deliveryReview=deliveryReview;
 let sandboxPreparing=false;
 const token=randomBytes(32).toString('hex');let asrInstalling=false;let closing=false;
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
@@ -79,6 +80,7 @@ const server=http.createServer(async(req,res)=>{
       if(req.method==='GET'&&path==='/api/models'){const chat=url.searchParams.get('mode')==='chat',harness=chat?store.config.chatHarness||'codex':active,data=await (chat?preferences.chatCatalog(harness):preferences.catalog(harness));return json(res,{...data,harness});}
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
       if(req.method==='GET'&&path==='/api/commands')return json(res,{text:commandHelp});
+      if(req.method==='GET'&&path==='/api/outbox/review')return json(res,deliveryReview.view(url.searchParams.get('kind'),String(url.searchParams.get('id')||'')));
       if(req.method==='GET'&&path==='/api/threads'){const internal=new Set(store.db.prepare('SELECT thread FROM need_threads').all().map(r=>r.thread));return json(res,(await codex.threads(url.searchParams.get('q')||'',harnessValue(url.searchParams.get('harness')||active))).filter(t=>!internal.has(t.id)));}
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries(),...taskCodex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
       if(req.method==='GET'&&path==='/api/browser/reaction-diagnostics')return json(res,{lastReceipt:adapter.lastReceipt||null,menu:adapter.lastReactionDiagnostic||null});
@@ -196,12 +198,9 @@ const server=http.createServer(async(req,res)=>{
         return json(res,{ok:true});
       }
       if(path==='/api/approval'){(taskCodex.approvals.has(String(body.id))?taskCodex:codex).approve(String(body.id),body.allow===true);return json(res,{ok:true});}
-      if(path==='/api/outbox/reconcile')return json(res,await reconcileQuotedReply({store,chats,adapter,id:body.id}));
+      if(path==='/api/outbox/reconcile')return json(res,await deliveryReview.reconcile(body.id));
       if(path==='/api/outbox/resolve'){
-        const item=store.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(body.id));if(!item||item.status!=='uncertain')throw new Error('此回执无需人工处理');
-        if(!['sent','pending'].includes(body.status))throw new Error('无效处理方式');
-        if(item.kind==='progress_reaction'&&body.status==='pending')throw new Error('这次表情点击结果不明，不能重复点击；请先核实原消息。');
-        store.delivery(item.id,body.status,'用户在本机手动确认');return json(res,{ok:true});
+        return json(res,deliveryReview.resolve(body.id,body.status,{confirmed:body.confirmed}));
       }
       if(path==='/api/retry/video'){
         const m=store.db.prepare('SELECT * FROM messages WHERE id=?').get(String(body.id));
@@ -227,7 +226,7 @@ const server=http.createServer(async(req,res)=>{
     const types={'.html':'text/html','.js':'text/javascript','.css':'text/css'};
     res.writeHead(200,{'Content-Type':types[extname(assets[path])]+'; charset=utf-8','Set-Cookie':`bridge_session=${token}; HttpOnly; SameSite=Strict; Path=/`,'Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'",'X-Content-Type-Options':'nosniff'});
     res.end(await readFile(join(project,'public',assets[path])));
-  }catch(e){json(res,{error:e.message},400);}
+  }catch(e){json(res,{error:e.message,...(e.code?{code:e.code}:{})},400);}
 });
 server.listen(port,'127.0.0.1',()=>{console.log('抖音 Agent Bridge 控制台：'+origin);log('控制台已启动，正在恢复本机连接');store.backup().catch(()=>log('状态快照暂未完成，请检查磁盘空间','attention'));});
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
