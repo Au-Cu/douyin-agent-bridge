@@ -46,6 +46,7 @@ export class Preferences{
     await this.resolve(next,{textOnly:true,chat:true,harness});
     if(harness!==(this.store.config.chatHarness||'codex'))throw new Error('普通聊天后端已切换，请刷新后保存对应配置');
     const extra={};for(const [key,target]of [['webSearch','chatWebSearch'],['codeSandbox','chatCodeSandbox']])if(key in patch){if(typeof patch[key]!=='boolean')throw new Error('聊天能力开关无效');extra[target]=patch[key];}
+    if('contextBudget'in patch){const n=Number(patch.contextBudget);if(!Number.isInteger(n)||n<4000||n>96000)throw new Error('群聊上下文预算需为 4000–96000 tokens');extra.chatContextBudget=n;}
     saveModelSettings(this.store,harness,next,{chat:true});if(Object.keys(extra).length)this.store.saveConfig(extra);configurePanel(this.store,'chats');return this.store.config;
   }
   async applyUpdate(patch){

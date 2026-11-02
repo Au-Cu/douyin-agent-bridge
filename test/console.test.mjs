@@ -36,7 +36,7 @@ test('旧版界面：长聊天名从左侧显示、限定菜单宽度；缩小�
       res.end(JSON.stringify(req.url==='/api/state'?state:requestUrl.pathname==='/api/threads'?threads:req.url==='/api/codex/reconnect'?{deferred:false,auth:{status:'ready'}}:[]));return;
     }
     const name=requestUrl.pathname==='/'?'index.html':requestUrl.pathname.slice(1);
-    if(!['index.html','classic.html','app.js','style.css','classic.css','dom.js','views.js','ui-layout.js'].includes(name)){res.writeHead(404).end();return;}
+    if(!['index.html','classic.html','app.js','style.css','classic.css','dom.js','views.js','ui-layout.js','group-settings.js'].includes(name)){res.writeHead(404).end();return;}
     res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');
     res.end(await readFile(new URL('../public/'+name,import.meta.url)));
   });

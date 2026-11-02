@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 群聊可选轻量视频理解：复用本地口播转写和全时间轴低密度画面，限定时长与下载量，独立缓存，不进入个人资料库。
+- 每群一个隔离会话，上下文预算交接、确认后空白重置、旧会话双层归档与恢复；面板查看真实 Codex 历史，并如实标注 DSH 原生能力差异。
+- 可选归档保留期限，默认关闭；到期独立检查，只清理已核实、无保留引用的桥接记录与缓存。
+- 增加全部／本组一键只读核实送达，保存实际核实进度；提示改为顶部居中浮窗并定时收起。
+
 - Keep console notices visible at any scroll position in modern and classic layouts, with a dismiss button, bounded long-message scrolling and accessible announcements that retain focus and page position.
 - Provide per-task/per-need delivery review, including exact uncertain reply segments and reactions, a read-only original-chat check, explicit manual receipt confirmation or abandonment, and guarded one-part text resend. Immediately synchronize resolved task state; never treat abandoned replies as delivered or repeat an uncertain reaction.
 - Reconcile text receipts from normal observed history only when sender, full content, send-time bounds, native reference and uniqueness are verified. Persist future send-attempt bounds; older records without sufficient evidence remain available for manual review.

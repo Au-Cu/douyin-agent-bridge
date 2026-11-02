@@ -27,6 +27,9 @@ import {Chats} from './chats.mjs';
 import {ChatSandbox} from './chat-sandbox.mjs';
 import {CodeSandbox} from './code-sandbox.mjs';
 import {DeliveryReview} from './delivery-review.mjs';
+import {ChatSessions} from './chat-sessions.mjs';
+import {ChatMedia} from './chat-media.mjs';
+import {ArchiveRetention} from './retention.mjs';
 import {prepareDesktopShared} from './desktop-shared-setup.mjs';
 import {runtimeClients} from './runtime-clients.mjs';
 import {DshChatSandbox} from './dsh/chat-sandbox.mjs';
@@ -51,6 +54,8 @@ const deletion=new ArchivedDeletion({store,engine,conversations});
 const codeSandbox=new CodeSandbox({root:store.root}),chatCapabilities=()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox}),chatSandbox=new ChatRuntime({store,sandboxes:{codex:new ChatSandbox({root:store.root,codex:localCodex,log,codeSandbox,capabilities:chatCapabilities}),dsh:new DshChatSandbox({root:store.root,dsh,log,codeSandbox,capabilities:chatCapabilities})}}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
 preferences.chatCatalogProvider=harness=>harness==='dsh'?chatSandbox.catalog(harness):codex.models('codex');
 const deliveryReview=new DeliveryReview({store,adapter,engine,chats});engine.deliveryReview=deliveryReview;chats.deliveryReview=deliveryReview;
+const chatSessions=new ChatSessions({store,chats,runtime:chatSandbox});chats.sessions=chatSessions;chats.media=new ChatMedia({store,media,preferences});
+const retention=new ArchiveRetention({store,deletion,sessions:chatSessions});
 let sandboxPreparing=false;
 const token=randomBytes(32).toString('hex');let asrInstalling=false;let closing=false;
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
@@ -74,13 +79,16 @@ const server=http.createServer(async(req,res)=>{
         const knowledgeView=async k=>{try{const v=await readVisualReport(k);return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}};
         const snapshot=store.snapshot();snapshot.config=visibleSettings(store.config,active);snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(knowledgeView));
         snapshot.recentKnowledge=await Promise.all(store.knowledgeList({scope:'current'}).slice(0,3).map(knowledgeView));
-        const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
+        snapshot.retention=retention.state();snapshot.deliveryReviewBatch=deliveryReview.batchState();const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
         return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(engine.progress.cards({scope:workScope,status}),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models'){const chat=url.searchParams.get('mode')==='chat',harness=chat?store.config.chatHarness||'codex':active,data=await (chat?preferences.chatCatalog(harness):preferences.catalog(harness));return json(res,{...data,harness});}
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
       if(req.method==='GET'&&path==='/api/commands')return json(res,{text:commandHelp});
       if(req.method==='GET'&&path==='/api/outbox/review')return json(res,deliveryReview.view(url.searchParams.get('kind'),String(url.searchParams.get('id')||'')));
+      if(req.method==='GET'&&path==='/api/outbox/reconcile-batch')return json(res,{batch:deliveryReview.batchState()});
+      if(req.method==='GET'&&path==='/api/chat-sessions')return json(res,{sessions:chatSessions.list(String(url.searchParams.get('peer')||''),{scope:archiveScope(url.searchParams.get('scope')||'all')})});
+      if(req.method==='GET'&&path==='/api/chat-sessions/read')return json(res,await chatSessions.transcript(String(url.searchParams.get('id')||'')));
       if(req.method==='GET'&&path==='/api/threads'){const internal=new Set(store.db.prepare('SELECT thread FROM need_threads').all().map(r=>r.thread));return json(res,(await codex.threads(url.searchParams.get('q')||'',harnessValue(url.searchParams.get('harness')||active))).filter(t=>!internal.has(t.id)));}
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries(),...taskCodex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
       if(req.method==='GET'&&path==='/api/browser/reaction-diagnostics')return json(res,{lastReceipt:adapter.lastReceipt||null,menu:adapter.lastReactionDiagnostic||null});
@@ -123,6 +131,11 @@ const server=http.createServer(async(req,res)=>{
         const saved=chats.configure(body);configurePanel(store,'chats');return json(res,saved);
       }
       if(path==='/api/tasks/interrupt')return json(res,await engine.interrupts.request(String(body.id||'')));
+      if(path==='/api/archive/retention')return json(res,retention.configure(body));
+      if(path==='/api/chat-sessions/reset'){if(body.confirmed!==true)throw new Error('请确认要清空群聊上下文');return json(res,await chatSessions.reset(String(body.peer||''),await preferences.chatWork(),store.config.chatHarness||'codex'));}
+      if(path==='/api/chat-sessions/archive'){if(typeof body.archived!=='boolean')throw new Error('请选择归档或恢复');return json(res,await chatSessions.archive(String(body.id||''),body.archived));}
+      if(path==='/api/chat-sessions/reconcile')return json(res,await chatSessions.reconcile(String(body.id||'')));
+      if(path==='/api/ai-chats/retry'){if(body.confirmed!==true)throw new Error('请确认重试尚未提交的消息');return json(res,chats.retryUnsubmitted(body.id));}
       if(path==='/api/archive/delete/prepare')return json(res,deletion.prepare(body.kind,String(body.id||'')));
       if(path==='/api/archive/delete')return json(res,deletion.remove(body));
       if(path==='/api/ui/panels')return json(res,{panels:updatePanels(store,body)});
@@ -199,6 +212,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(path==='/api/approval'){(taskCodex.approvals.has(String(body.id))?taskCodex:codex).approve(String(body.id),body.allow===true);return json(res,{ok:true});}
       if(path==='/api/outbox/reconcile')return json(res,await deliveryReview.reconcile(body.id));
+      if(path==='/api/outbox/reconcile-batch')return json(res,{batch:deliveryReview.startBatch(body)});
       if(path==='/api/outbox/resolve'){
         return json(res,deliveryReview.resolve(body.id,body.status,{confirmed:body.confirmed}));
       }
@@ -222,7 +236,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,{error:'未找到接口'},404);
     }
     if(req.method!=='GET')return json(res,{error:'不支持的方法'},405);
-    const assets={'/':'index.html','/classic.html':'classic.html','/app.js':'app.js','/style.css':'style.css','/classic.css':'classic.css','/dom.js':'dom.js','/views.js':'views.js','/ui-layout.js':'ui-layout.js'};if(!assets[path])return json(res,{error:'页面不存在'},404);
+    const assets={'/':'index.html','/classic.html':'classic.html','/app.js':'app.js','/style.css':'style.css','/classic.css':'classic.css','/dom.js':'dom.js','/views.js':'views.js','/ui-layout.js':'ui-layout.js','/group-settings.js':'group-settings.js'};if(!assets[path])return json(res,{error:'页面不存在'},404);
     const types={'.html':'text/html','.js':'text/javascript','.css':'text/css'};
     res.writeHead(200,{'Content-Type':types[extname(assets[path])]+'; charset=utf-8','Set-Cookie':`bridge_session=${token}; HttpOnly; SameSite=Strict; Path=/`,'Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'",'X-Content-Type-Options':'nosniff'});
     res.end(await readFile(join(project,'public',assets[path])));
@@ -231,6 +245,7 @@ const server=http.createServer(async(req,res)=>{
 server.listen(port,'127.0.0.1',()=>{console.log('抖音 Agent Bridge 控制台：'+origin);log('控制台已启动，正在恢复本机连接');store.backup().catch(()=>log('状态快照暂未完成，请检查磁盘空间','attention'));});
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
 engine.start();codex.startAuthWatcher();
+let retentionWork=Promise.resolve();const retentionTimer=setInterval(()=>{retentionWork=Promise.allSettled([retention.run().catch(()=>log('归档保留策略检查失败，记录已保留','attention')),chatSessions.reconcileUncertain()]);},60000);
 const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 '+(active==='dsh'?'DeepSeek Harness':'Codex')+' 已连接');}).catch(e=>log('助手连接失败：'+e.message,'error'));
 if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
   await codexReady;if(closing||!store.config.resumeOnStartup)return;
@@ -238,5 +253,5 @@ if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browse
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
-async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);engine.stop();chats.stop();await Promise.allSettled([codex.close(),taskCodex.close(),chatSandbox.close()]);await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values(),...engine.memoryUpdates]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
+async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);clearInterval(retentionTimer);retention.closing=true;deliveryReview.closing=true;chatSessions.closing=true;await Promise.allSettled([retentionWork,deliveryReview.batchWork]);engine.stop();chats.stop();await Promise.allSettled([codex.close(),taskCodex.close(),chatSandbox.close()]);await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values(),...engine.memoryUpdates]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

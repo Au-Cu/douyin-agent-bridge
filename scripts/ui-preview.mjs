@@ -52,7 +52,7 @@ export function createPreviewServer() {
       if (req.headers.host !== '127.0.0.1:' + server.address().port) return json({ error: '无效 Host' }, 403);
       if (req.headers.origin && req.headers.origin !== origin) return json({ error: '来源校验失败' }, 403);
       const url = new URL(req.url, origin), path = url.pathname;
-      if (req.method === 'GET' && ['/','/index.html','/classic.html','/style.css','/classic.css','/app.js','/dom.js','/views.js','/ui-layout.js'].includes(path)) {
+      if (req.method === 'GET' && ['/','/index.html','/classic.html','/style.css','/classic.css','/app.js','/dom.js','/views.js','/ui-layout.js','/group-settings.js'].includes(path)) {
         const name = path === '/' ? 'index.html' : path.slice(1);
         res.writeHead(200, { 'Content-Type': name.endsWith('.html') ? 'text/html; charset=utf-8' : name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' });
         return res.end(await readFile(join(project, 'public', name)));

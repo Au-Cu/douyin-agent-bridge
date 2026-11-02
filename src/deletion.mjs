@@ -135,7 +135,7 @@ export class ArchivedDeletion{
     return this.db.prepare('SELECT COUNT(*) AS n FROM deletion_cleanup').get().n;
   }
   removeCache(path){
-    if(!/^(?:needs\/[a-f\d]{8}(?:\/(?:history|handoff-\d+|input-[\w-]+)\.json)?|reply-references\/[a-f\d]{64}\.json)$/.test(path))throw new Error('拒绝清理非需求或引用缓存路径');
+    if(!/^(?:needs\/[a-f\d]{8}(?:\/(?:history|handoff-\d+|input-[\w-]+)\.json)?|reply-references\/[a-f\d]{64}\.json|knowledge\/\d{12,24}|chat-media\/[a-f\d]{64})$/.test(path))throw new Error('拒绝清理非需求、资料或聊天缓存路径');
     const root=realpathSync(this.store.root),target=resolve(root,...path.split('/'));
     if(!target.startsWith(root+sep))throw new Error('清理路径越界');
     let current=root;

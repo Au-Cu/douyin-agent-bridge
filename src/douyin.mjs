@@ -479,10 +479,10 @@ export class DouyinAdapter {
     const response=await fetch(url,{headers:{Referer:'https://www.douyin.com/', 'User-Agent':await this.page.evaluate(()=>navigator.userAgent),Cookie:cookies.map(c=>c.name+'='+c.value).join('; ')},signal:AbortSignal.any([AbortSignal.timeout(180000),...(signal?[signal]:[])])});
     if(!response.ok)throw new Error('视频下载失败 HTTP '+response.status);
     if(!safeMediaUrl(response.url))throw new Error('视频下载跳转到了不支持的域名');
-    if(Number(response.headers.get('content-length'))>maxBytes)throw new Error('视频超过本机处理上限 300 MB');
+    if(Number(response.headers.get('content-length'))>maxBytes)throw new Error('视频超过本次处理上限 '+Math.round(maxBytes/1024/1024)+' MB');
     const {open}=await import('node:fs/promises');const file=await open(destination+'.part','w');let size=0,head=Buffer.alloc(0);
     try {
-      for await(const chunk of response.body){checkWork();size+=chunk.length;if(size>maxBytes)throw new Error('视频超过本机处理上限 300 MB');if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}
+      for await(const chunk of response.body){checkWork();size+=chunk.length;if(size>maxBytes)throw new Error('视频超过本次处理上限 '+Math.round(maxBytes/1024/1024)+' MB');if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}
       if(!head.includes(Buffer.from('ftyp')))throw new Error('下载结果不是有效 MP4，未进行视频学习');
       await file.close();await rename(destination+'.part',destination);return size;
     } catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
