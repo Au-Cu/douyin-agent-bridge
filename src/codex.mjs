@@ -7,6 +7,7 @@ import {assistantInstructions,instructionRevision,roleInstructions} from './prom
 import {writerConflict} from './progress.mjs';
 import {operationContext,checkWork,workSignal,raceWork,trackStop,interruptedError} from './execution.mjs';
 import {connectSharedCodex} from './shared-codex-transport.mjs';
+import {nativeTurnState} from './native-turn-state.mjs';
 
 export function approvalResponse(request,allow) {
   if(request.method==='item/permissions/requestApproval')return {permissions:allow?(request.params.permissions||{}):{},scope:'turn'};
@@ -93,7 +94,7 @@ export class CodexClient extends EventEmitter {
     this.ready=false;
     this.loaded.clear();
     for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);} this.pending.clear();
-    for(const r of this.runs.values()){clearTimeout(r.timer);r.turnReady?.resolve(null);r.completion?.resolve(null);r.reject(error);} this.runs.clear();
+    for(const r of this.runs.values()){clearTimeout(r.timer);r.cleanup?.();r.turnReady?.resolve(null);r.completion?.resolve(null);r.reject(error);} this.runs.clear();
     this.approvals.clear();
     this.emit('disconnected',error);
   }
@@ -126,7 +127,7 @@ export class CodexClient extends EventEmitter {
       return;
     }
     if(msg.method==='item/completed'&&msg.params?.item?.type==='agentMessage') {
-      const p=msg.params; const r=[...this.runs.values()].find(r=>r.threadId===p.threadId);
+      const p=msg.params; const r=[...this.runs.values()].find(r=>r.threadId===p.threadId&&(!p.turnId||r.turnId===p.turnId));
       if(r)r.text=p.item.text||r.text;
     }
     if(this.restricted&&msg.method==='item/started'&&!['userMessage','agentMessage','reasoning','contextCompaction'].includes(msg.params?.item?.type)&&!(this.allowPublicWeb&&msg.params?.item?.type==='webSearch')&&!(msg.params?.item?.type==='dynamicToolCall'&&this.allowedChatTools.has(msg.params.item.tool))){
@@ -142,17 +143,18 @@ export class CodexClient extends EventEmitter {
       this.#finish(r,turn);
     }
     if(msg.method==='turn/started'){
-      const r=[...this.runs.values()].find(r=>r.threadId===msg.params?.threadId);if(r){r.turnId=msg.params.turn.id;r.turnReady?.resolve(r.turnId);}
+      const r=this.runs.get(msg.params?.turn?.id);if(r&&r.threadId===msg.params?.threadId&&r.turnId===msg.params.turn.id)r.turnReady?.resolve(r.turnId);
     }
     if(msg.method==='serverRequest/resolved')this.approvals.delete(String(msg.params?.requestId));
     if(msg.method==='thread/closed')this.loaded.delete(msg.params?.threadId);
     this.emit('notification',msg);
   }
   #finish(r,turn) {
+    if(r.terminal||r.turnId&&r.turnId!==turn.id)return;
     clearTimeout(r.timer);this.runs.delete(turn.id);
     this.runs.delete('starting:'+r.threadId);r.terminal=turn;r.completion?.resolve(turn);r.cleanup?.();
     if(r.cancelled){this.interrupting.delete(r.threadId);r.reject(interruptedError());return;}
-    if(turn.status!=='completed')r.reject(this.#noteFailure(new Error(turn.error?.message||`Codex 执行状态：${turn.status}`)));
+    if(turn.status!=='completed')r.reject(this.#noteFailure(Object.assign(new Error(turn.error?.message||`Codex 执行状态：${turn.status}`),{nativeTerminalStatus:turn.status,turnId:turn.id})));
     else {
       const items=(turn.items||[]).filter(i=>i.type==='agentMessage');
       const usage=this.usage.get(r.threadId);
@@ -206,7 +208,7 @@ export class CodexClient extends EventEmitter {
     checkWork();if(this.threadLocks.has(threadId)||this.interrupting.has(threadId))throw Object.assign(new Error('目标聊天已有任务运行或中断结果仍需核实，正在等待同一聊天的写入权'),{code:'THREAD_BUSY',notSubmitted:true,threadId});
     const token=Symbol(threadId);this.threadLocks.set(threadId,token);try{return await raceWork(this.runThread(threadId,input,options));}catch(e){e.threadId||=threadId;throw e;}finally{if(this.threadLocks.get(threadId)===token)this.threadLocks.delete(threadId);}
   }
-  async runThread(threadId,input,{toolHandler,onStarted,onSubmitted,timeoutMs=15*60*1000,resume=true,effort,model,serviceTier,outputSchema,interruptOnTimeout=false,assistant=false}={}) {
+  async runThread(threadId,input,{toolHandler,onStarted,onSubmitted,timeoutMs=15*60*1000,waitForCompletion=false,reconcileIntervalMs=30000,onWaitState,resume=true,effort,model,serviceTier,outputSchema,interruptOnTimeout=false,assistant=false}={}) {
     await this.ensureAuthenticated();
     checkWork();
     if(this.ephemeral.has(threadId)&&this.ephemeral.get(threadId)!==this.generation)throw Object.assign(new Error('登录更新后需重新建立只读分析会话'),{code:'CODEX_AUTH_CHANGED'});
@@ -232,10 +234,24 @@ export class CodexClient extends EventEmitter {
       checkWork();r.submitted=true;
       const out=await this.request('turn/start',{threadId,input,...(effort?{effort}:{}),...(model?{model}:{}),...(serviceTier?{serviceTierForTurn:serviceTier}:{}),...(outputSchema?{outputSchema}:{})});const turn=out.turn;
       this.runs.delete(provisional);this.runs.set(turn.id,r);r.turnId=turn.id;r.turnReady.resolve(turn.id);
-      r.timer=setTimeout(()=>{
+      if(waitForCompletion&&!interruptOnTimeout){
+        const observe=()=>{r.timer=setTimeout(async()=>{
+          if(this.runs.get(turn.id)!==r||r.cancelled||r.terminal)return;
+          let observation;
+          try{observation=await nativeTurnState(this,threadId,turn.id);}
+          catch{observation={state:'unknown',turnId:turn.id};}
+          // A completion event, disconnect or user interruption can arrive
+          // while thread/read is pending. Never settle twice or revive it.
+          if(this.runs.get(turn.id)!==r||r.cancelled||r.terminal)return;
+          if(['completed','failed','interrupted'].includes(observation.state)){this.#finish(r,observation.turn);return;}
+          try{onWaitState?.(observation);}catch{this.log('目标任务状态记录暂未更新，仍保留原回合监听','attention');}
+          observe();
+        },Math.max(10,reconcileIntervalMs));};observe();
+      }else r.timer=setTimeout(()=>{
         this.runs.delete(turn.id);
+        r.cleanup?.();
         if(interruptOnTimeout)this.request('turn/interrupt',{threadId,turnId:turn.id}).catch(()=>{});
-        reject(new Error(interruptOnTimeout?'本段只读视觉分析超时，已请求中断；已完成片段保留，可继续分析。':'Codex 任务超时；请在原聊天检查进展，系统不会自动重复执行。'));
+        reject(Object.assign(new Error(interruptOnTimeout?'本段只读视觉分析超时，已请求中断；已完成片段保留，可继续分析。':'Codex 等待结果超时，暂时无法确认原回合状态；不会自动重复执行。'),{uncertain:true}));
       },timeoutMs);
       if(!r.cancelled)onStarted?.(turn.id);
       if(this.early.has(turn.id)){const event=this.early.get(turn.id);this.early.delete(turn.id);this.#finish(r,event.turn);}

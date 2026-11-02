@@ -11,6 +11,13 @@ mkdirSync(base, { recursive: true });
 const fixture = fileURLToPath(new URL('./fixture-acp.mjs', import.meta.url));
 const client = () => new DshClient({ cwd: base, executable: fixture, spawnArgs: [] });
 
+test('DSH 项目等待原始 prompt 结束，短时限不截断；只读调用仍保留等待上限',async()=>{
+  const c=client();try{
+    const thread=await c.createCoordinator([],false,{});const result=await c.run(thread,[{type:'text',text:'FIXTURE_DELAY'}],{waitForCompletion:true,timeoutMs:10});assert.ok(result.turnId);assert.equal(c.state.turn(result.turnId).status,'completed');
+    const bounded=await c.createCoordinator([],false,{});await assert.rejects(c.run(bounded,[{type:'text',text:'FIXTURE_UNKNOWN'}],{timeoutMs:30,interruptOnTimeout:true}),e=>e.code==='DSH_PROMPT_TIMEOUT');
+  }finally{await c.close();}
+});
+
 test('DeepSeek Harness 适配层连接后拿到模型名单、推理强度和默认模型', async () => {
   const c = client();
   try {
