@@ -2,6 +2,11 @@
 
 ## 0.13.1
 
+- Keep the desktop's one-shot startup policy/configuration probes out of the shared RPC broker. Preserve their direct JSON output and exit status even when stdin is closed or a shared desktop is already connected.
+- Flush the Windows native wrapper's stdin/stdout/stderr after each chunk so short interactive RPC requests and replies arrive before EOF. Exercise this with a real compiled wrapper and an open stdin, rather than only finite CLI commands.
+- Restrict broker interception to the recognized persistent desktop stdio command; pass help, schema generation, sign-out and other tooling to the original executable.
+- Require verification of the actual reported startup/login path before publication; automated checks alone do not establish that the user's bug is resolved.
+
 - Show the Windows desktop Codex window when launching the shared connection, and open or reuse the assistant console on both Windows and Mac ARM64.
 - Repeated launches request the existing desktop window without stopping chats or claiming a live process has switched connections. Restore the launcher environment before starting the bridge's isolated clients.
 
@@ -49,11 +54,9 @@
 - Test the actual pinned CLI's model request tools and refusal of a forged shell call. Preserve owner binding, existing knowledge, task queues, reaction progress and uncertain delivery across upgrades.
 - Serialize multi-chat UI selection and sending, fence late replies after mode changes, and show ordinary chat delivery state without creating personal task/need numbers. Maintain paired Windows and macOS ARM64 releases, with native Safari on Mac.
 
-## 0.9.2
+## 0.9.1
 
 - Allow more time for the reaction menu to expand on slower Windows machines without retrying an uncertain reaction click.
-
-## 0.9.1
 
 - Bound browser-heavy regression concurrency to reduce timeouts on busy Windows CI runners; continue building and verifying both platform packages together.
 

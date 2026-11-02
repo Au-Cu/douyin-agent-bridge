@@ -1,5 +1,17 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdir,mkdtemp,readFile,realpath} from 'node:fs/promises';import {fileURLToPath} from 'node:url';import {join} from 'node:path';import {spawn} from 'node:child_process';import {prepareDesktopShared} from '../src/desktop-shared-setup.mjs';
 import {clearStaleSharedSocket} from '../src/shared-codex-transport.mjs';
+test('native wrapper flushes short interactive requests and both output streams before stdin closes',{skip:!['win32','darwin'].includes(process.platform)},async()=>{
+  const base=fileURLToPath(new URL('../data/test-runs/',import.meta.url));await mkdir(base,{recursive:true});const root=await mkdtemp(join(base,'共享 交互-')),prepared=await prepareDesktopShared(root,{original:process.execPath});
+  const code="process.stdin.setEncoding('utf8');process.stdin.on('data',s=>{process.stdout.write('OUT:'+s);process.stderr.write('ERR:'+s);});";
+  const child=spawn(prepared.wrapper,['-e',code],{windowsHide:true,stdio:['pipe','pipe','pipe']});let out='',err='';child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');child.stdout.on('data',s=>out+=s);child.stderr.on('data',s=>err+=s);
+  const wait=async expected=>{const until=Date.now()+5000;while(!out.includes('OUT:'+expected)||!err.includes('ERR:'+expected)){if(Date.now()>until)throw Error('Short interactive RPC bytes were buffered until EOF');await new Promise(r=>setTimeout(r,20));}};
+  try{
+    child.stdin.write('ping\n');await wait('ping\n');assert.equal(child.exitCode,null,'reply must arrive while the process and stdin remain open');
+    child.stdin.write('第二次\n');await wait('第二次\n');assert.equal(child.exitCode,null);
+  }finally{
+    child.stdin.end();if(child.exitCode===null)await new Promise(resolve=>{const timer=setTimeout(()=>{child.kill();resolve();},2000);child.once('exit',()=>{clearTimeout(timer);resolve();});});
+  }
+});
 test('platform launcher preserves stdin, stdout, exit codes and Unicode/quoted paths without changing the user environment',{skip:!['win32','darwin'].includes(process.platform)},async()=>{
   const base=fileURLToPath(new URL('../data/test-runs/',import.meta.url));await mkdir(base,{recursive:true});const root=await mkdtemp(join(base,'共享 folder-')),before=process.env.CODEX_CLI_PATH,prepared=await prepareDesktopShared(root,{original:process.execPath}),code="let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{process.stdout.write(JSON.stringify({args:process.argv.slice(1),input:s}));process.exitCode=7;});",args=['含 空格','double"quote','tail\\','line\nbreak'];
   const run=spawn(prepared.wrapper,['-e',code,'--',...args],{windowsHide:true,stdio:['pipe','pipe','pipe']});let out='';run.stdout.setEncoding('utf8');run.stdout.on('data',b=>out+=b);run.stderr.resume();run.stdin.end('测试\ninput');const status=await new Promise((resolve,reject)=>{run.once('error',reject);run.once('exit',resolve);});assert.equal(status,7);assert.deepEqual(JSON.parse(out),{args,input:'测试\ninput'});assert.equal(process.env.CODEX_CLI_PATH,before);const config=JSON.parse(await readFile(join(root,'desktop-shared','connection.json'),'utf8')),again=await prepareDesktopShared(root,{original:prepared.wrapper});assert.equal(again.wrapper,prepared.wrapper);assert.equal(JSON.parse(await readFile(join(root,'desktop-shared','connection.json'),'utf8')).token,config.token);

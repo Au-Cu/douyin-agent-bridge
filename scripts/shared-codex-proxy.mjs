@@ -1,13 +1,15 @@
 import {spawn} from 'node:child_process';
-import {readFile,writeFile,access} from 'node:fs/promises';
+import {readFile,writeFile} from 'node:fs/promises';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {connectSharedCodex} from '../src/shared-codex-transport.mjs';
+import {isSharedDesktopServer} from '../src/shared-codex-command.mjs';
 
 const [file,...args]=process.argv.slice(2),config=JSON.parse(await readFile(file,'utf8'));
-// Desktop's main host has this flag; helper/repl app-servers must retain their
-// own config, profile and permission isolation. All other CLI commands pass on.
-if(!args.includes('app-server')||!args.includes('--analytics-default-enabled')){
+// Startup configuration probes also carry the desktop analytics flag. They
+// print a single JSON result and exit, without accepting stdin/RPC messages.
+// Sending them through the broker can close stdin before that result arrives.
+if(!isSharedDesktopServer(args)){
   const child=spawn(config.original,args,{env:process.env,stdio:'inherit',windowsHide:true});child.once('error',()=>process.exit(1));child.once('exit',code=>process.exit(code??1));
 }else{
   const root=dirname(dirname(file)),launchFile=join(dirname(file),'desktop-launch.json');
