@@ -32,7 +32,7 @@ export class Chats {
   agentEnabled(){const owner=this.store.config.owner;return !!owner&&this.get(owner.chatKey)?.enabled&&this.get(owner.chatKey)?.mode==='agent';}
   bots(){return this.list().filter(c=>c.enabled&&c.mode==='chat');}
   refreshBrowserMode(){this.adapter.multiple=this.bots().length>0;}
-  state(){return {chats:this.list().map(c=>({...c,...(c.type==='group'&&this.sessions?{sessions:this.sessions.state(c.chatKey)}:{})})),selecting:!!this.adapter.selecting,messages:this.store.db.prepare('SELECT id,peer,status,result,thread,turn,created,updated FROM bot_messages ORDER BY created DESC LIMIT 25').all().map(r=>({...r,sessionId:this.sessions?.forMessage(r.id)?.id,name:this.get(r.peer)?.displayName||'已停用聊天',uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};}
+  state(){return {chats:this.list().map(c=>({...c,...(c.type==='group'&&this.sessions?{sessions:this.sessions.state(c.chatKey)}:{})})),selecting:!!this.adapter.selecting,messages:this.store.db.prepare('SELECT id,peer,status,result,thread,turn,created,updated FROM bot_messages ORDER BY created DESC LIMIT 25').all().map(r=>({...r,sessionId:this.sessions?.forMessage(r.id)?.id,canRetry:r.status==='failed'&&!r.thread&&!r.turn,name:this.get(r.peer)?.displayName||'已停用聊天',uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};}
   beginSelection(){this.adapter.selection?.(true);}
   endSelection(){this.adapter.selection?.(false);}
   async observe(){
@@ -119,8 +119,9 @@ export class Chats {
     this.set(row.id,'preparing');let submitted=false,config,session;
     try{const harness=this.store.config.chatHarness||'codex';config=await this.preferences.chatWork(harness);const signal=this.controller(chat).signal,material=await this.media?.prepare(row,chat,harness,config,signal);let input=this.context(row);
       if(material){delete input.attachmentNote;input.video=material.summary;}
+      if(chat.type==='group'&&this.sessions)delete input.recent;
       const inputTokens=Buffer.byteLength(JSON.stringify(input),'utf8')+(material?.images.length||0)*700;
-      if(chat.type==='group'&&this.sessions){session=await this.sessions.prepare(row,chat,harness,config,inputTokens);delete input.recent;if(!session.tokens&&session.handoff)input.handoff=session.handoff;}
+      if(chat.type==='group'&&this.sessions){session=await this.sessions.prepare(row,chat,harness,config,inputTokens);if(!session.tokens&&session.handoff)input.handoff=session.handoff;}
       const result=await this.sandbox.reply(input,{...config,harness,session,images:material?.images||[],signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);if(session)this.sessions.guard(session,chat);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
       if(session)this.sessions.complete(session,result,inputTokens);
       this.queueResult(row,chat,result);
@@ -129,6 +130,12 @@ export class Chats {
   queueResult(row,chat,result){
       this.guard({chatbot:true,chatRevision:row.revision},row.peer);const text=toPlainChatText(result.text).slice(0,10000),parts=splitReply(text),group=randomUUID();if(!parts.length)throw new Error('模型没有返回文字');
       this.store.db.exec('BEGIN IMMEDIATE');try{this.set(row.id,'replying',text);for(const [i,part] of parts.entries())this.store.enqueueReply(row.peer,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{payload:{chatbot:true,botId:row.id,chatRevision:row.revision,plainText:true,...(chat.type==='group'?{replyToMessageId:JSON.parse(row.body).id}:{}),group,segment:i+1,totalSegments:parts.length},dedupe:'bot-result:'+row.id+':'+i});this.store.db.exec('COMMIT');}catch(e){this.store.db.exec('ROLLBACK');throw e;}
+  }
+  retryUnsubmitted(id){
+    const row=this.store.db.prepare('SELECT * FROM bot_messages WHERE id=?').get(String(id)),chat=row&&this.get(row.peer);
+    if(!row||row.status!=='failed'||row.thread||row.turn)throw new Error('仅能重试有记录证明尚未提交给模型的失败消息');
+    if(!chat?.enabled||chat.mode!=='chat'||chat.revision!==row.revision)throw new Error('原聊天已停用或配置变化，不能重试旧消息');
+    this.set(row.id,'new','用户重试已确认未提交的消息，复用已完成的视频预处理');this.store.event('已恢复一条确认未提交的普通聊天消息；已提交或结果不明的消息未重跑。');return {ok:true};
   }
   reconcile(){for(const row of this.store.db.prepare("SELECT * FROM bot_messages WHERE status IN ('replying','delivery_uncertain')").all()){const sent=this.store.db.prepare("SELECT status,payload FROM outbox WHERE kind='text' AND json_extract(payload,'$.botId')=?").all(row.id);if(sent.length&&sent.every(s=>s.status==='sent')){this.set(row.id,'done');this.receipt(row,'done');}else if(sent.some(s=>s.status==='uncertain'))this.set(row.id,'delivery_uncertain');else if(sent.some(s=>['pending','sending'].includes(s.status))&&row.status==='delivery_uncertain')this.set(row.id,'replying');else if(sent.some(s=>JSON.parse(s.payload||'{}').deliveryReview?.resolution==='abandoned'))this.set(row.id,'cancelled');}}
   stop(){for(const c of this.controllers.values())c.abort();this.sandbox.close();}

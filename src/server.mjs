@@ -135,6 +135,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/chat-sessions/reset'){if(body.confirmed!==true)throw new Error('请确认要清空群聊上下文');return json(res,await chatSessions.reset(String(body.peer||''),await preferences.chatWork(),store.config.chatHarness||'codex'));}
       if(path==='/api/chat-sessions/archive'){if(typeof body.archived!=='boolean')throw new Error('请选择归档或恢复');return json(res,await chatSessions.archive(String(body.id||''),body.archived));}
       if(path==='/api/chat-sessions/reconcile')return json(res,await chatSessions.reconcile(String(body.id||'')));
+      if(path==='/api/ai-chats/retry'){if(body.confirmed!==true)throw new Error('请确认重试尚未提交的消息');return json(res,chats.retryUnsubmitted(body.id));}
       if(path==='/api/archive/delete/prepare')return json(res,deletion.prepare(body.kind,String(body.id||'')));
       if(path==='/api/archive/delete')return json(res,deletion.remove(body));
       if(path==='/api/ui/panels')return json(res,{panels:updatePanels(store,body)});

@@ -31,7 +31,7 @@ export function initGroupSettings({api,notice,escape,getState,refresh}){
   });
   document.addEventListener('click',async event=>{
     const button=event.target.closest('button'),key=button?.dataset.groupSessions||button?.dataset.groupReset;
-    if(!key)return;if(button.dataset.groupSessions){await openSessions(key,button.dataset.sessionId||'');return;}
+    if(button?.dataset.chatRetry){if(!confirm('确认重试这条尚未提交给模型的消息？已完成的视频预处理会复用。'))return;button.disabled=true;try{await api('ai-chats/retry',{id:button.dataset.chatRetry,confirmed:true});notice('已恢复这条确认未提交的消息，不重跑已提交的回合。');await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}return;}if(!key)return;if(button.dataset.groupSessions){await openSessions(key,button.dataset.sessionId||'');return;}
     if(!confirm('清空此群的 AI 上下文？将建立全新的空白会话，不转接旧摘要；旧会话会自动归档，之后仍可查看。'))return;
     button.disabled=true;try{await api('chat-sessions/reset',{peer:key,confirmed:true});notice('已切换到空白群聊会话。旧会话的归档结果可在“会话与归档”查看。');await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}
   });
