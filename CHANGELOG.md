@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Keep console notices visible at any scroll position in modern and classic layouts, with a dismiss button, bounded long-message scrolling and accessible announcements that retain focus and page position.
+- Provide per-task/per-need delivery review, including exact uncertain reply segments and reactions, a read-only original-chat check, explicit manual receipt confirmation or abandonment, and guarded one-part text resend. Immediately synchronize resolved task state; never treat abandoned replies as delivered or repeat an uncertain reaction.
+- Reconcile text receipts from normal observed history only when sender, full content, send-time bounds, native reference and uniqueness are verified. Persist future send-attempt bounds; older records without sufficient evidence remain available for manual review.
+
 ## 0.14.0
 
 - Ship the accepted task-focused console: separate workbench, learning and settings views, readable task hierarchy, exact visual coverage, independent delivery/reaction states, light/dark appearance and incremental refresh that retains focus, scroll and expanded details. Keep a persistent classic UI selector and protect unsaved settings during layout changes.

@@ -29,6 +29,12 @@ test('Safari 自动化失败时不会扩大到其他窗口或泄漏脚本到命�
   let script='';const a=new SafariDouyinAdapter({root:'unused',executeAppleScript:async s=>{script=s;return JSON.stringify({ok:true,value:42});}});a.windowId=123;a.tabIndex=1;a.page={};assert.equal(await a.inTab('return 42;'),42);assert.match(script,/window id 123/);assert.match(script,/URL of t does not start with/);assert.match(script,/do JavaScript/);a.windowId=0;await assert.rejects(a.inTab('return 1;'),/请先打开/);
 });
 
+test('Safari 只读表情核验只接受本账号选中状态，未选中也绝不点击',async t=>{
+  const h=await fixture(t);if(!h)return;try{await h.page.evaluate(()=>{window.emojiClicks=0;window.selfSelected=false;document.querySelector('.messageMessageBoxcontentBox').addEventListener('contextmenu',()=>{const b=[...document.querySelectorAll('[role="menu"] button')].at(-1);b.setAttribute('aria-pressed',String(window.selfSelected));b.onclick=()=>window.emojiClicks++;});});
+    for(const selected of [false,true]){await h.page.evaluate(value=>{document.querySelectorAll('[role="menu"]').forEach(n=>n.remove());window.selfSelected=value;},selected);const result=await h.adapter.react(owner,'9000000000001',{verifyOnly:true,emojis:['👌']});assert.equal(result.verified,selected);assert.equal(result.readOnly,true);assert.equal(await h.page.evaluate(()=>window.emojiClicks),0);}
+  }finally{await h.browser.close();}
+});
+
 test('Safari 视频页只使用当前视频 ID 的原片地址并验证自有标签标记',async t=>{
   const browser=await launchTestBrowser(t);if(!browser)return;const page=await browser.newPage();try{
     await page.route('https://www.douyin.com/**',r=>r.fulfill({contentType:'text/html; charset=utf-8',body:`<script>window._ROUTER_DATA={unrelated:{aweme_id:'1234567890124',video:{play_addr:{url_list:['https://v.douyinvod.com/wrong.mp4']}}},correct:{aweme_id:'1234567890123',desc:'视频参考',video:{duration:4200,play_addr:{url_list:['https://v.douyinvod.com/correct.mp4']}}}};</script>`}));

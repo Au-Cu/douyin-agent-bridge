@@ -10,10 +10,10 @@ const {server,state}=createPreviewServer();server.listen(0,'127.0.0.1');await on
 const url='http://127.0.0.1:'+server.address().port;
 const root=fileURLToPath(new URL('../data/ui-review/',import.meta.url));await mkdir(root,{recursive:true});
 const browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||(process.platform==='win32'?'msedge':'chrome'),headless:true});
-const results=[],errors=[];
-const check=async(name,fn)=>{await fn();results.push(name);console.log('PASS '+name);};
+const results=[],errors=[];let page;
+const check=async(name,fn)=>{if(await page?.locator('#closeNotice').isVisible())await page.locator('#closeNotice').click();await fn();results.push(name);console.log('PASS '+name);};
 try {
-  const page=await browser.newPage({viewport:{width:1440,height:1080},colorScheme:'light'});page.on('pageerror',e=>errors.push(e.message));
+  page=await browser.newPage({viewport:{width:1440,height:1080},colorScheme:'light'});page.on('pageerror',e=>errors.push(e.message));
   await page.goto(url);await page.locator('[data-operation="demo-task-27"]').waitFor();
   await check('workbench hierarchy and exact task visual progress',async()=>{
     assert.equal(await page.locator('#settingsView').isVisible(),false);
@@ -143,6 +143,33 @@ try {
     await page.locator('[data-delete-kind="need"]').click();await page.locator('#deleteDialog').waitFor();assert.match(await page.locator('#deleteLabel').textContent(),/需求 7/);
     await page.setViewportSize({width:390,height:844});const sizes=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,dialog:document.querySelector('#deleteDialog').getBoundingClientRect().width}));assert.ok(sizes.scroll<=sizes.width&&sizes.dialog<=sizes.width);
     await page.locator('#deleteAcknowledge').check();await page.locator('#confirmDelete').click();await page.waitForFunction(()=>!document.querySelector('#deleteDialog').open);assert.equal(state.conversations.needs.some(n=>n.id==='demo-need-7'),false);
+  });
+  await check('errors stay visible while scrolled, fit narrow screens, preserve position and can be dismissed in both layouts',async()=>{
+    await page.route('**/api/storage/backup',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'测试报错：未能完成备份。请检查磁盘空间。\n'+ '较长的排查说明，'.repeat(70)})}));
+    for(const layout of ['classic','modern']){
+      if(await page.locator('html').getAttribute('data-layout')!==layout){await page.locator('#uiLayoutChoice').selectOption(layout);await page.waitForFunction(l=>document.documentElement.dataset.layout===l,layout);await page.locator('#taskList .work-card').first().waitFor();}
+      if(layout==='modern')await page.locator('a[data-view="settings"]').click();
+      if(!await page.locator('#storagePanel').evaluate(e=>e.open))await page.locator('#storagePanel>summary').click();
+      for(const width of [320,1440]){
+        await page.setViewportSize({width,height:844});await page.locator('#backupNow').scrollIntoViewIfNeeded();const before=await page.evaluate(()=>scrollY);await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'测试报错'}).waitFor();
+        const state=await page.evaluate(()=>{const n=document.querySelector('#notice'),r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:innerWidth,height:innerHeight,scroll:scrollY,documentWidth:document.documentElement.scrollWidth,focused:n.contains(document.activeElement),role:n.getAttribute('role')};});
+        assert.ok(state.top>=0&&state.bottom<=state.height&&state.left>=0&&state.right<=state.width);assert.ok(state.documentWidth<=state.width);assert.ok(Math.abs(state.scroll-before)<3);assert.equal(state.focused,false);assert.equal(state.role,'alert');
+        if(width===320)await page.screenshot({path:join(root,'floating-error-'+layout+'.png')});
+        await page.locator('#closeNotice').click();assert.equal(await page.locator('#notice').isVisible(),false);
+      }
+    }await page.unroute('**/api/storage/backup');
+  });
+  await check('receipt review lists the exact uncertain emoji and text; cancelling confirmation does not resolve or resend',async()=>{
+    let rows=[{id:'review-emoji',operationId:'demo-task-23',number:23,title:'确认上一轮回复',kind:'progress_reaction',status:'uncertain',label:'表情：运行 · 奋斗',body:'原消息：请分析视频',error:'点击后连接中断',created:Date.now(),canResend:false},{id:'review-text',number:23,title:'确认上一轮回复',kind:'text',status:'uncertain',label:'文字回复：第 2/3 段',body:'完整反馈第二段',error:'送达未核实',created:Date.now(),canResend:true}],resolved=[];
+    await page.route('**/api/outbox/review?*',route=>route.fulfill({json:{rows}}));
+    await page.route('**/api/outbox/reconcile',route=>route.fulfill({json:{verified:false,reason:'原消息菜单未提供本账号选中证据，未点击表情。'}}));
+    await page.route('**/api/outbox/resolve',async route=>{const body=route.request().postDataJSON();resolved.push(body);rows=rows.filter(r=>r.id!==body.id);await route.fulfill({json:{ok:true}});});
+    await page.locator('a[data-view="workbench"]').click();await page.locator('#workScope').selectOption('current');await page.locator('#workStatus').selectOption('all');await page.locator('[data-operation="demo-task-23"] [data-review-kind]').click();
+    await page.locator('#deliveryReviewDialog').waitFor();assert.equal(await page.locator('[data-ui-key="review:review-emoji"] [data-review-status="pending"]').count(),0);
+    await page.locator('[data-review-reconcile="review-emoji"]').click();await page.locator('#reviewError').filter({hasText:'未点击表情'}).waitFor();
+    page.once('dialog',dialog=>dialog.dismiss());await page.locator('[data-review-resolve="review-text"][data-review-status="sent"]').click();assert.equal(resolved.length,0);
+    page.once('dialog',dialog=>dialog.accept());await page.locator('[data-review-resolve="review-emoji"][data-review-status="abandoned"]').click();await page.waitForFunction(()=>!document.querySelector('[data-ui-key="review:review-emoji"]'));assert.deepEqual(resolved,[{id:'review-emoji',status:'abandoned',confirmed:true}]);
+    await page.locator('#closeDeliveryReview').click();await page.unroute('**/api/outbox/review?*');await page.unroute('**/api/outbox/reconcile');await page.unroute('**/api/outbox/resolve');
   });
   await check('preview cannot execute real APIs or accept foreign-origin mutations',async()=>{
     assert.equal((await fetch(url+'/api/browser/open',{method:'POST',body:'{}'})).status,409);
