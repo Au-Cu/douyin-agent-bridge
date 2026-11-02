@@ -19,6 +19,10 @@ try{
   }
   assert.ok(ready,'clean server must start');
   const identity=await (await request('instance')).json();assert.equal(resolve(identity.projectRoot),resolve(root));
+  for(const asset of ['/classic.html','/style.css','/classic.css','/app.js','/dom.js','/views.js','/ui-layout.js']){
+    const response=await fetch(url+asset,{signal:AbortSignal.timeout(2000)});assert.equal(response.status,200,'UI asset '+asset+' must be served by the real packaged server');assert.ok((await response.text()).length>50);
+    assert.ok(response.headers.get('content-security-policy')?.includes("script-src 'self'"),'both UI versions keep the production CSP');
+  }
   const state=await (await request('state')).json();assert.equal(state.config.owner,null);assert.equal(state.config.coordinator,'');assert.deepEqual(state.config.targets,[]);assert.equal(state.config.enabled,false);
   for(const key of ['knowledge','messages','outbox','tasks'])assert.equal(state[key].length,0);
   assert.equal(existsSync(join(root,'data','browser-profile')),false);

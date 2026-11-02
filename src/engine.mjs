@@ -376,9 +376,10 @@ export class BridgeEngine {
   async analyzeVisual(learned){
     if(!this.visual)throw new Error('全时段视觉分析组件未连接，不能只根据口播完成学习');
     const fps=this.store.config.visualFps||4;
-    this.visualProgress={id:learned.id,fps,completed:0,total:0};
     const operationId=this.context.getStore()?.operationId;
-    learned.visual=await this.visual.analyze(learned,{fps,onProgress:(completed,total)=>{this.visualProgress={id:learned.id,fps,completed,total};this.progress.stage(operationId,'分析视频',`第 ${total?Math.min(total,completed+1):'…'}/${total||'…'} 段，已完成 ${completed} 段`);}});
+    this.visualProgress={id:learned.id,operationId,fps,completed:0,total:0};
+    try{learned.visual=await this.visual.analyze(learned,{fps,onProgress:(completed,total)=>{this.visualProgress={id:learned.id,operationId,fps,completed,total};this.progress.stage(operationId,'分析视频',`第 ${total?Math.min(total,completed+1):'…'}/${total||'…'} 段，已完成 ${completed} 段`);}});}
+    finally{this.visualProgress=null;}
     if(learned.visual.status!=='complete')throw new Error('视觉观察没有覆盖全片，暂不生成完整学习结论');
   }
   resumeWaitingVideos(){

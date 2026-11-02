@@ -24,7 +24,9 @@
     "setup:sandbox": "node scripts/setup-sandbox.mjs",
     "setup:desktop": "node scripts/setup-desktop.mjs",
     "test:desktop:live": "node --use-env-proxy scripts/shared-codex-smoke.mjs",
-    "test:dsh": "node --use-env-proxy scripts/dsh-smoke.mjs"
+    "test:dsh": "node --use-env-proxy scripts/dsh-smoke.mjs",
+    "preview:ui": "node scripts/ui-preview.mjs",
+    "test:ui": "node scripts/ui-review-smoke.mjs"
   },
   "dependencies": {
     "@openai/codex": "0.166.0",
