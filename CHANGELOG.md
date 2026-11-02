@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.1
+
+- Show the Windows desktop Codex window when launching the shared connection, and open or reuse the assistant console on both Windows and Mac ARM64.
+- Repeated launches request the existing desktop window without stopping chats or claiming a live process has switched connections. Restore the launcher environment before starting the bridge's isolated clients.
+
 ## 0.13.0
 
 - Integrate PR #1 by wd-ing: optional DeepSeek Harness ACP/MCP backend, Safari tab lookup by URL, and cross-platform browser test support.
