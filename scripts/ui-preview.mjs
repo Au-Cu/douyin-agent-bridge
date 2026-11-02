@@ -57,7 +57,7 @@ export function createPreviewServer() {
         res.writeHead(200, { 'Content-Type': name.endsWith('.html') ? 'text/html; charset=utf-8' : name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' });
         return res.end(await readFile(join(project, 'public', name)));
       }
-      if (req.method === 'GET' && path === '/api/instance') return json({ app: 'douyin-codex-bridge', version: '0.14.0 · UI 验收预览', preview: true });
+      if (req.method === 'GET' && path === '/api/instance') return json({ app: 'douyin-codex-bridge', version: '0.15.0 · UI 验收预览', preview: true });
       if (req.method === 'GET' && path === '/api/state') return json({ ...state,
         conversations: { ...state.conversations, needs: scoped(state.conversations.needs, url.searchParams.get('needs')) },
         knowledge: scoped(state.knowledge, url.searchParams.get('knowledge')), recentKnowledge: state.knowledge.filter(k => !k.archived).slice(0,3),
