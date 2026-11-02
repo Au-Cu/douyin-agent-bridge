@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Keep the desktop's one-shot startup policy/configuration probes out of the shared RPC broker. Preserve their direct JSON output and exit status even when stdin is closed or a shared desktop is already connected.
+- Flush the Windows native wrapper's stdin/stdout/stderr after each chunk so short interactive RPC requests and replies arrive before EOF. Exercise this with a real compiled wrapper and an open stdin, rather than only finite CLI commands.
+- Restrict broker interception to the recognized persistent desktop stdio command; pass help, schema generation, sign-out and other tooling to the original executable.
+- Require verification of the actual reported startup/login path before publication; automated checks alone do not establish that the user's bug is resolved.
+
 ## 0.13.1
 
 - Show the Windows desktop Codex window when launching the shared connection, and open or reuse the assistant console on both Windows and Mac ARM64.
