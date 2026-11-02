@@ -53,3 +53,12 @@ test('chat runtime appends to persistent groups without replaying bounded histor
     const other=h.bot('other','new','two','OTHER');await h.chats.run(h.store.db.prepare('SELECT * FROM bot_messages WHERE id=?').get(other.id),h.chats.get('two'));assert.notEqual(options[2].session.thread,options[0].session.thread);
   }finally{h.store.close();}
 });
+
+test('unknown group turns are reconciled by exact native turn only, recovering one reply group without model replay',async()=>{
+  const h=setup();try{const row=h.bot('source','uncertain'),s=await h.sessions.prepare(row,h.chats.get('one'),'codex',settings,100);h.store.db.prepare("UPDATE bot_messages SET thread=?,turn='exact-turn' WHERE id='source'").run(s.thread);h.sessions.uncertain(s,'connection lost');h.native.get(s.thread).turns=[{id:'other-turn',status:'completed',items:[{type:'agentMessage',text:'WRONG_RESULT'}]}];assert.equal((await h.sessions.reconcile(s.id)).verified,0);assert.equal(h.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE kind='text'").get().n,0);
+    h.native.get(s.thread).turns=[{id:'exact-turn',status:'completed',items:[{type:'agentMessage',text:'真实完整回复'}]}];const result=await h.sessions.reconcile(s.id);assert.equal(result.verified,1);assert.equal(result.remaining,0);assert.equal(h.sessions.get(s.id).state,'current');const out=h.store.db.prepare("SELECT * FROM outbox WHERE kind='text'").all();assert.equal(out.length,1);assert.match(out[0].body,/真实完整回复/);assert.equal(JSON.parse(out[0].payload).replyToMessageId,'source');assert.equal((await h.sessions.reconcile(s.id)).verified,0);assert.equal(h.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE kind='text'").get().n,1);assert.equal(h.calls.filter(c=>c[0]==='create').length,1);
+  }finally{h.store.close();}
+});
+test('restart fences a submitted unknown native group turn before accepting another model request',async()=>{
+  const h=setup(),root=h.store.root;try{const r=h.bot('pending','submitted'),s=await h.sessions.prepare(r,h.chats.get('one'),'codex',settings,100);h.store.db.prepare('UPDATE bot_messages SET thread=?,turn=? WHERE id=?').run(s.thread,'unknown-turn',r.id);h.store.close();const restored=setup(root);try{assert.equal(restored.sessions.current('one').state,'uncertain');await assert.rejects(restored.sessions.prepare(restored.bot('next'),restored.chats.get('one'),'codex',settings,100),/不重复执行/);assert.equal(restored.calls.length,0);}finally{restored.store.close();}}finally{try{h.store.close();}catch{}}
+});

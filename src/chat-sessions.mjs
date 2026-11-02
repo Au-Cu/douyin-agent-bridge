@@ -8,7 +8,8 @@ export class ChatSessions{
       CREATE TABLE IF NOT EXISTS chat_session_heads(peer TEXT PRIMARY KEY,id TEXT);
       CREATE TABLE IF NOT EXISTS chat_session_messages(message_id TEXT PRIMARY KEY,session_id TEXT);
       UPDATE chat_sessions SET archive_state='uncertain',error='归档提交后程序重启，需核对原生状态' WHERE archive_state='submitted';
-      UPDATE chat_sessions SET state='attention',error='新会话创建后程序重启，创建结果尚未核实' WHERE state='creating';`);
+      UPDATE chat_sessions SET state='attention',error='新会话创建后程序重启，创建结果尚未核实' WHERE state='creating';
+      UPDATE chat_sessions SET state='uncertain',error='已提交回合结果尚未核实，不自动重跑' WHERE id IN (SELECT m.session_id FROM chat_session_messages m JOIN bot_messages b ON b.id=m.message_id WHERE b.status='uncertain');`);
     if(!store.config.chatContextBudget)store.saveConfig({chatContextBudget:16000});
   }
   get(id){return this.db.prepare('SELECT * FROM chat_sessions WHERE id=?').get(String(id));}
@@ -44,7 +45,7 @@ export class ChatSessions{
     }finally{this.busy.delete(chat.chatKey);}
   }
   guard(session,chat){if(this.current(chat.chatKey)?.id!==session.id||this.chats.get(chat.chatKey)?.revision!==chat.revision)throw Object.assign(new Error('本群会话已切换，本轮未继续提交'),{notSubmitted:true});}
-  complete(session,result,inputTokens){const u=result.tokenUsage;this.db.prepare('UPDATE chat_sessions SET tokens=MAX(tokens,?),model_window=MAX(model_window,?),updated=? WHERE id=?').run(u?.last?.totalTokens||u?.totalTokens||session.tokens+inputTokens+Buffer.byteLength(result.text,'utf8')+500,u?.modelContextWindow||0,Date.now(),session.id);}
+  complete(session,result,inputTokens){const u=result.tokenUsage;this.db.prepare('UPDATE chat_sessions SET tokens=MAX(tokens,?),model_window=MAX(model_window,?),updated=? WHERE id=?').run(u?.last?.totalTokens||u?.totalTokens||(this.get(session.id)?.tokens||0)+inputTokens+Buffer.byteLength(result.text,'utf8')+500,u?.modelContextWindow||0,Date.now(),session.id);}
   uncertain(session,error){if(session)this.db.prepare("UPDATE chat_sessions SET state='uncertain',error=?,updated=? WHERE id=?").run(error,Date.now(),session.id);}
   async reset(peer,settings,harness){
     const chat=this.assertChat(peer);this.assertIdle(peer);if(this.busy.has(peer))throw new Error('本群会话正在切换');this.busy.add(peer);
@@ -71,6 +72,22 @@ export class ChatSessions{
   }
   list(peer,{scope='all'}={}){return this.db.prepare("SELECT s.*,COALESCE(a.archived,0) AS archived FROM chat_sessions s LEFT JOIN archive_records a ON a.kind='chat_session' AND a.id=s.id WHERE s.peer=? ORDER BY s.seq DESC LIMIT 100").all(peer).filter(s=>scope==='all'||(scope==='archived'?s.archived:!s.archived)).map(({signature,handoff,revision,...s})=>({...s,current:this.current(peer)?.id===s.id}));}
   state(peer){const s=this.current(peer);return {current:s?{id:s.id,harness:s.harness,seq:s.seq,tokens:s.tokens,state:s.state,error:s.error}:null,budget:this.store.config.chatContextBudget||16000,busy:this.chats.running.has(peer)||this.busy.has(peer)};}
+  async reconcile(id){
+    const s=this.get(id);if(!s)throw new Error('未找到登记的群聊会话');
+    const rows=this.db.prepare("SELECT b.* FROM bot_messages b JOIN chat_session_messages m ON m.message_id=b.id WHERE m.session_id=? AND b.status='uncertain'").all(id);
+    if(!rows.length)return {verified:0,remaining:0,reason:'没有待核实的回合'};
+    const native=await this.runtime.readSession(s.harness,s.thread);if(!native)return {verified:0,remaining:rows.length,reason:'DSH ACP 不提供完整原生回合核实；保留现场，不重跑。'};let verified=0;
+    for(const row of rows){const turn=row.thread===s.thread&&row.turn&&native.turns?.find(t=>t.id===row.turn);if(!turn||!['completed','failed','interrupted'].includes(turn.status))continue;
+      if(this.db.prepare('SELECT status FROM bot_messages WHERE id=?').get(row.id)?.status!=='uncertain')continue;
+      if(turn.status==='completed'){const text=turn.items?.filter(i=>i.type==='agentMessage').at(-1)?.text;if(!text)continue;
+        const chat=this.chats.get(row.peer);if(chat?.enabled&&chat.mode==='chat'&&chat.revision===row.revision){this.chats.queueResult(row,chat,{text});this.complete(s,{text},Buffer.byteLength(row.body,'utf8'));}else this.chats.set(row.id,'cancelled','原生结果已核实，但聊天配置变化，未自动发送：'+text);
+      }else this.chats.set(row.id,turn.status==='interrupted'?'cancelled':'failed','原生回合已核实：'+(turn.error?.message||turn.status));verified++;
+    }
+    const remaining=this.db.prepare("SELECT COUNT(*) n FROM bot_messages b JOIN chat_session_messages m ON m.message_id=b.id WHERE m.session_id=? AND b.status='uncertain'").get(id).n;
+    if(!remaining)this.db.prepare('UPDATE chat_sessions SET state=?,error=\'\',updated=? WHERE id=?').run(this.current(s.peer)?.id===id?'current':'history',Date.now(),id);
+    return {verified,remaining,reason:remaining?'原回合仍在运行或缺少确切回合证据，保留现场，未重跑。':'已核实原生结果，未重新调用模型；可交付的结果已接回原发送队列。'};
+  }
+  async reconcileUncertain(){for(const s of this.db.prepare("SELECT id FROM chat_sessions WHERE state='uncertain' AND harness='codex' ORDER BY updated LIMIT 2").all()){if(this.closing)return;try{await this.reconcile(s.id);}catch{ /* Read failure preserves all unknown work. */ }}}
   async transcript(id){
     const s=this.get(id);if(!s)throw new Error('未找到本桥接器登记的群聊会话');let native=null,error='';
     try{native=await this.runtime.readSession(s.harness,s.thread);}catch(e){error='原生历史暂不可读，以下为本桥接器的原始交流记录';}

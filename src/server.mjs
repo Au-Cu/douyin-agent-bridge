@@ -134,6 +134,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/archive/retention')return json(res,retention.configure(body));
       if(path==='/api/chat-sessions/reset'){if(body.confirmed!==true)throw new Error('请确认要清空群聊上下文');return json(res,await chatSessions.reset(String(body.peer||''),await preferences.chatWork(),store.config.chatHarness||'codex'));}
       if(path==='/api/chat-sessions/archive'){if(typeof body.archived!=='boolean')throw new Error('请选择归档或恢复');return json(res,await chatSessions.archive(String(body.id||''),body.archived));}
+      if(path==='/api/chat-sessions/reconcile')return json(res,await chatSessions.reconcile(String(body.id||'')));
       if(path==='/api/archive/delete/prepare')return json(res,deletion.prepare(body.kind,String(body.id||'')));
       if(path==='/api/archive/delete')return json(res,deletion.remove(body));
       if(path==='/api/ui/panels')return json(res,{panels:updatePanels(store,body)});
@@ -243,7 +244,7 @@ const server=http.createServer(async(req,res)=>{
 server.listen(port,'127.0.0.1',()=>{console.log('抖音 Agent Bridge 控制台：'+origin);log('控制台已启动，正在恢复本机连接');store.backup().catch(()=>log('状态快照暂未完成，请检查磁盘空间','attention'));});
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被占用，请打开 '+origin:e.message);process.exitCode=1;clearInterval(statusTimer);engine.stop();codex.close();});
 engine.start();codex.startAuthWatcher();
-let retentionWork=Promise.resolve();const retentionTimer=setInterval(()=>{retentionWork=retention.run().catch(()=>log('归档保留策略检查失败，记录已保留','attention'));},60000);
+let retentionWork=Promise.resolve();const retentionTimer=setInterval(()=>{retentionWork=Promise.allSettled([retention.run().catch(()=>log('归档保留策略检查失败，记录已保留','attention')),chatSessions.reconcileUncertain()]);},60000);
 const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 '+(active==='dsh'?'DeepSeek Harness':'Codex')+' 已连接');}).catch(e=>log('助手连接失败：'+e.message,'error'));
 if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
   await codexReady;if(closing||!store.config.resumeOnStartup)return;
@@ -251,5 +252,5 @@ if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browse
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
-async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);clearInterval(retentionTimer);retention.closing=true;deliveryReview.closing=true;await Promise.allSettled([retentionWork,deliveryReview.batchWork]);engine.stop();chats.stop();await Promise.allSettled([codex.close(),taskCodex.close(),chatSandbox.close()]);await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values(),...engine.memoryUpdates]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
+async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);clearInterval(retentionTimer);retention.closing=true;deliveryReview.closing=true;chatSessions.closing=true;await Promise.allSettled([retentionWork,deliveryReview.batchWork]);engine.stop();chats.stop();await Promise.allSettled([codex.close(),taskCodex.close(),chatSandbox.close()]);await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values(),...engine.memoryUpdates]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

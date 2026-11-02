@@ -15,7 +15,7 @@ export function initGroupSettings({api,notice,escape,getState,refresh}){
   async function loadSessions(){
     if(!peer||loading)return;loading=true;$('chatSessionsError').textContent='';
     try{const response=await api('chat-sessions?'+new URLSearchParams({peer,scope:$('chatSessionScope').value}));
-      updateHTML($('chatSessionList'),response.sessions.map(s=>'<article class="session-row" data-ui-key="session:'+escape(s.id)+'"><strong>会话 '+s.seq+' · '+backend(s.harness)+(s.current?' · 当前使用':s.archived?' · 已归档':' · 历史')+'</strong><small>'+new Date(s.created).toLocaleString('zh-CN',{hour12:false})+'</small><p>'+escape(archiveLabel(s)||s.error||'会话已独立保存')+'</p><div class="button-row"><button data-session-read="'+escape(s.id)+'">查看完整记录</button>'+(!s.current&&s.thread&&s.state!=='uncertain'?'<button class="secondary" data-session-archive="'+escape(s.id)+'" data-session-value="'+!s.archived+'">'+(s.archived?'恢复显示'+(s.harness==='codex'?'及 Codex 会话':''):s.archive_state==='uncertain'?'核实上次归档':'归档')+'</button>':'')+'</div></article>').join('')||'<p class="empty">此范围还没有群聊会话。</p>');
+      updateHTML($('chatSessionList'),response.sessions.map(s=>'<article class="session-row" data-ui-key="session:'+escape(s.id)+'"><strong>会话 '+s.seq+' · '+backend(s.harness)+(s.current?' · 当前使用':s.archived?' · 已归档':' · 历史')+'</strong><small>'+new Date(s.created).toLocaleString('zh-CN',{hour12:false})+'</small><p>'+escape(archiveLabel(s)||s.error||'会话已独立保存')+'</p><div class="button-row">'+(s.state==='uncertain'?'<button class="secondary" data-session-reconcile="'+escape(s.id)+'">核实原回合</button>':'')+'<button data-session-read="'+escape(s.id)+'">查看完整记录</button>'+(!s.current&&s.thread&&s.state!=='uncertain'?'<button class="secondary" data-session-archive="'+escape(s.id)+'" data-session-value="'+!s.archived+'">'+(s.archived?'恢复显示'+(s.harness==='codex'?'及 Codex 会话':''):s.archive_state==='uncertain'?'核实上次归档':'归档')+'</button>':'')+'</div></article>').join('')||'<p class="empty">此范围还没有群聊会话。</p>');
       if(selected&&response.sessions.some(s=>s.id===selected))await loadTranscript(selected);else{selected='';$('chatSessionTranscript').textContent='选择一项会话查看记录。';}
     }catch(e){$('chatSessionsError').textContent=e.message;}finally{loading=false;}
   }
@@ -25,8 +25,8 @@ export function initGroupSettings({api,notice,escape,getState,refresh}){
   }
   $('chatSessionScope').onchange=loadSessions;$('reloadChatSessions').onclick=loadSessions;
   dialog.addEventListener('click',async event=>{
-    const button=event.target.closest('button'),read=button?.dataset.sessionRead,id=button?.dataset.sessionArchive;if(!read&&!id)return;button.disabled=true;
-    try{if(read){selected=read;await loadTranscript(read);}else{await api('chat-sessions/archive',{id,archived:button.dataset.sessionValue==='true'});await loadSessions();await refresh();}}
+    const button=event.target.closest('button'),read=button?.dataset.sessionRead,id=button?.dataset.sessionArchive;const reconcile=button?.dataset.sessionReconcile;if(!read&&!id&&!reconcile)return;button.disabled=true;
+    try{if(reconcile){const result=await api('chat-sessions/reconcile',{id:reconcile});await loadSessions();await refresh();$('chatSessionsError').textContent=result.reason;}else if(read){selected=read;await loadTranscript(read);}else{await api('chat-sessions/archive',{id,archived:button.dataset.sessionValue==='true'});await loadSessions();await refresh();}}
     catch(e){$('chatSessionsError').textContent=e.message;}finally{button.disabled=false;}
   });
   document.addEventListener('click',async event=>{
