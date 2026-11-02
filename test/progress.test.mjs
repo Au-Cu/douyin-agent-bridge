@@ -80,7 +80,7 @@ test('独立检查器在任务锁忙或断线时仍更新真实阻塞状态；�
   const h=harness();try{
     const m=msg('4000000000001','长任务');h.s.incoming(m);const op=h.engine.progress.receive(m);h.engine.progress.stage(op.id,'执行任务','',{running:true,thread:'work',turn:'turn',submitted:true});h.engine.busy=true;
     h.advance(95000);let reads=0;h.c.request=async()=>{reads++;throw new Error('offline');};const before=h.s.snapshot().outbox.length;await h.engine.progress.inspect();assert.equal(reads,1);assert.match(h.engine.progress.status(op.id),/暂时无法确认运行状态/);assert.equal(h.s.snapshot().outbox.length,before);
-    h.advance(31000);h.c.request=async()=>({thread:{status:{type:'active'}}});await h.engine.progress.inspect();assert.match(h.engine.progress.status(op.id),/报告仍在运行/);assert.equal(h.calls.length,0);
+    h.advance(31000);h.c.request=async()=>({thread:{id:'work',status:{type:'active'},turns:[{id:'turn',status:'inProgress'}]}});await h.engine.progress.inspect();assert.match(h.engine.progress.status(op.id),/报告仍在运行/);assert.equal(h.calls.length,0);
   }finally{h.s.close();}
 });
 
@@ -120,7 +120,7 @@ test('弹层遮挡仅对确定未点击的表情退避三次；点击不明的�
 
 test('派发调度只锁具体目标聊天，不同目标并行，同目标后续任务串行',async()=>{
   const h=harness();try{h.s.saveConfig({targets:[{id:'chat-A',alias:'A'},{id:'chat-B',alias:'B'}]});const a=h.engine.dispatch('A','第一个','授权A'),again=h.engine.dispatch('A','第二个','授权A2'),b=h.engine.dispatch('B','独立任务','授权B');let release,started;const ready=new Promise(r=>started=r),hold=new Promise(r=>release=r),calls=[];
-    h.c.run=async(id,input,o)=>{calls.push(id);o.onSubmitted();o.onStarted('turn-'+calls.length);if(calls.length===1){started();await hold;}return {text:'完成',turnId:'turn-'+calls.length};};
+    h.c.run=async(id,input,o)=>{calls.push(id);const turnId='turn-'+calls.length;o.onSubmitted();o.onStarted(turnId);if(calls.length===1){started();await hold;}return {text:'完成',turnId};};
     const first=h.engine.runTask();await ready;await h.engine.runTask();assert.deepEqual(calls,['chat-A','chat-B']);assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(b).status,'done');assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(a).status,'running');assert.equal(h.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(again).status,'queued');assert.equal(h.engine.taskBusy,true);
     release();await first;await h.engine.runTask();assert.deepEqual(calls,['chat-A','chat-B','chat-A']);assert.equal(h.engine.taskBusy,false);
   }finally{h.s.close();}

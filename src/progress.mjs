@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {parseCommand} from './commands.mjs';
 import {codexThreadUrl} from './archive.mjs';
 import {checkWork} from './execution.mjs';
+import {nativeTurnState} from './native-turn-state.mjs';
 
 export const progressEmoji={roger:['👌'],active:['[奋斗]'],done:['🎉','✅','👍']};
 export const writerConflict=e=>e?.code==='THREAD_BUSY'||/\bactive writer\b|\bthread\b[^.\n]{0,100}\b(?:already (?:active|running)|busy)\b/i.test(String(e?.message||e||''));
@@ -131,7 +132,13 @@ export class Progress{
     const stop=this.db.prepare('SELECT * FROM interruptions WHERE operation_id=?').get(id);if(stop)return stop.state==='stopped'?'用户已中断，后续执行及未发送的回复已停止。':stop.state==='stopping'?'正在强制中断对应任务，核对 Codex 与本地工作是否停止。':'本地处理已切断，Codex 停止结果暂时无法确认；保留现场，不会自动重跑。';
     const parts=this.resultParts(id),tasks=this.tasks(id),wait=tasks.map(t=>this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get(t.id)).find(Boolean)||this.db.prepare('SELECT * FROM task_waits WHERE task_id=?').get('message:'+id);
     if(parts.uncertain)return '回复已生成，但有分段送达结果不明，需要核实；不会自动重发。';
-    if(tasks.some(t=>t.status==='uncertain')||op.status==='uncertain')return '暂时无法确认运行状态。已经提交的任务不会自动重跑。';
+    if(tasks.some(t=>t.status==='uncertain')||op.status==='uncertain'){
+      const observed=this.checks.get(id),fresh=observed?.turnId===op.turn&&this.now()-observed.checked<90000;
+      if(fresh&&observed.state==='active')return '已核对原任务回合仍在运行；继续等待结果，不会重复提交。';
+      if(fresh&&observed.state==='completed')return '已核对原任务回合已完成；本地结果尚待同步，不会重新执行或盲目重发。';
+      if(fresh&&['failed','interrupted'].includes(observed.state))return observed.state==='failed'?'已核对原任务回合执行失败，保留原聊天供检查。':'已核对原任务回合已中断，不会自动重跑。';
+      return '暂时无法确认运行状态。已经提交的任务不会自动重跑。';
+    }
     if(wait){const retryId=op.number||(wait.task_id.startsWith('message:')?createHash('sha256').update(op.id).digest('hex').slice(0,8):wait.task_id.slice(0,8));return `${wait.paused?'调度已暂停':'排队受阻'}：${wait.reason}。${wait.paused?'处理冲突后用 /重试 '+retryId+' 恢复；尚未提交执行。':'尚未提交，稍后按退避间隔重试。'}`;}
     if(this.codex.ready===false&&op.submitted&&(!op.ended||tasks.some(t=>t.status==='running')))return '暂时无法确认运行状态；Codex 连接不可用。';
     if(op.submitted&&(!op.ended||tasks.some(t=>t.status==='running'))&&this.now()-op.changed>=this.stallAfter)return this.checks.get(id)?.state==='active'?`Codex 报告仍在运行，较长时间没有新结果。最近阶段：${op.phase}。`:'暂时无法确认运行状态；已提交的执行保留现场，不会自动重跑。';
@@ -239,9 +246,9 @@ export class Progress{
           const pending=this.store.pendingMessages().length,elapsed=op.started?Math.floor((this.now()-op.started)/60000):0;
           this.notice(op.id,`当前：${this.status(op.id)}\n${op.started?'已运行 '+(elapsed||'不足 1')+' 分钟；':''}后续消息 ${pending} 条待处理。`);
         }
-        if(op.submitted&&(!op.ended||this.tasks(op.id).some(t=>t.status==='running'))&&this.now()-op.changed>=this.stallAfter){
+        if(op.submitted&&(!op.ended||this.tasks(op.id).some(t=>['running','uncertain'].includes(t.status)))&&this.now()-op.changed>=this.stallAfter){
           if(this.now()-(this.checks.get(op.id)?.checked||0)<30000)continue;
-          try{const executor=this.tasks(op.id).some(t=>t.thread===op.thread)?this.taskCodex:this.codex;const r=await executor.request('thread/read',{threadId:op.thread},5000);this.checks.set(op.id,{checked:this.now(),state:r.thread?.status?.type||'unknown'});}
+          try{const executor=this.tasks(op.id).some(t=>t.thread===op.thread)?this.taskCodex:this.codex;const observed=op.turn?await nativeTurnState(executor,op.thread,op.turn):{state:(await executor.request('thread/read',{threadId:op.thread},5000)).thread?.status?.type||'unknown'};this.checks.set(op.id,{checked:this.now(),state:observed.state,...(op.turn?{turnId:op.turn}:{})});}
           catch{this.checks.set(op.id,{checked:this.now(),state:'unknown'});}
         }
       }

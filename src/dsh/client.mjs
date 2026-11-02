@@ -467,7 +467,7 @@ export class DshClient extends EventEmitter {
     }
   }
 
-  async #runTurn(record, input, { toolHandler, onStarted, onSubmitted, timeoutMs = 15 * 60 * 1000, effort, model, outputSchema, interruptOnTimeout = false,serviceTier } = {}) {
+  async #runTurn(record, input, { toolHandler, onStarted, onSubmitted, timeoutMs = 15 * 60 * 1000, waitForCompletion=false,effort, model, outputSchema, interruptOnTimeout = false,serviceTier } = {}) {
     checkWork();
     if (this.runs.has(record.threadId)||this.interrupting.has(record.threadId)) throw Object.assign(new Error('该 DeepSeek Harness 会话仍在工作，请稍后再试'),{code:'THREAD_BUSY',notSubmitted:true});
     if(serviceTier&&serviceTier!=='default')throw Object.assign(new Error('DSH 未提供快速模式'),{notSubmitted:true});
@@ -519,8 +519,9 @@ export class DshClient extends EventEmitter {
       const prompt = this.acp.request('session/prompt', { sessionId: record.sessionId, prompt: blocks },0).then(stop=>{
         const status=stop?.stopReason==='cancelled'?'interrupted':stop?.stopReason==='end_turn'?'completed':'failed';run.terminal={id:run.turnId,status};this.state.turn(run.turnId,{status,text:run.text,stopReason:stop?.stopReason,at:Date.now()});run.terminalReady.resolve(run.terminal);if(this.interrupting.get(record.threadId)===run)this.interrupting.delete(record.threadId);if(run.cancelled||run.localEnded)this.runs.delete(record.threadId);return stop;
       },error=>{if(error.remote){run.terminal={id:run.turnId,status:'failed'};this.state.turn(run.turnId,{status:'failed',notSubmitted:!!error.notSubmitted,text:run.text,at:Date.now()});run.terminalReady.resolve(run.terminal);if(this.interrupting.get(record.threadId)===run)this.interrupting.delete(record.threadId);if(run.localEnded)this.runs.delete(record.threadId);}else run.terminalReady.resolve(null);throw error;});prompt.catch(()=>{});record.instructionsSent=true;
-      const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('DSH 本轮等待超时'),{code:'DSH_PROMPT_TIMEOUT',uncertain:true})),timeoutMs);});
-      const stop=await Promise.race([prompt,completion.promise,deadline]);
+      const pending=[prompt,completion.promise];
+      if(!waitForCompletion||interruptOnTimeout)pending.push(new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('DSH 本轮等待超时'),{code:'DSH_PROMPT_TIMEOUT',uncertain:true})),timeoutMs);}));
+      const stop=await Promise.race(pending);
       if (run.cancelled) throw interruptedError();
       if (stop?.stopReason !== 'end_turn') {
         throw new Error(`DeepSeek Harness 执行状态：${stop.stopReason}`);
@@ -531,6 +532,7 @@ export class DshClient extends EventEmitter {
       return result;
     } catch (e) {
       const kind=authFailure(e);if(kind){e.authKind=kind;this.auth={status:kind,message:'DSH 登录或额度需要核验'};this.needsReconnect=true;}
+      if(run.terminal)e.nativeTerminalStatus=run.terminal.status;
       if(!run.submitted||e.notSubmitted){e.notSubmitted=true;run.terminal={id:run.turnId,status:'failed'};this.state.turn(run.turnId,{status:'failed',notSubmitted:true,at:Date.now()});run.terminalReady.resolve(run.terminal);}
       if(e.code==='DSH_PROMPT_TIMEOUT'&&interruptOnTimeout){const result=await this.interrupt(record.threadId,{run,turnId:run.turnId});e.uncertain=!result.confirmed;}
       if(run.submitted&&!run.terminal&&!e.notSubmitted)e.uncertain=true;
