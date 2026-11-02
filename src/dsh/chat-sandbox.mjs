@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {ProfiledDshClient} from './profile-client.mjs';
 import {publicChatTools,publicChatTool} from '../chat-tools.mjs';
 import {sandboxTool} from '../code-sandbox.mjs';
+import {chatInput} from '../chat-input.mjs';
 
 const instructions=await readFile(new URL('../../prompts/chat.md',import.meta.url),'utf8');
 export class DshChatSandbox{
@@ -22,10 +23,13 @@ export class DshChatSandbox{
     const client=this.client=new this.Client({root:join(this.root,'chat-dsh'),home:this.dsh.home,executable:this.dsh.executable,mode:'chat',instructions,webSearch:permissions.webSearch===true,selectionProvider:()=>this.dsh.defaultSelection(),allowedChatTools:allowed,log:this.log});
     try{await client.connect();const catalog=await client.models();this.allowedModels=new Set(catalog.models.map(m=>m.model));this.fingerprint=fingerprint;return client;}catch(e){await client.close();throw e;}
   }
-  async reply(input,{model,effort,serviceTier,onSubmitted,onStarted,signal}={}){
+  async createSession({model}={}){const client=await this.prepare();return client.createCoordinator(this.tools,false,{role:'chat',model});}
+  async readSession(){return null;}
+  async archiveSession(){return {supported:false,reason:'DSH ACP 不支持原生归档，仅控制台归档'};}
+  async reply(input,{model,effort,serviceTier,onSubmitted,onStarted,signal,session,images=[]}={}){
     const client=await this.prepare();if(!this.allowedModels.has(model))throw new Error('普通聊天模型不在受限 DSH 目录中');this.active++;let thread,turn;
     const abort=()=>{if(thread)client.interrupt(thread,{turnId:turn}).catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
-    try{if(signal?.aborted)throw new Error('聊天已停用，未提交');thread=await client.createCoordinator(this.tools,true,{role:'chat',model});return await client.run(thread,[{type:'text',text:JSON.stringify(input)}],{model,effort,serviceTier,onSubmitted:()=>{if(signal?.aborted)throw Object.assign(new Error('聊天已停用'),{notSubmitted:true});onSubmitted?.({thread});},onStarted:id=>{turn=id;if(signal?.aborted)abort();onStarted?.({thread,turn:id});},toolHandler:call=>{if(signal?.aborted)throw new Error('聊天已停用');if(call.tool==='sandbox_python'&&this.permissions.codeSandbox){if(!call.arguments||Object.keys(call.arguments).some(k=>k!=='code'))throw new Error('代码沙箱参数无效');return this.codeSandbox.run(call.arguments.code,{signal});}return publicChatTool(call);},timeoutMs:120000,interruptOnTimeout:true});}
+    try{if(signal?.aborted)throw new Error('聊天已停用，未提交');thread=session?.thread||await client.createCoordinator(this.tools,true,{role:'chat',model});return await client.run(thread,await chatInput(this.root,input,images),{model,effort,serviceTier,onSubmitted:()=>{if(signal?.aborted)throw Object.assign(new Error('聊天已停用'),{notSubmitted:true});onSubmitted?.({thread});},onStarted:id=>{turn=id;if(signal?.aborted)abort();onStarted?.({thread,turn:id});},toolHandler:call=>{if(signal?.aborted)throw new Error('聊天已停用');if(call.tool==='sandbox_python'&&this.permissions.codeSandbox){if(!call.arguments||Object.keys(call.arguments).some(k=>k!=='code'))throw new Error('代码沙箱参数无效');return this.codeSandbox.run(call.arguments.code,{signal});}return publicChatTool(call);},timeoutMs:120000,interruptOnTimeout:true});}
     finally{signal?.removeEventListener('abort',abort);this.active--;if(!this.active)for(const resolve of this.idle.splice(0))resolve();if(thread&&client.ready)await client.release(thread);}
   }
   async close(){this.closed=true;for(const resolve of this.idle.splice(0))resolve();await this.client?.close();}

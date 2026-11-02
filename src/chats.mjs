@@ -32,7 +32,7 @@ export class Chats {
   agentEnabled(){const owner=this.store.config.owner;return !!owner&&this.get(owner.chatKey)?.enabled&&this.get(owner.chatKey)?.mode==='agent';}
   bots(){return this.list().filter(c=>c.enabled&&c.mode==='chat');}
   refreshBrowserMode(){this.adapter.multiple=this.bots().length>0;}
-  state(){return {chats:this.list(),selecting:!!this.adapter.selecting,messages:this.store.db.prepare('SELECT id,peer,status,result,thread,turn,created,updated FROM bot_messages ORDER BY created DESC LIMIT 25').all().map(r=>({...r,name:this.get(r.peer)?.displayName||'已停用聊天',uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};}
+  state(){return {chats:this.list().map(c=>({...c,...(c.type==='group'&&this.sessions?{sessions:this.sessions.state(c.chatKey)}:{})})),selecting:!!this.adapter.selecting,messages:this.store.db.prepare('SELECT id,peer,status,result,thread,turn,created,updated FROM bot_messages ORDER BY created DESC LIMIT 25').all().map(r=>({...r,sessionId:this.sessions?.forMessage(r.id)?.id,name:this.get(r.peer)?.displayName||'已停用聊天',uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};}
   beginSelection(){this.adapter.selection?.(true);}
   endSelection(){this.adapter.selection?.(false);}
   async observe(){
@@ -45,13 +45,16 @@ export class Chats {
     const token=randomUUID(),value={...peer,type:legacy?'single':peer.type,...(legacy?{legacy:true}:{}),token};this.observations.set(token,{value,seen:scan.messages.map(m=>m.id),expires:Date.now()+5*60*1000});
     for(const [key,v] of this.observations)if(v.expires<Date.now())this.observations.delete(key);return value;
   }
-  configure({token,chatKey,mode,enabled,groupReplyMode}){
+  configure({token,chatKey,mode,enabled,groupReplyMode,videoOverview,videoMaxSeconds}){
     if(!['agent','chat'].includes(mode)||typeof enabled!=='boolean')throw new Error('请选择个人 Agent 或普通聊天 AI，并明确启用状态');
     const observed=token&&this.observations.get(token),old=this.get(String(chatKey||observed?.value.chatKey||''));
     if(token&&(!observed||observed.expires<Date.now()))throw new Error('聊天身份已过期，请重新读取当前聊天');
     const peer=observed?.value||old;if(!peer)throw new Error('请先从实际打开的抖音聊天读取身份');
     if(groupReplyMode!==undefined&&(!['mentions','all'].includes(groupReplyMode)||peer.type!=='group'))throw new Error('群聊回复范围只能选择仅被 @ 时回复或回复所有新消息');
     const replyMode=peer.type==='group'?(groupReplyMode??old?.groupReplyMode??'mentions'):'mentions';
+    if(videoOverview!==undefined&&(typeof videoOverview!=='boolean'||peer.type!=='group'||mode!=='chat'))throw new Error('轻量看视频仅能在普通群聊中配置');
+    const videoLimit=Number(videoMaxSeconds??old?.videoMaxSeconds??120);if(!Number.isInteger(videoLimit)||videoLimit<15||videoLimit>300)throw new Error('群聊视频上限为 15–300 秒');
+    const videoSettings={videoOverview:videoOverview??old?.videoOverview??false,videoMaxSeconds:videoLimit};
     const owner=this.store.config.owner,isOwner=owner?.chatKey===peer.chatKey&&owner?.peerUid===peer.peerUid;
     if(mode==='agent'&&(!isOwner||peer.type==='group'))throw new Error('个人 Agent 使用现有绑定用户的单聊；其他单聊或群聊请选择普通聊天 AI');
     if(enabled&&mode==='chat'&&(!peer.selfUid||!['single','group'].includes(peer.type)))throw new Error('普通聊天的账号或聊天类型尚未核验，请重新读取');
@@ -60,10 +63,10 @@ export class Chats {
     if(old&&old.mode===mode&&old.enabled===enabled&&sameChat(peer,old)){
       // A trigger-policy change affects future messages only. Keep the current
       // reply, revision and context instead of cancelling work already running.
-      const entry={...old,groupReplyMode:replyMode,...((old.groupReplyMode||'mentions')!==replyMode?{replyModeChangedAt:Date.now()}:{})};
+      const entry={...old,...videoSettings,groupReplyMode:replyMode,...((old.groupReplyMode||'mentions')!==replyMode?{replyModeChangedAt:Date.now()}:{})};
       this.store.saveConfig({aiChats:[...this.store.config.aiChats.filter(c=>c.chatKey!==entry.chatKey),entry]});this.endSelection();return entry;
     }
-    const revision=randomUUID(),entry={chatKey:peer.chatKey,peerUid:peer.peerUid,displayName:String(peer.displayName||'抖音聊天').slice(0,150),type:peer.type,selfUid:peer.selfUid||'',legacy:!!peer.legacy,mode,enabled,groupReplyMode:replyMode,enabledAt:enabled?Date.now():old?.enabledAt||0,revision};
+    const revision=randomUUID(),entry={chatKey:peer.chatKey,peerUid:peer.peerUid,displayName:String(peer.displayName||'抖音聊天').slice(0,150),type:peer.type,selfUid:peer.selfUid||'',legacy:!!peer.legacy,mode,enabled,...videoSettings,groupReplyMode:replyMode,enabledAt:enabled?Date.now():old?.enabledAt||0,revision};
     if(observed)for(const id of observed.seen)this.seen(entry.chatKey,id);
     const list=this.store.config.aiChats.filter(c=>c.chatKey!==entry.chatKey);this.store.saveConfig({aiChats:[...list,entry]});
     this.controllers.get(entry.chatKey)?.abort();this.controllers.delete(entry.chatKey);
@@ -81,10 +84,10 @@ export class Chats {
   receipt(row,stage){const chat=this.get(row.peer);if(!chat||chat.revision!==row.revision)return;const message=JSON.parse(row.body);this.store.enqueueReply(row.peer,'',{kind:'progress_reaction',priority:100,payload:{chatbot:true,botId:row.id,chatRevision:row.revision,messageId:message.id,stage,emojis:progressEmoji[stage]},dedupe:'bot-reaction:'+row.id+':'+stage});}
   ingest(chat,m,{since=this.armedAt,recover=false}={}){
     if(!acceptsChatMessage(m,chat,since)||this.get(chat.chatKey)?.revision!==chat.revision)return false;
-    const id=chat.chatKey+':'+m.id;if(this.store.db.prepare('SELECT 1 FROM bot_messages WHERE id=?').get(id))return false;
+    const id=chat.chatKey+':'+m.id;if(this.store.wasDeletedMessage(id)||this.store.db.prepare('SELECT 1 FROM bot_messages WHERE id=?').get(id))return false;
     const fresh=this.seen(chat.chatKey,m.id);if(!fresh&&!recover)return false;
     const queue=this.store.db.prepare("SELECT count(*) n FROM bot_messages WHERE peer=? AND status IN ('new','preparing','submitted','replying')").get(chat.chatKey).n;
-    const status=queue>=30?'blocked':'new',body={id:m.id,kind:m.kind,text:String(m.text||'').slice(0,6000),title:String(m.title||'').slice(0,800),sender:m.sender,replyTo:m.replyTo||null};
+    const status=queue>=30?'blocked':'new',body={id:m.id,kind:m.kind,text:String(m.text||'').slice(0,6000),title:String(m.title||'').slice(0,800),sender:m.sender,replyTo:m.replyTo||null,...(m.kind==='video'&&/^\d{12,24}$/.test(m.awemeId||'')?{awemeId:m.awemeId}:{})};
     const added=this.store.db.prepare('INSERT OR IGNORE INTO bot_messages VALUES(?,?,?,?,?,?,\'\',\'\',?,?)').run(id,chat.chatKey,chat.revision,JSON.stringify(body),status,status==='blocked'?'本聊天待处理消息过多，已停止追加模型调用':'',Date.now(),Date.now()).changes;
     if(added)this.receipt({id,peer:chat.chatKey,revision:chat.revision,body:JSON.stringify(body)},'roger');return !!added;
   }
@@ -113,11 +116,16 @@ export class Chats {
     const chat=this.get(row.peer);return {conversation:chat?.type==='group'?(chat.groupReplyMode==='all'?'群聊中的新消息，已由本机用户配置为回复所有新消息':'群聊中直接 @ 助手的交流'):'普通单聊',recent:history,...(quoted?{quotedFeedback:quoted}:{}),message:body,...(body.kind==='video'?{attachmentNote:'只收到视频分享卡片的标题，没有观看画面或口播。不得冒充已看过视频。此模式无下载或视频分析工具。'}:{})};
   }
   async run(row,chat){
-    this.set(row.id,'preparing');let submitted=false,config;
-    try{const harness=this.store.config.chatHarness||'codex';config=await this.preferences.chatWork(harness);const result=await this.sandbox.reply(this.context(row),{...config,harness,signal:this.controller(chat).signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
+    this.set(row.id,'preparing');let submitted=false,config,session;
+    try{const harness=this.store.config.chatHarness||'codex';config=await this.preferences.chatWork(harness);const signal=this.controller(chat).signal,material=await this.media?.prepare(row,chat,harness,config,signal);let input=this.context(row);
+      if(material){delete input.attachmentNote;input.video=material.summary;}
+      const inputTokens=Buffer.byteLength(JSON.stringify(input),'utf8')+(material?.images.length||0)*700;
+      if(chat.type==='group'&&this.sessions){session=await this.sessions.prepare(row,chat,harness,config,inputTokens);delete input.recent;if(!session.tokens&&session.handoff)input.handoff=session.handoff;}
+      const result=await this.sandbox.reply(input,{...config,harness,session,images:material?.images||[],signal,onSubmitted:({thread})=>{this.guard({chatbot:true,chatRevision:row.revision},row.peer);if(session)this.sessions.guard(session,chat);this.store.db.prepare("UPDATE bot_messages SET status='submitted',thread=?,updated=? WHERE id=?").run(thread,Date.now(),row.id);submitted=true;},onStarted:({turn})=>{this.store.db.prepare('UPDATE bot_messages SET turn=?,updated=? WHERE id=?').run(turn,Date.now(),row.id);this.receipt(row,'active');}});
+      if(session)this.sessions.complete(session,result,inputTokens);
       this.guard({chatbot:true,chatRevision:row.revision},row.peer);const text=toPlainChatText(result.text).slice(0,10000),parts=splitReply(text),group=randomUUID();if(!parts.length)throw new Error('模型没有返回文字');
       this.store.db.exec('BEGIN IMMEDIATE');try{this.set(row.id,'replying',text);for(const [i,part] of parts.entries())this.store.enqueueReply(row.peer,(parts.length>1?`回复 ${i+1}/${parts.length} 段${i===parts.length-1?'（末段）':''}\n\n`:'')+part,{payload:{chatbot:true,botId:row.id,chatRevision:row.revision,plainText:true,...(chat.type==='group'?{replyToMessageId:JSON.parse(row.body).id}:{}),group,segment:i+1,totalSegments:parts.length},dedupe:'bot-result:'+row.id+':'+i});this.store.db.exec('COMMIT');}catch(e){this.store.db.exec('ROLLBACK');throw e;}
-    }catch(e){const valid=this.get(row.peer)?.revision===row.revision;this.set(row.id,!valid?'cancelled':submitted&&e.uncertain?'uncertain':'failed',!valid?'聊天已停用，未交付本轮结果':submitted&&e.uncertain?'暂时无法确认运行状态，不会自动重跑':chatFailureText(e,config));}
+    }catch(e){const valid=this.get(row.peer)?.revision===row.revision;if(session&&submitted&&e.uncertain)this.sessions.uncertain(session,e.message);this.set(row.id,!valid?'cancelled':submitted&&e.uncertain?'uncertain':'failed',!valid?'聊天已停用，未交付本轮结果':submitted&&e.uncertain?'暂时无法确认运行状态，不会自动重跑':chatFailureText(e,config));}
   }
   reconcile(){for(const row of this.store.db.prepare("SELECT * FROM bot_messages WHERE status IN ('replying','delivery_uncertain')").all()){const sent=this.store.db.prepare("SELECT status,payload FROM outbox WHERE kind='text' AND json_extract(payload,'$.botId')=?").all(row.id);if(sent.length&&sent.every(s=>s.status==='sent')){this.set(row.id,'done');this.receipt(row,'done');}else if(sent.some(s=>s.status==='uncertain'))this.set(row.id,'delivery_uncertain');else if(sent.some(s=>['pending','sending'].includes(s.status))&&row.status==='delivery_uncertain')this.set(row.id,'replying');else if(sent.some(s=>JSON.parse(s.payload||'{}').deliveryReview?.resolution==='abandoned'))this.set(row.id,'cancelled');}}
   stop(){for(const c of this.controllers.values())c.abort();this.sandbox.close();}

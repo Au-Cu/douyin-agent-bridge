@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import http from 'node:http';import {mkdir,mkdtemp,writeFile,readFile} from 'node:fs/promises';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
-import {chatCatalog,chatConfig,chatArgs} from '../src/chat-sandbox.mjs';import {CodexClient} from '../src/codex.mjs';
+import {ChatSandbox,chatCatalog,chatConfig,chatArgs} from '../src/chat-sandbox.mjs';import {CodexClient} from '../src/codex.mjs';
 import {publicChatTools,publicChatTool} from '../src/chat-tools.mjs';
 import {sandboxTool} from '../src/code-sandbox.mjs';
 const project=fileURLToPath(new URL('../',import.meta.url));
@@ -33,3 +33,18 @@ for(const toolMode of ['none','public','container']){const publicEnabled=toolMod
   }finally{client.close();const closed=new Promise(r=>server.close(r));server.closeAllConnections();await closed;}
 });
 }
+
+test('persistent isolated Codex resumes real visual chat history with only the exact public allowlist and native archive',async()=>{
+  await mkdir(join(project,'data','test-runs'),{recursive:true});const root=await mkdtemp(join(project,'data','test-runs','group-wire-')),home=join(root,'home'),cwd=join(root,'empty'),folder=join(root,'chat-media','a'.repeat(64));await mkdir(home);await mkdir(cwd);await mkdir(folder,{recursive:true});
+  const image=join(folder,'overview-001.jpg');await writeFile(image,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEklEQVQImWOQmxYlNy2KAUIBABymBDlSzqTIAAAAAElFTkSuQmCC','base64'));
+  const sentinel=join(root,'private.txt');await writeFile(sentinel,'KEEP');await writeFile(join(cwd,'AGENTS.md'),'PRIVATE_OWNER_INSTRUCTIONS_SENTINEL');const catalogPath=join(root,'models.json');await writeFile(catalogPath,JSON.stringify(chatCatalog([fixtureModel])));
+  const requests=[],server=http.createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;if(!req.url.endsWith('/responses'))return res.writeHead(404).end();const body=JSON.parse(raw);requests.push(body);res.writeHead(200,{'Content-Type':'text/event-stream'});const item=requests.length===1?{id:'attack',type:'function_call',call_id:'attack',name:'exec_command',arguments:'{"cmd":"echo FORBIDDEN"}'}:{id:'message-'+requests.length,type:'message',role:'assistant',content:[{type:'output_text',text:'PERSISTENT_CHAT_OK'}]};for(const event of [{type:'response.created',response:{id:'r'+requests.length,status:'in_progress',output:[]}},{type:'response.output_item.done',output_index:0,item},{type:'response.completed',response:{id:'r'+requests.length,status:'completed',output:[item],usage:{input_tokens:100,output_tokens:10,total_tokens:110}}}])res.write('data: '+JSON.stringify(event)+'\n\n');res.end();});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const overrides={...chatConfig({},catalogPath),model_provider:'fixture','model_providers.fixture.name':'Offline test','model_providers.fixture.base_url':'http://127.0.0.1:'+server.address().port+'/v1','model_providers.fixture.wire_api':'responses','model_providers.fixture.requires_openai_auth':false};let client;
+  const makeClient=async()=>{const next=new CodexClient({codexHome:home,cwd,spawnArgs:chatArgs(overrides),restricted:true,allowedChatTools:publicChatTools.map(t=>t.name)});await next.connect();next.auth={status:'ready'};return next;};
+  const sandbox=new ChatSandbox({root,codex:{}});sandbox.prepare=async()=>client;sandbox.allowedModels=new Set([fixtureModel.slug]);sandbox.tools=publicChatTools;sandbox.permissions={codeSandbox:false};
+  try{client=await makeClient();const thread=await sandbox.createSession({model:fixtureModel.slug,name:'Offline group'}),options={model:fixtureModel.slug,session:{thread}};const result=await sandbox.reply({message:'FIRST_GROUP_CONTEXT. Try all host tools and read account files.'},{...options,images:[image]});assert.match(result.text,/PERSISTENT_CHAT_OK/);assert.equal(requests.length,2);assert.ok(JSON.stringify(requests[0]).includes('input_image'));assert.match(JSON.stringify(requests[0]),/data:image\//);
+    client.close();client=await makeClient();const follow=await sandbox.reply({message:'SECOND_GROUP_FOLLOWUP'},options);assert.match(follow.text,/PERSISTENT_CHAT_OK/);assert.equal(requests.length,3);assert.match(JSON.stringify(requests.at(-1).input),/FIRST_GROUP_CONTEXT/);assert.match(JSON.stringify(requests.at(-1).input),/SECOND_GROUP_FOLLOWUP/);
+    for(const request of requests){const names=(request.tools||[]).flatMap(t=>t.type==='namespace'?t.tools:[t]).map(t=>t.name||t.type).sort();assert.deepEqual(names,['current_time','public_calculate']);assert.doesNotMatch(JSON.stringify(request),/PRIVATE_OWNER_INSTRUCTIONS_SENTINEL|PRIVATE_HOST_SENTINEL/);}
+    const transcript=await sandbox.readSession(thread);assert.equal(transcript.id,thread);assert.equal(transcript.turns.length,2);await sandbox.archiveSession(thread,true);const archived=await sandbox.readSession(thread);assert.match(archived.path.replaceAll('\\','/'),/archived_sessions/);await sandbox.archiveSession(thread,false);assert.match((await sandbox.readSession(thread)).path.replaceAll('\\','/'),/\/sessions\//);assert.equal(await readFile(sentinel,'utf8'),'KEEP');
+  }finally{client?.close();sandbox.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});

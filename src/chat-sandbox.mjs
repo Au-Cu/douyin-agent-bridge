@@ -5,6 +5,7 @@ import {CodexClient} from './codex.mjs';
 import {credentialRevision,defaultCodexHome} from './codex-auth.mjs';
 import {publicChatTools,publicChatTool} from './chat-tools.mjs';
 import {sandboxTool} from './code-sandbox.mjs';
+import {chatInput} from './chat-input.mjs';
 const instructions=await readFile(new URL('../prompts/chat.md',import.meta.url),'utf8');
 
 // Audited against @openai/codex 0.166.0 (core/tools/spec_plan.rs). The catalog
@@ -61,15 +62,23 @@ export class ChatSandbox {
     }catch(e){client.close();throw e;}
     this.client=client;this.permissions=permissions;this.tools=tools;this.fingerprint=fingerprint;this.allowedModels=new Set(catalog.models.map(m=>m.slug));return client;
   }
-  async reply(input,{model,effort,serviceTier,onSubmitted,onStarted,signal}={}){
+  async createSession({model,name}={}){
+    const client=await this.prepare();if(!this.allowedModels.has(model))throw new Error('群聊模型不在受限目录中');
+    const out=await client.request('thread/start',{cwd:client.cwd,ephemeral:false,sandbox:'read-only',approvalPolicy:'never',dynamicTools:this.tools,baseInstructions:instructions,developerInstructions:instructions,model});
+    await client.request('thread/name/set',{threadId:out.thread.id,name:name||'抖音群聊'}).catch(()=>{});return out.thread.id;
+  }
+  async readSession(thread){const client=await this.prepare();return (await client.request('thread/read',{threadId:thread,includeTurns:true})).thread;}
+  async archiveSession(thread,archived=true){const client=await this.prepare();await client.request(archived?'thread/archive':'thread/unarchive',{threadId:thread});return {supported:true};}
+  async reply(input,{model,effort,serviceTier,onSubmitted,onStarted,signal,session,images=[]}={}){
     const client=await this.prepare();if(!model||!this.allowedModels.has(model))throw new Error('此模型不在已隔离的本机目录中，请刷新模型名单');
     this.active++;let thread,turnId,aborted=false;
     const abort=()=>{aborted=true;if(thread)client.interrupt(thread,{turnId}).catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
     try{
       if(signal?.aborted)throw new Error('聊天已停用，未提交');
-      const out=await client.request('thread/start',{cwd:client.cwd,ephemeral:true,sandbox:'read-only',approvalPolicy:'never',dynamicTools:this.tools,baseInstructions:instructions,developerInstructions:instructions,model,...(serviceTier?{serviceTier:serviceTier==='default'?null:serviceTier}:{})});thread=out.thread.id;
+      if(session?.thread){thread=session.thread;if(!client.loaded?.has(thread))await client.request('thread/resume',{threadId:thread,excludeTurns:true,cwd:client.cwd,sandbox:'read-only',approvalPolicy:'never',baseInstructions:instructions,developerInstructions:instructions});}
+      else{const out=await client.request('thread/start',{cwd:client.cwd,ephemeral:true,sandbox:'read-only',approvalPolicy:'never',dynamicTools:this.tools,baseInstructions:instructions,developerInstructions:instructions,model,...(serviceTier?{serviceTier:serviceTier==='default'?null:serviceTier}:{})});thread=out.thread.id;}
       if(aborted||signal?.aborted)throw new Error('聊天已停用，未提交');
-      const result=await client.run(thread,[{type:'text',text:JSON.stringify(input)}],{resume:false,model,effort,serviceTier,toolHandler:call=>{if(aborted||signal?.aborted)throw new Error('聊天已停用');if(call.tool==='sandbox_python'&&this.permissions.codeSandbox){const a=call.arguments;if(!a||Object.keys(a).some(k=>k!=='code'))throw new Error('代码沙箱参数无效');return this.codeSandbox.run(a.code,{signal});}return publicChatTool(call);},timeoutMs:120000,interruptOnTimeout:true,onSubmitted:()=>{if(aborted||signal?.aborted)throw Object.assign(new Error('聊天已停用，未提交'),{notSubmitted:true});onSubmitted?.({thread});},onStarted:id=>{turnId=id;if(aborted)abort();onStarted?.({thread,turn:id});}});
+      const result=await client.run(thread,await chatInput(this.root,input,images),{resume:false,model,effort,serviceTier,toolHandler:call=>{if(aborted||signal?.aborted)throw new Error('聊天已停用');if(call.tool==='sandbox_python'&&this.permissions.codeSandbox){const a=call.arguments;if(!a||Object.keys(a).some(k=>k!=='code'))throw new Error('代码沙箱参数无效');return this.codeSandbox.run(a.code,{signal});}return publicChatTool(call);},timeoutMs:120000,interruptOnTimeout:true,onSubmitted:()=>{if(aborted||signal?.aborted)throw Object.assign(new Error('聊天已停用，未提交'),{notSubmitted:true});onSubmitted?.({thread});},onStarted:id=>{turnId=id;if(aborted)abort();onStarted?.({thread,turn:id});}});
       if(aborted)throw new Error('聊天已停用，结果未发送');return result;
     }catch(e){if(/超时/.test(e.message))e.uncertain=true;throw e;
     }finally{signal?.removeEventListener('abort',abort);this.active--;if(!this.active)for(const resolve of this.idle.splice(0))resolve();if(thread&&client.ready)await client.request('thread/unsubscribe',{threadId:thread},5000).catch(()=>{});}

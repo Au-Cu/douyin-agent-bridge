@@ -1,4 +1,5 @@
 import {matchesPeer} from './douyin.mjs';
+import {randomUUID} from 'node:crypto';
 import {matchesOutgoingText} from './chat-text.mjs';
 
 const data=row=>JSON.parse(row.payload||'{}');
@@ -6,7 +7,16 @@ const stages={roger:'收到 · 👌',active:'运行 · 奋斗',done:'完成 · �
 // These operations reconcile an existing receipt only. They never call a model,
 // restart a task, or click an emoji except through explicit text-resend intent.
 export class DeliveryReview{
-  constructor({store,adapter,engine,chats}){Object.assign(this,{store,adapter,engine,chats});this.db=store.db;this.busy=new Set();}
+  constructor({store,adapter,engine,chats}){Object.assign(this,{store,adapter,engine,chats});this.db=store.db;this.busy=new Set();const previous=this.db.prepare("SELECT value FROM app_settings WHERE key='deliveryReviewBatch'").get();this.batch=previous?JSON.parse(previous.value):null;if(this.batch?.status==='running'){this.batch.status='interrupted';this.saveBatch();}}
+  saveBatch(){this.db.prepare("INSERT OR REPLACE INTO app_settings VALUES('deliveryReviewBatch',?,?)").run(JSON.stringify(this.batch),Date.now());}
+  batchState(){return this.batch;}
+  startBatch({kind,id}={}){
+    if(this.batch?.status==='running')return this.batch;
+    if((kind&&!id)||(!kind&&id))throw new Error('请完整指定核实范围');
+    const rows=kind?this.rows(kind,id):this.db.prepare("SELECT * FROM outbox WHERE status IN ('uncertain','sending') ORDER BY peer,created,rowid").all(),ids=rows.filter(o=>o.status==='uncertain').map(o=>o.id);
+    this.batch={id:randomUUID(),kind:kind||'all',scopeId:id||'',status:'running',total:ids.length,checked:0,verified:0,unresolved:0,waiting:rows.length-ids.length,started:Date.now(),finished:0};this.saveBatch();
+    this.batchWork=(async()=>{for(const key of ids){if(this.closing){this.batch.status='interrupted';break;}const row=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(key);if(row?.status==='uncertain')try{const result=await this.reconcile(key);if(result.verified)this.batch.verified++;else this.batch.unresolved++;}catch(e){this.batch.unresolved++;const current=this.db.prepare('SELECT status FROM outbox WHERE id=?').get(key);if(current?.status==='uncertain')this.store.mergeOutboxPayload(key,{deliveryRecheck:{verified:false,at:Date.now(),method:'batch_read_only',reason:String(e.message).slice(0,240)}});}this.batch.checked++;this.saveBatch();await new Promise(resolve=>setImmediate(resolve));}if(this.batch.status==='running')this.batch.status='done';this.batch.finished=Date.now();this.saveBatch();})().catch(()=>{this.batch.status='interrupted';this.batch.finished=Date.now();this.saveBatch();});return this.batch;
+  }
   target(out){const p=data(out);if(p.chatbot)return this.chats.deliveryTarget(p,out.peer);const owner=this.store.config.owner;return owner?.chatKey===out.peer?owner:null;}
   rows(kind,id){
     let operationIds;

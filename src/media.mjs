@@ -38,26 +38,29 @@ export async function transcribe(wav,model,progress=()=>{}) {
 }
 export class MediaProcessor {
   constructor({root,adapter,modelsRoot=join(root,'models'),log=()=>{}}){Object.assign(this,{root,adapter,modelsRoot,log});}
-  async process(message,maxSeconds=1800) {
+  async process(message,maxSeconds=1800,{folder:outputFolder,previews=true,maxBytes,requireDurationProbe=false}={}) {
     checkWork();
     const id=message.awemeId;if(!/^\d{12,24}$/.test(id))throw new Error('未提取到有效视频 ID');
-    const folder=join(this.root,'knowledge',id);await mkdir(folder,{recursive:true});
+    const folder=outputFolder||join(this.root,'knowledge',id);await mkdir(folder,{recursive:true});
     const metadata=await this.adapter.resolveVideo(message);
     if(metadata.seconds>maxSeconds)throw new Error(`视频长于 ${maxSeconds/60} 分钟，请在控制台调整上限后重试`);
-    const video=join(folder,'video.mp4');await this.adapter.download(metadata.url,video);
+    const video=join(folder,'video.mp4');await this.adapter.download(metadata.url,video,maxBytes);
     // Inspect duration even when the platform metadata omits it.
     let info='';try{info=await runFfmpeg(['-hide_banner','-i',video,'-f','null','-t','0','-']);}catch(e){checkWork();info=e.message;}
+    const probe=info.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/),probedSeconds=probe?Number(probe[1])*3600+Number(probe[2])*60+Number(probe[3]):0;
+    if(requireDurationProbe&&!probedSeconds)throw new Error('无法核实实际视频时长，群聊未继续分析');
+    if(probedSeconds>maxSeconds)throw new Error(`实际视频长于 ${maxSeconds/60} 分钟，停止处理`);
     const wav=join(folder,'audio.wav');let audioInfo='';let noAudio=false;
     try{audioInfo=await runFfmpeg(['-hide_banner','-y','-i',video,'-t',String(maxSeconds+1),'-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',wav],300000);}
     catch(e){if(/does not contain any stream|matches no streams|Output file #0 does not contain/i.test(e.message))noAudio=true;else throw e;}
     const match=(audioInfo||info).match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-    const seconds=metadata.seconds||(match?Number(match[1])*3600+Number(match[2])*60+Number(match[3]):0);
+    const seconds=probedSeconds||(match?Number(match[1])*3600+Number(match[2])*60+Number(match[3]):metadata.seconds||0);
     if(!seconds)throw new Error('未能确认视频时长，停止处理');
     if(seconds>maxSeconds)throw new Error(`实际视频长于 ${maxSeconds/60} 分钟，停止处理`);
     this.log('正在本地转写口播：'+metadata.title.slice(0,50));
     const segments=noAudio?[]:await transcribe(wav,join(this.modelsRoot,modelName));
     const transcript=segments.map(s=>`[${Math.floor(s.seconds/60)}:${String(s.seconds%60).padStart(2,'0')}] ${s.text}`).join('\n');
-    const frames=[];const count=Math.min(10,Math.max(2,Math.ceil(seconds/20)));
+    const frames=[];const count=previews?Math.min(10,Math.max(2,Math.ceil(seconds/20))):0;
     for(let i=0;i<count;i++){
       checkWork();
       const second=Math.min(Math.max(0,seconds-0.3),(i+0.4)*seconds/count);const path=join(folder,'frame-'+String(i+1).padStart(2,'0')+'.jpg');

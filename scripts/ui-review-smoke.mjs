@@ -153,11 +153,15 @@ try {
       for(const width of [320,1440]){
         await page.setViewportSize({width,height:844});await page.locator('#backupNow').scrollIntoViewIfNeeded();const before=await page.evaluate(()=>scrollY);await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'测试报错'}).waitFor();
         const state=await page.evaluate(()=>{const n=document.querySelector('#notice'),r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:innerWidth,height:innerHeight,scroll:scrollY,documentWidth:document.documentElement.scrollWidth,focused:n.contains(document.activeElement),role:n.getAttribute('role')};});
-        assert.ok(state.top>=0&&state.bottom<=state.height&&state.left>=0&&state.right<=state.width);assert.ok(state.documentWidth<=state.width);assert.ok(Math.abs(state.scroll-before)<3);assert.equal(state.focused,false);assert.equal(state.role,'alert');
+        assert.ok(state.top>=14&&state.top<=24&&state.bottom<=state.height&&state.left>=0&&state.right<=state.width);assert.ok(Math.abs((state.left+state.right)/2-state.width/2)<2);assert.ok(state.documentWidth<=state.width);assert.ok(Math.abs(state.scroll-before)<3);assert.equal(state.focused,false);assert.equal(state.role,'alert');
         if(width===320)await page.screenshot({path:join(root,'floating-error-'+layout+'.png')});
         await page.locator('#closeNotice').click();assert.equal(await page.locator('#notice').isVisible(),false);
       }
     }await page.unroute('**/api/storage/backup');
+  });
+  await check('top-centred error expires automatically without moving focus or scrolling',async()=>{
+    await page.route('**/api/storage/backup',route=>route.fulfill({status:400,json:{error:'自动消失测试'}}));
+    await page.clock.install();await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'自动消失测试'}).waitFor();await page.mouse.move(0,840);await page.clock.fastForward(10100);assert.equal(await page.locator('#notice').isVisible(),false);await page.clock.resume();await page.unroute('**/api/storage/backup');
   });
   await check('receipt review lists the exact uncertain emoji and text; cancelling confirmation does not resolve or resend',async()=>{
     let rows=[{id:'review-emoji',operationId:'demo-task-23',number:23,title:'确认上一轮回复',kind:'progress_reaction',status:'uncertain',label:'表情：运行 · 奋斗',body:'原消息：请分析视频',error:'点击后连接中断',created:Date.now(),canResend:false},{id:'review-text',number:23,title:'确认上一轮回复',kind:'text',status:'uncertain',label:'文字回复：第 2/3 段',body:'完整反馈第二段',error:'送达未核实',created:Date.now(),canResend:true}],resolved=[];
@@ -167,6 +171,7 @@ try {
     await page.locator('a[data-view="workbench"]').click();await page.locator('#workScope').selectOption('current');await page.locator('#workStatus').selectOption('all');await page.locator('[data-operation="demo-task-23"] [data-review-kind]').click();
     await page.locator('#deliveryReviewDialog').waitFor();assert.equal(await page.locator('[data-ui-key="review:review-emoji"] [data-review-status="pending"]').count(),0);
     await page.locator('[data-review-reconcile="review-emoji"]').click();await page.locator('#reviewError').filter({hasText:'未点击表情'}).waitFor();
+    let batches=0;await page.route('**/api/outbox/reconcile-batch',route=>{if(route.request().method()==='POST'){assert.deepEqual(route.request().postDataJSON(),{kind:'task',id:'demo-task-23'});batches++;}return route.fulfill({json:{batch:{status:'done',checked:2,total:2,verified:1,unresolved:1,waiting:0}}});});await page.locator('#reconcileReviewBatch').click();await page.locator('#reviewBatchStatus').filter({hasText:'已确认 1 条'}).waitFor();assert.equal(batches,1);assert.equal(resolved.length,0);await page.unroute('**/api/outbox/reconcile-batch');
     page.once('dialog',dialog=>dialog.dismiss());await page.locator('[data-review-resolve="review-text"][data-review-status="sent"]').click();assert.equal(resolved.length,0);
     page.once('dialog',dialog=>dialog.accept());await page.locator('[data-review-resolve="review-emoji"][data-review-status="abandoned"]').click();await page.waitForFunction(()=>!document.querySelector('[data-ui-key="review:review-emoji"]'));assert.deepEqual(resolved,[{id:'review-emoji',status:'abandoned',confirmed:true}]);
     await page.locator('#closeDeliveryReview').click();await page.unroute('**/api/outbox/review?*');await page.unroute('**/api/outbox/reconcile');await page.unroute('**/api/outbox/resolve');
