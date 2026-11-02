@@ -44,7 +44,7 @@ export function demoState() {
 }
 const scoped = (list, scope) => list.filter(item => scope === 'all' || (scope === 'archived' ? !!item.archived : !item.archived));
 export function createPreviewServer() {
-  const state = demoState();
+  const state = demoState(),deletions=new Map();
   const server = http.createServer(async (req, res) => {
     const origin = 'http://127.0.0.1:' + server.address().port;
     const json = (data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
@@ -57,7 +57,7 @@ export function createPreviewServer() {
         res.writeHead(200, { 'Content-Type': name.endsWith('.html') ? 'text/html; charset=utf-8' : name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' });
         return res.end(await readFile(join(project, 'public', name)));
       }
-      if (req.method === 'GET' && path === '/api/instance') return json({ app: 'douyin-codex-bridge', version: '0.13.1 · UI 验收预览', preview: true });
+      if (req.method === 'GET' && path === '/api/instance') return json({ app: 'douyin-codex-bridge', version: '0.14.0 · UI 验收预览', preview: true });
       if (req.method === 'GET' && path === '/api/state') return json({ ...state,
         conversations: { ...state.conversations, needs: scoped(state.conversations.needs, url.searchParams.get('needs')) },
         knowledge: scoped(state.knowledge, url.searchParams.get('knowledge')), recentKnowledge: state.knowledge.filter(k => !k.archived).slice(0,3),
@@ -75,6 +75,14 @@ export function createPreviewServer() {
       let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 100000) throw Error('请求过大'); }
       const body = JSON.parse(raw || '{}');
       if (path === '/api/ui/panels') Object.assign(state.config.uiPanels, body);
+      else if (path === '/api/archive/delete/prepare'||path === '/api/archive/delete') {
+        const list=body.kind==='task'?state.work:body.kind==='need'?state.conversations.needs:[],item=list.find(i=>i.id===body.id);
+        if(!item?.archived)return json({error:'请先归档记录'},400);
+        if(['running','sending','uncertain','failed_delivery'].includes(item.status))return json({error:'结果尚未核实，不能删除'},400);
+        if(path.endsWith('/prepare')){const token='demo-'+Date.now()+'-'+Math.random();deletions.set(token,item);return json({token,label:(body.kind==='need'?'需求 ':'任务 ')+item.number+'：'+item.title,counts:{operations:1,tasks:0,messages:1,replies:1,receipts:3},warning:'演示：永久删除本机桥接记录；原聊天、学习资料与备份保留。'});}
+        if(deletions.get(body.token)!==item)return json({error:'删除确认失效'},400);
+        deletions.delete(body.token);list.splice(list.indexOf(item),1);return json({deleted:true});
+      }
       else if (path === '/api/archive') {
         const list = body.kind === 'task' ? state.work : body.kind === 'need' ? state.conversations.needs : body.kind === 'knowledge' ? state.knowledge : [];
         const item = list.find(i => i.id === body.id); if (!item) return json({ error: '记录不存在' },404);

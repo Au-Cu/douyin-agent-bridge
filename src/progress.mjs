@@ -33,6 +33,7 @@ export class Progress{
     }
     const columns=new Set(this.db.prepare('PRAGMA table_info(operations)').all().map(c=>c.name));if(!columns.has('number'))this.db.exec('ALTER TABLE operations ADD COLUMN number INTEGER');if(!columns.has('title'))this.db.exec("ALTER TABLE operations ADD COLUMN title TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS operations_number ON operations(number) WHERE number IS NOT NULL');
+    this.store.retainNumber('task',this.db.prepare("SELECT COALESCE(MAX(number),0) AS n FROM operations WHERE typeof(number)='integer'").get().n);
     this.db.prepare("UPDATE operations SET status='uncertain',phase='暂时无法确认运行状态',outcome='uncertain' WHERE status='running'").run();
     this.db.prepare("UPDATE messages SET status='new' WHERE status='classifying'").run();
     this.db.prepare("UPDATE outbox SET status='superseded',error='进度已改为仅贴消息表情' WHERE kind='video_ack' AND status='pending'").run();
@@ -73,14 +74,15 @@ export class Progress{
     let op=this.get(id);if(!op||op.kind==='control')return op;
     if(!op.number){
       const parent=this.get(op.parent);let number;
-      if(parent?.number){const root=String(parent.number).split('-')[0];const numbers=this.db.prepare("SELECT number FROM operations WHERE typeof(number)='text' AND number LIKE ?").all(root+'-%').map(r=>String(r.number).match(/^\d+-(\d+)$/)?.[1]).filter(Boolean).map(Number);number=root+'-'+(numbers.reduce((max,n)=>Math.max(max,n),0)+1);}
-      else number=this.db.prepare("SELECT COALESCE(MAX(number),0)+1 AS n FROM operations WHERE typeof(number)='integer'").get().n;
+      if(parent?.number){const root=String(parent.number).split('-')[0];const numbers=this.db.prepare("SELECT number FROM operations WHERE typeof(number)='text' AND number LIKE ?").all(root+'-%').map(r=>String(r.number).match(/^\d+-(\d+)$/)?.[1]).filter(Boolean).map(Number);number=root+'-'+this.store.nextNumber('supplement:'+root,numbers.reduce((max,n)=>Math.max(max,n),0));}
+      else number=this.store.nextNumber('task');
       this.db.prepare('UPDATE operations SET number=?,title=? WHERE id=? AND number IS NULL').run(number,operationTitle(op.request),id);op=this.get(id);
     }
     if(announce)this.notify(`已登记任务 ${op.number}：${op.title}${op.parent&&this.get(op.parent)?.number?'\n这是任务 '+this.get(op.parent).number+' 的补充要求。':''}`,{operationId:op.id,notification:true,priority:120,dedupe:'op-identity:'+id});return op;
   }
   label(id){const o=this.get(id);return o?.number?`任务 ${o.number}：${o.title}`:operationTitle(o?.request);}
   receive(message){
+    if(this.store.wasDeletedMessage(message.id))throw new Error('此消息的任务记录已被彻底删除，不会重新接收或执行。');
     const existing=this.forMessage(message.id);if(existing)return existing;
     const now=this.now(),request=message.kind==='video'?'转发视频：'+(message.title||message.awemeId):String(message.text||'');
     const command=message.kind==='text'&&parseCommand(message.text),kind=command&&command.name!=='dispatch'?'control':message.kind;

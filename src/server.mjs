@@ -20,6 +20,7 @@ import {progressEmoji} from './progress.mjs';
 import {prepareDataRoot} from './data-root.mjs';
 import {existsSync} from 'node:fs';
 import {archiveScope,taskStatuses} from './archive.mjs';
+import {ArchivedDeletion} from './deletion.mjs';
 import {configurePanel,updatePanels} from './ui-state.mjs';
 import {PeerBrowser} from './peer-browser.mjs';
 import {Chats} from './chats.mjs';
@@ -46,6 +47,7 @@ const preferences=new Preferences({store,codex});
 const conversations=new Conversations({store,codex,preferences});
 const visual=new VisualAnalyzer({codex,log,settings:()=>preferences.work()});
 const engine=new BridgeEngine({store,adapter,media,codex,taskCodex,visual,preferences,conversations});
+const deletion=new ArchivedDeletion({store,engine,conversations});
 const codeSandbox=new CodeSandbox({root:store.root}),chatCapabilities=()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox}),chatSandbox=new ChatRuntime({store,sandboxes:{codex:new ChatSandbox({root:store.root,codex:localCodex,log,codeSandbox,capabilities:chatCapabilities}),dsh:new DshChatSandbox({root:store.root,dsh,log,codeSandbox,capabilities:chatCapabilities})}}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
 preferences.chatCatalogProvider=harness=>harness==='dsh'?chatSandbox.catalog(harness):codex.models('codex');
 let sandboxPreparing=false;
@@ -119,6 +121,8 @@ const server=http.createServer(async(req,res)=>{
         const saved=chats.configure(body);configurePanel(store,'chats');return json(res,saved);
       }
       if(path==='/api/tasks/interrupt')return json(res,await engine.interrupts.request(String(body.id||'')));
+      if(path==='/api/archive/delete/prepare')return json(res,deletion.prepare(body.kind,String(body.id||'')));
+      if(path==='/api/archive/delete')return json(res,deletion.remove(body));
       if(path==='/api/ui/panels')return json(res,{panels:updatePanels(store,body)});
       if(path==='/api/archive'){
         if(typeof body.archived!=='boolean')throw new Error('请明确指定归档或恢复');

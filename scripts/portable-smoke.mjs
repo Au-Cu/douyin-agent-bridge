@@ -2,6 +2,7 @@ import {mkdir,copyFile,readFile} from 'node:fs/promises';import {existsSync} fro
 import {join,dirname,resolve} from 'node:path';import {spawn} from 'node:child_process';import {createServer} from 'node:net';
 import assert from 'node:assert/strict';import {once} from 'node:events';
 import {collectReleaseFiles,projectRoot} from './release-files.mjs';
+import {chromium} from 'playwright-core';
 
 const root=join(projectRoot,'data','test-runs','portable-'+Date.now(),'fresh clone 空格');await mkdir(root,{recursive:true});
 for(const file of await collectReleaseFiles()){await mkdir(dirname(join(root,file)),{recursive:true});await copyFile(join(projectRoot,file),join(root,file));}
@@ -37,6 +38,22 @@ try{
   const need=await (await request('needs/new',{method:'POST',body:{title:'合成需求'}})).json();assert.ok(need.thread.startsWith('fixture-thread-'));
   const needs=await (await request('needs')).json();assert.equal(needs.activeNeed,need.id);assert.equal(needs.needs.length,1);
   assert.ok((await (await request('commands')).json()).text.includes('/密度 2|4|8'));
+  // Exercise the packaged server and real SQLite, with a disposable empty
+  // profile and protocol fixture. No user records or real messages are used.
+  assert.equal((await request('archive/delete',{method:'POST',body:{kind:'need',id:need.id}})).status,400);
+  assert.equal((await request('archive/delete/prepare',{method:'POST',body:{kind:'need',id:need.id}})).status,400);
+  assert.equal((await request('archive',{method:'POST',body:{kind:'need',id:need.id,archived:true}})).status,200);
+  const browser=await chromium.launch({channel:process.env.BRIDGE_TEST_BROWSER||(process.platform==='win32'?'msedge':'chrome'),headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:390,height:844}});await page.goto(url+'/#workbench');
+    await page.locator('.need-directory>summary').click();await page.locator('#needScope').selectOption('archived');
+    await page.locator('[data-delete-kind="need"]').click();await page.locator('#deleteDialog').waitFor();assert.equal(await page.locator('#confirmDelete').isDisabled(),true);
+    assert.ok((await page.locator('#deleteLabel').textContent()).includes('合成需求'));await page.locator('#cancelDelete').click();assert.equal((await (await request('needs?scope=archived')).json()).needs.length,1);
+    await page.locator('[data-delete-kind="need"]').click();await page.locator('#deleteAcknowledge').check();
+    await page.locator('#confirmDelete').click();await page.waitForFunction(()=>!document.querySelector('#deleteDialog').open&&document.querySelector('#notice').textContent.includes('已彻底删除'));
+    assert.equal((await (await request('needs?scope=all')).json()).needs.length,0);assert.equal((await (await request('state')).json()).config.activeNeed,'');
+  }finally{await browser.close();}
+  const newer=await (await request('needs/new',{method:'POST',body:{title:'编号不复用'}})).json();assert.equal(newer.number,need.number+1);
   if(process.platform==='win32'){
     const wrong=await new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(projectRoot,'Stop.ps1'),'-Port',String(port)],{cwd:projectRoot,env:{...process.env,BRIDGE_DATA_DIR:join(root,'other-data')},windowsHide:true,stdio:'ignore'});p.on('error',reject);p.on('exit',resolve);});
     assert.notEqual(wrong,0,'another copy must not stop this instance');assert.equal((await request('state')).status,200);
