@@ -11,6 +11,7 @@ export class ReplyReferences{
   constructor(store){this.store=store;this.db=store.db;}
   find(message){
     const ref=message.replyTo;if(!ref)return null;
+    if(this.db.prepare('SELECT 1 FROM deleted_reply_links WHERE hash=?').get(createHash('sha256').update(message.peer+':'+ref.messageId).digest('hex')))throw Object.assign(new Error('这条反馈的桥接记录已被彻底删除，无法再找回完整引用。请在新消息中提供要参考的内容。'),{code:'REFERENCE_UNRESOLVED'});
     if(!/^\d{5,32}$/.test(ref.messageId||'')||[3,4].includes(ref.status)||ref.authorId&&ref.authorId===this.store.config.owner?.peerUid)throw Object.assign(new Error(question),{code:'REFERENCE_UNRESOLVED'});
     const previous=this.db.prepare('SELECT outbox_id FROM reply_reference_links WHERE message_id=? AND peer=?').get(message.id,message.peer);
     let row=previous&&this.db.prepare('SELECT * FROM outbox WHERE id=? AND peer=?').get(previous.outbox_id,message.peer);

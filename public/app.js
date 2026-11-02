@@ -7,7 +7,7 @@ let catalog=null,chatCatalog=null,preferencesDirty=false,chatPreferencesDirty=fa
 const backendName=value=>value==='dsh'?'DeepSeek Harness':'Codex';
 const panelPending=new Set();let refreshAgain=false;
 window.addEventListener('bridge-layout-change',event=>{if(dirty||preferencesDirty||chatPreferencesDirty||agentHarnessDirty||panelPending.size||$('newNeedTitle').value.trim()||$('targetAlias').value.trim()){event.preventDefault();notice('请先保存未保存的配置或清空输入草稿，再切换界面。');}});
-const archiveButton=(kind,item)=>`<button class="secondary" data-archive-kind="${kind}" data-archive-id="${escape(item.id)}" data-archive-value="${!item.archived}">${item.archived?'恢复显示':'归档'}</button>`+(kind==='task'&&item.kind!=='control'?`<button class="interrupt-button" data-interrupt-task="${escape(item.id)}" aria-label="中断任务 ${item.number||''}" ${item.canInterrupt?'':'disabled'}>中断</button>`:'');
+const archiveButton=(kind,item)=>`<button class="secondary" data-archive-kind="${kind}" data-archive-id="${escape(item.id)}" data-archive-value="${!item.archived}">${item.archived?'恢复显示':'归档'}</button>`+(item.archived&&['task','need'].includes(kind)?`<button class="delete-record" data-delete-kind="${kind}" data-delete-id="${escape(item.id)}">彻底删除</button>`:'')+(kind==='task'&&item.kind!=='control'?`<button class="interrupt-button" data-interrupt-task="${escape(item.id)}" aria-label="中断任务 ${item.number||''}" ${item.canInterrupt?'':'disabled'}>中断</button>`:'');
 const chatLink=(url,label='需求对话')=>/^(?:codex:\/\/threads|dsh:\/\/session)\/[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(url||'')?`<a class="chat-link" href="${escape(url)}">${url.startsWith('dsh:')?'DSH':'Codex'} · ${escape(label)}</a>`:'';
 const effortLabels={none:'无',minimal:'最小',low:'低',medium:'中',high:'高',xhigh:'极高',max:'Max',ultra:'Ultra'};
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -51,6 +51,20 @@ statuses.stopping='中断中';
 $('workStatus').add(new Option('中断中','stopping'),$('workStatus').querySelector('[value="sending"]'));
 async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||'请求失败');return data;}
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'error':'';$('notice').style.display='block';}
+let deleting=null;
+const deleteDialog=document.createElement('dialog');deleteDialog.id='deleteDialog';deleteDialog.setAttribute('aria-labelledby','deleteHeading');
+deleteDialog.innerHTML='<h2 id="deleteHeading">彻底删除归档记录</h2><p id="deleteLabel"></p><p id="deleteCounts"></p><p id="deleteWarning"></p><label class="delete-check"><input id="deleteAcknowledge" type="checkbox">我理解这是永久删除，不能恢复显示</label><p id="deleteError" role="alert"></p><div class="button-row"><button id="cancelDelete" class="secondary">取消</button><button id="confirmDelete" class="delete-record" disabled>确认彻底删除</button></div>';
+document.body.append(deleteDialog);
+$('deleteAcknowledge').addEventListener('change',()=>{$('confirmDelete').disabled=!$('deleteAcknowledge').checked;});
+$('cancelDelete').addEventListener('click',()=>deleteDialog.close());
+deleteDialog.addEventListener('close',()=>{deleting=null;});
+$('confirmDelete').addEventListener('click',async()=>{
+  if(!deleting||!$('deleteAcknowledge').checked)return;
+  const selection=deleting;$('confirmDelete').disabled=true;$('cancelDelete').disabled=true;
+  try{const result=await api('archive/delete',selection);deleteDialog.close();notice(result.cleanupPending?'记录已删除；部分历史缓存待清理，重启后会继续。':'已彻底删除所选归档记录，原有编号不会复用。');await refresh();}
+  catch(e){$('deleteError').textContent=e.message;$('deleteAcknowledge').checked=false;}
+  finally{$('cancelDelete').disabled=false;}
+});
 function action(id,fn){$(id).addEventListener('click',async()=>{const button=$(id);button.disabled=true;try{await fn();await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}});}
 function renderTargets(){updateHTML($('targetList'),targets.map((t,i)=>`<div class="target" data-ui-key="target:${escape(t.thread||t.alias)}">${escape(t.alias)} <small>${escape(t.name)}</small><button data-remove="${i}" aria-label="移除目标">×</button></div>`).join(''));}
 let targetTail=Promise.resolve();
@@ -193,6 +207,7 @@ $('ackMode').addEventListener('change',()=>dirty=true);
 $('targetList').addEventListener('click',e=>{const index=e.target.dataset.remove,id=targets[Number(index)]?.id;if(index!==undefined&&id)changeTargets(list=>list.filter(t=>t.id!==id)).catch(e=>notice(e.message,true));});
 document.addEventListener('click',async e=>{try{
   const control=e.target.closest('button,a');if(!control)return;const d=control.dataset;
+  if(d.deleteKind){control.disabled=true;try{const p=await api('archive/delete/prepare',{kind:d.deleteKind,id:d.deleteId});deleting={kind:d.deleteKind,id:d.deleteId,token:p.token};$('deleteLabel').textContent=p.label;$('deleteCounts').textContent=`将删除 ${p.counts.operations} 项任务记录、${p.counts.tasks} 项执行记录、${p.counts.messages} 条原始请求、${p.counts.replies} 段回复及 ${p.counts.receipts} 条回执。`;$('deleteWarning').textContent=p.warning;$('deleteError').textContent='';$('deleteAcknowledge').checked=false;$('confirmDelete').disabled=true;deleteDialog.showModal();$('cancelDelete').focus();}finally{control.disabled=false;}}
   if(d.reconcileReply){const r=await api('outbox/reconcile',{id:d.reconcileReply});notice(r.verified?'已核验完整正文和原生引用，标记已送达；没有重发。':'当前可读取历史中没有唯一的匹配回复，保留需要核实；没有重发。');await refresh();}
   if(d.aiToggle){const chat=state.aiChats.chats.find(c=>c.chatKey===d.aiToggle);control.disabled=true;try{await api('ai-chats/save',{chatKey:chat.chatKey,mode:chat.mode,enabled:!chat.enabled});notice(chat.enabled?'此聊天已停用，未发送的旧回复已停止。':'此聊天已启用，从新消息开始处理。');await refresh();}finally{control.disabled=false;}}
   if(d.interruptTask){const button=control;button.disabled=true;try{const r=await api('tasks/interrupt',{id:d.interruptTask});notice(r.state==='stopped'?'任务 '+r.number+' 已中断。':r.state==='finished'?r.error:'本地处理已切断；助手停止情况需要核实，不会自动重跑。',r.state==='uncertain');await refresh();}finally{button.disabled=false;}}

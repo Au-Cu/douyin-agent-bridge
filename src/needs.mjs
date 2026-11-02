@@ -19,11 +19,12 @@ export class Needs{
     if(!this.db.prepare('PRAGMA table_info(needs)').all().some(c=>c.name==='number'))this.db.exec('ALTER TABLE needs ADD COLUMN number INTEGER');
     let number=this.db.prepare('SELECT COALESCE(MAX(number),0) AS n FROM needs').get().n;for(const n of this.db.prepare('SELECT id FROM needs WHERE number IS NULL ORDER BY created,rowid').all())this.db.prepare('UPDATE needs SET number=? WHERE id=?').run(++number,n.id);
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS needs_number ON needs(number) WHERE number IS NOT NULL');
+    this.store.retainNumber('need',number);
   }
   get(id){const row=this.db.prepare("SELECT n.*,COALESCE(a.archived,0) AS archived,COALESCE(a.state,'done') AS archiveState,COALESCE(a.desired,0) AS archiveDesired,COALESCE(a.error,'') AS archiveError FROM needs n LEFT JOIN archive_records a ON a.kind='need' AND a.id=n.id WHERE n.id=?").get(id);return row?{...row,memory:JSON.parse(row.memory)}:null;}
   list({includeArchived=false}={}){const rows=this.db.prepare("SELECT n.*,COALESCE(a.archived,0) AS archived,COALESCE(a.state,'done') AS archiveState,COALESCE(a.desired,0) AS archiveDesired,COALESCE(a.error,'') AS archiveError FROM needs n LEFT JOIN archive_records a ON a.kind='need' AND a.id=n.id ORDER BY n.updated DESC").all().map(r=>({...r,memory:JSON.parse(r.memory)}));return includeArchived?rows:rows.filter(n=>!n.archived&&!(n.archiveDesired&&n.archiveState!=='done'));}
   create(title='未命名需求',thread=''){
-    const id=randomUUID().slice(0,8),now=Date.now(),number=this.db.prepare('SELECT COALESCE(MAX(number),0)+1 AS n FROM needs').get().n;this.db.prepare('INSERT INTO needs(id,title,memory,thread,seq,context_tokens,model_window,version,summary_version,created,updated,number) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,title,JSON.stringify({...emptyMemory(),title}),thread,thread?1:0,0,0,0,0,now,now,number);
+    const id=randomUUID().slice(0,8),now=Date.now(),number=this.store.nextNumber('need');this.db.prepare('INSERT INTO needs(id,title,memory,thread,seq,context_tokens,model_window,version,summary_version,created,updated,number) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,title,JSON.stringify({...emptyMemory(),title}),thread,thread?1:0,0,0,0,0,now,now,number);
     if(thread)this.db.prepare('INSERT INTO need_threads VALUES(?,?,?,?,?)').run(thread,id,1,'',now);return this.get(id);
   }
   rename(id,title){this.db.prepare('UPDATE needs SET title=? WHERE id=?').run(String(title).slice(0,60),id);}

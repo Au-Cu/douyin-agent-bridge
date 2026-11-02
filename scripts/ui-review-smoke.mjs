@@ -129,6 +129,21 @@ try {
     assert.equal(await page.locator('html').getAttribute('data-layout'),'modern');
     await page.reload();assert.equal(await page.locator('html').getAttribute('data-layout'),'modern');
   });
+  await check('permanent archive deletion requires confirmation in both layouts and survives polling',async()=>{
+    await page.locator('#workScope').selectOption('archived');await page.locator('[data-delete-kind="task"]').click();
+    await page.locator('#deleteDialog').waitFor();
+    assert.equal(await page.locator('#confirmDelete').isDisabled(),true);assert.match(await page.locator('#deleteLabel').textContent(),/任务 22/);
+    await page.locator('#cancelDelete').click();assert.ok(state.work.some(w=>w.id==='demo-task-22'));
+    await page.locator('[data-delete-kind="task"]').click();await page.locator('#deleteDialog').waitFor();await page.locator('#deleteAcknowledge').check();
+    state.work.find(w=>w.id==='demo-task-24').detail+=' 本轮更新';
+    const synced=await page.locator('#syncStatus').textContent();await page.waitForFunction(previous=>document.querySelector('#syncStatus').textContent!==previous,synced);
+    assert.equal(await page.locator('#deleteAcknowledge').isChecked(),true);assert.equal(await page.locator('#confirmDelete').isEnabled(),true);
+    await page.locator('#confirmDelete').click();await page.waitForFunction(()=>!document.querySelector('#deleteDialog').open);assert.equal(state.work.some(w=>w.id==='demo-task-22'),false);
+    await page.locator('#uiLayoutChoice').selectOption('classic');await page.waitForURL('**/classic.html?ui=classic');await page.locator('#taskList .work-card').first().waitFor();if(!await page.locator('#modelPanel').evaluate(e=>e.open))await page.locator('#modelPanel>summary').click();await page.locator('#needScope').selectOption('archived');
+    await page.locator('[data-delete-kind="need"]').click();await page.locator('#deleteDialog').waitFor();assert.match(await page.locator('#deleteLabel').textContent(),/需求 7/);
+    await page.setViewportSize({width:390,height:844});const sizes=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,dialog:document.querySelector('#deleteDialog').getBoundingClientRect().width}));assert.ok(sizes.scroll<=sizes.width&&sizes.dialog<=sizes.width);
+    await page.locator('#deleteAcknowledge').check();await page.locator('#confirmDelete').click();await page.waitForFunction(()=>!document.querySelector('#deleteDialog').open);assert.equal(state.conversations.needs.some(n=>n.id==='demo-need-7'),false);
+  });
   await check('preview cannot execute real APIs or accept foreign-origin mutations',async()=>{
     assert.equal((await fetch(url+'/api/browser/open',{method:'POST',body:'{}'})).status,409);
     assert.equal((await fetch(url+'/api/listen',{method:'POST',headers:{Origin:'https://example.com'},body:'{"enabled":false}'})).status,403);

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0
+
+- Ship the accepted task-focused console: separate workbench, learning and settings views, readable task hierarchy, exact visual coverage, independent delivery/reaction states, light/dark appearance and incremental refresh that retains focus, scroll and expanded details. Keep a persistent classic UI selector and protect unsaved settings during layout changes.
+- Let settings use the full content width and remove the new console's footer reminder. Both layouts share the same local state and backend controls.
+- Add permanently deleting archived tasks and needs from either console layout, with a scope preview, explicit confirmation, transactional removal and restart-safe cache cleanup. Preserve native chats, projects, knowledge and backups. Fence active/uncertain execution and delivery, stale confirmations, old-message replay and number reuse.
+- Keep authorized long-running Codex project tasks attached to their exact native turn beyond the old fixed deadline. Reconcile missed completion notifications or restarts without resubmitting execution or duplicating delivery. Keep DSH project calls waiting on their original ACP request; auxiliary memory failures cannot overwrite a confirmed result.
+- Publish under the canonical `Au-Cu/douyin-agent-bridge` repository name while retaining existing entry points, private data paths and compatibility. Maintain paired Windows x64/ARM64 and macOS ARM64 source packages.
+
 ## 0.13.1
 
 - Keep the desktop's one-shot startup policy/configuration probes out of the shared RPC broker. Preserve their direct JSON output and exit status even when stdin is closed or a shared desktop is already connected.

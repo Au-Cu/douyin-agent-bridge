@@ -1,7 +1,7 @@
 import { DatabaseSync,backup } from 'node:sqlite';
 import { mkdirSync, existsSync, readFileSync, readdirSync,rmSync } from 'node:fs';
 import { join,resolve,relative } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID,createHash } from 'node:crypto';
 import {durableJson,lockStorage} from './durable.mjs';
 
 export class Store {
@@ -16,6 +16,9 @@ export class Store {
     if(this.db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('数据库完整性检查未通过，已保留原文件；请从备份恢复并核实任务状态，不能创建空记忆替代。');
     this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS deleted_messages(hash TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS deleted_reply_links(hash TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS deletion_cleanup(id TEXT PRIMARY KEY,paths TEXT NOT NULL,changed INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS archive_records(kind TEXT,id TEXT,archived INTEGER NOT NULL DEFAULT 0,desired INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'done',error TEXT NOT NULL DEFAULT '',reason TEXT NOT NULL DEFAULT '',meta TEXT NOT NULL DEFAULT '{}',changed INTEGER NOT NULL,PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS archive_jobs(need_id TEXT,thread TEXT,direction INTEGER,status TEXT,error TEXT,changed INTEGER,PRIMARY KEY(need_id,thread,direction));
       CREATE TABLE IF NOT EXISTS interruptions(operation_id TEXT PRIMARY KEY,state TEXT,requested INTEGER,updated INTEGER,error TEXT);
@@ -66,10 +69,14 @@ export class Store {
     this.db.prepare('INSERT INTO events(level,message,created) VALUES(?,?,?)').run(level,String(message).slice(0,3000),Date.now());
   }
   incoming(message) {
+    if(this.wasDeletedMessage(message.id))return false;
     return this.db.prepare('INSERT OR IGNORE INTO messages VALUES(?,?,?,?,?,?,?)')
       .run(message.id,message.peer,message.kind,JSON.stringify(message),'new','',Date.now()).changes > 0;
   }
   messageStatus(id,status,result='') { this.db.prepare('UPDATE messages SET status=?,result=? WHERE id=?').run(status,result,id); }
+  wasDeletedMessage(id){return !!id&&!!this.db.prepare('SELECT 1 FROM deleted_messages WHERE hash=?').get(createHash('sha256').update(String(id)).digest('hex'));}
+  retainNumber(key,minimum=0){return Number(this.db.prepare("INSERT INTO app_settings VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT) RETURNING value").get('sequence:'+key,String(minimum),Date.now()).value);}
+  nextNumber(key,minimum=0){const next=this.retainNumber(key,minimum)+1;this.db.prepare('UPDATE app_settings SET value=?,updated=? WHERE key=?').run(String(next),Date.now(),'sequence:'+key);return next;}
   pendingMessages() { return this.db.prepare("SELECT m.* FROM messages m WHERE m.status='new' AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=m.id) AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=m.id AND a.archived=1) ORDER BY m.created LIMIT 20").all(); }
   addKnowledge(item) {
     this.db.prepare('INSERT OR REPLACE INTO knowledge VALUES(?,?,?,?,?,?)').run(item.id,item.title,item.transcript||'',item.summary||'',item.path,Date.now());

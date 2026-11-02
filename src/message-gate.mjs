@@ -10,6 +10,7 @@ export class MessageGate{
     this.store.db.prepare("UPDATE messages SET kind='ignored',body=?,status='ignored',result=? WHERE id=?").run(JSON.stringify(minimal),reason,message.id);
   }
   accept(message){
+    if(this.store.wasDeletedMessage(message.id))return false;
     if(this.store.db.prepare('SELECT 1 FROM messages WHERE id=?').get(message.id))return false;
     const command=message.kind==='text'&&parseCommand(message.text),valid=!command?.arg;
     if(valid&&command?.name==='ignore_end'){this.control(message,false);return false;}
