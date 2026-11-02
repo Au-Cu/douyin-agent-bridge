@@ -26,6 +26,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "BRIDGE_DSH_WIRE_BIN=$env:RUNNER_TEMP/dsh-wire/node_modules/@deepseek-ai/dsh/lib/bin.js" >> $env:GITHUB_ENV
       - run: npm test
+      - run: npm run test:ui
       - run: npm run test:portable
       - run: npm run release:check
       - run: npm run release:build
@@ -65,6 +66,7 @@ jobs:
       - run: sudo /usr/bin/safaridriver --enable
       - run: node scripts/mac-safari-smoke.mjs
       - run: node --test --test-concurrency=2 test/*.test.mjs
+      - run: npm run test:ui
       - run: npm run test:portable
       - run: npm run release:check
       - run: npm run release:build

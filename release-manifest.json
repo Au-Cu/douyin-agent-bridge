@@ -59,6 +59,9 @@
     "启动共享Codex.cmd",
     "start-shared-codex-mac.command",
     "scripts/shared-codex-smoke.mjs",
-    "scripts/dsh-smoke.mjs"
+    "scripts/dsh-smoke.mjs",
+    "scripts/ui-preview.mjs",
+    "scripts/ui-review-smoke.mjs",
+    "docs/UI_REVIEW.md"
   ]
 }

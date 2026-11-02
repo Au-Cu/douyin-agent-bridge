@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {attachVisualProgress} from './visual-progress-view.mjs';
 import { readFile,stat } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -66,11 +67,12 @@ const server=http.createServer(async(req,res)=>{
         let asrReady=false;try{asrReady=(await stat(join(store.root,'models',modelName,'model.int8.onnx'))).size>200000000;}catch{}
         const needScope=archiveScope(url.searchParams.get('needs')),knowledgeScope=archiveScope(url.searchParams.get('knowledge')),workScope=archiveScope(url.searchParams.get('work')),status=url.searchParams.get('status')||'all';if(!taskStatuses.has(status))throw new Error('未知任务状态');
         if(store.config.enabled&&store.config.owner&&adapter.status==='ready'&&codex.ready&&codex.authState?.status==='ready'&&asrReady)configurePanel(store,'setup');
-        const snapshot=store.snapshot();snapshot.config=visibleSettings(store.config,active);snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(async k=>{
-          try{const v=JSON.parse(await readFile(join(dirname(k.path),'visual-report.json'),'utf8'));return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}
-        }));
+        const visualReports=new Map(),readVisualReport=item=>{if(!visualReports.has(item.id))visualReports.set(item.id,readFile(join(dirname(item.path),'visual-report.json'),'utf8').then(JSON.parse));return visualReports.get(item.id);};
+        const knowledgeView=async k=>{try{const v=await readVisualReport(k);return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}};
+        const snapshot=store.snapshot();snapshot.config=visibleSettings(store.config,active);snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(knowledgeView));
+        snapshot.recentKnowledge=await Promise.all(store.knowledgeList({scope:'current'}).slice(0,3).map(knowledgeView));
         const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
-        return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:engine.progress.cards({scope:workScope,status}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(engine.progress.cards({scope:workScope,status}),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models'){const chat=url.searchParams.get('mode')==='chat',harness=chat?store.config.chatHarness||'codex':active,data=await (chat?preferences.chatCatalog(harness):preferences.catalog(harness));return json(res,{...data,harness});}
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
@@ -217,7 +219,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,{error:'未找到接口'},404);
     }
     if(req.method!=='GET')return json(res,{error:'不支持的方法'},405);
-    const assets={'/':'index.html','/app.js':'app.js','/style.css':'style.css'};if(!assets[path])return json(res,{error:'页面不存在'},404);
+    const assets={'/':'index.html','/classic.html':'classic.html','/app.js':'app.js','/style.css':'style.css','/classic.css':'classic.css','/dom.js':'dom.js','/views.js':'views.js','/ui-layout.js':'ui-layout.js'};if(!assets[path])return json(res,{error:'页面不存在'},404);
     const types={'.html':'text/html','.js':'text/javascript','.css':'text/css'};
     res.writeHead(200,{'Content-Type':types[extname(assets[path])]+'; charset=utf-8','Set-Cookie':`bridge_session=${token}; HttpOnly; SameSite=Strict; Path=/`,'Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'",'X-Content-Type-Options':'nosniff'});
     res.end(await readFile(join(project,'public',assets[path])));
