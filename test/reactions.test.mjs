@@ -7,6 +7,7 @@ test('Edge 只读核验原消息表情，未选中和已选中均不得点击或
   const browser=await launchTestBrowser(t);if(!browser)return;try{const page=await browser.newPage();await page.setContent('<div data-bridge-message-id="8000000000001" style="padding:30px">原消息</div>');
     await page.evaluate(()=>{window.emojiClicks=0;window.selfSelected=false;document.querySelector('[data-bridge-message-id]').addEventListener('contextmenu',e=>{e.preventDefault();document.querySelectorAll('[role="menu"]').forEach(n=>n.remove());const menu=document.createElement('div');menu.setAttribute('role','menu');menu.style.width='300px';menu.innerHTML='<button aria-label="[OK]">👌</button>';menu.firstChild.setAttribute('aria-pressed',String(window.selfSelected));menu.firstChild.onclick=()=>window.emojiClicks++;document.body.append(menu);});});const a=new DouyinAdapter({root:'unused'});a.page=page;a.chatFrame=page;a.scan=async()=>({peer:owner});
     for(const selected of [false,true]){await page.evaluate(value=>window.selfSelected=value,selected);const r=await a.react(owner,'8000000000001',{verifyOnly:true,emojis:['👌']});assert.equal(r.verified,selected);assert.equal(r.readOnly,true);assert.equal(await page.evaluate(()=>window.emojiClicks),0);}
+    await page.evaluate(()=>{const row=document.querySelector('[data-bridge-message-id]');row.replaceWith(row.cloneNode(true));});assert.equal((await a.react(owner,'8000000000001',{verifyOnly:true,emojis:['👌']})).verified,false,'残留旧菜单的选中状态不能证明原消息');
   }finally{await browser.close();}
 });
 
