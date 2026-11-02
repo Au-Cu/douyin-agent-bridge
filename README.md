@@ -1,7 +1,7 @@
 # 抖音 Agent Bridge
 
-[![CI](https://github.com/Au-Cu/douyin-codex-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Au-Cu/douyin-codex-bridge/actions/workflows/ci.yml)
-[源码发行包](https://github.com/Au-Cu/douyin-codex-bridge/releases/latest) · [故障排查](docs/TROUBLESHOOTING.md) · [MIT](LICENSE)
+[![CI](https://github.com/Au-Cu/douyin-agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Au-Cu/douyin-agent-bridge/actions/workflows/ci.yml)
+[源码发行包](https://github.com/Au-Cu/douyin-agent-bridge/releases/latest) · [故障排查](docs/TROUBLESHOOTING.md) · [MIT](LICENSE)
 
 在手机抖音里，把视频私信转发给自己的助手账号。电脑上的桥接读取原视频，让你自己的 Codex 或 DeepSeek Harness 理解画面和口播，并在原私信里回复。你明确发出指示后，它可以把原片、视觉资料和任务交给你允许的其他助手聊天。
 
@@ -72,20 +72,20 @@ CI 在真实 Linux Docker 引擎中验证宿主文件、秘密环境变量、根
 Windows：
 
 ```powershell
-git clone https://github.com/Au-Cu/douyin-codex-bridge.git
-cd douyin-codex-bridge
+git clone https://github.com/Au-Cu/douyin-agent-bridge.git
+cd douyin-agent-bridge
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
 ```
 
 Mac（Apple 芯片，原生 ARM64 Node.js）：
 
 ```bash
-git clone https://github.com/Au-Cu/douyin-codex-bridge.git
-cd douyin-codex-bridge
+git clone https://github.com/Au-Cu/douyin-agent-bridge.git
+cd douyin-agent-bridge
 ./install-mac.command
 ```
 
-也可以从 [Release](https://github.com/Au-Cu/douyin-codex-bridge/releases/latest) 下载对应系统的源码 ZIP：Windows 选择 `windows-source.zip`，Mac 选择 `macos-arm64-source.zip`。解压后分别双击 `install.cmd` 或 `install-mac.command`；macOS 首次打开未签名脚本时可能需要在 Finder 中右键选择“打开”。安装包不包含 Node、账号信息、浏览器登录资料或模型权重。
+也可以从 [Release](https://github.com/Au-Cu/douyin-agent-bridge/releases/latest) 下载对应系统的源码 ZIP：Windows 选择 `windows-source.zip`，Mac 选择 `macos-arm64-source.zip`。解压后分别双击 `install.cmd` 或 `install-mac.command`；macOS 首次打开未签名脚本时可能需要在 Finder 中右键选择“打开”。安装包不包含 Node、账号信息、浏览器登录资料或模型权重。
 
 安装器执行 npm ci，准备视频工具和本地转写模型。模型压缩包约 163 MB，解压后约 239 MB。下载会校验完整性，完成后直接复用。
 
