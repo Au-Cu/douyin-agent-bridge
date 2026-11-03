@@ -106,7 +106,15 @@ export function scanConversation() {
   // A single-chat participant pair verifies self-chat independently of its title.
   const selfChat=type==='single'&&!!selfUid&&messages.every(m=>m.conversation===chatKey&&m.sender===selfUid)&&messages.some(m=>m.selfPair===selfUid);
   const peer=current?{chatKey:chatKey||'peer:'+current.sender,peerUid:type==='group'?'group:'+chatKey:selfChat?selfUid:last?.sender||'',displayName:clean(title?.textContent)||last?.sender||chatKey,type,selfUid,...(selfChat?{selfChat:true}:{})}:null;
-  return {url:location.href,title:clean(title?.textContent),peer,messages,accountMarker,documentInstance:scope.__douyinBridgeDocumentIdentity,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity,conversationType:type,selfIdentified:!!selfUid,selfIdentityConflict:ownIds.length>1},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
+  const bodyText=clean(document.body.innerText);
+  const visibleLoginControl=[...document.querySelectorAll('button,a,[role="button"]')].some(e=>e.getClientRects().length&&/^登录$/.test(clean(e.textContent)));
+  const loginRequired=!messages.length&&(/扫码登录|登录后.*消息|验证码登录|登录抖音|登录后查看/.test(bodyText)||visibleLoginControl);
+  const hasInbox=!!document.querySelector('[class*="conversationConversationItemwrapper"],[data-e2e="conversation-item"]');
+  const chatLoading=location.pathname==='/chat'&&!peer&&!loginRequired&&!hasInbox&&(
+    !bodyText||/^(?:抖音聊天\s*)+(?:加载中[.…]*)?$/.test(bodyText)||
+    [...document.querySelectorAll('[class*="skeleton" i]')].some(e=>e.getClientRects().length)
+  );
+  return {url:location.href,title:clean(title?.textContent),peer,messages,accountMarker,documentInstance:scope.__douyinBridgeDocumentIdentity,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity,conversationType:type,selfIdentified:!!selfUid,selfIdentityConflict:ownIds.length>1,chatLoading},loginRequired};
 }
 
 export async function foregroundFrame(frame){
@@ -252,21 +260,25 @@ export function markOwnerConversation(target){
 }
 
 export class DouyinAdapter {
-  constructor({root,log=()=>{}}){Object.assign(this,{root,log});this.status='closed';this.sending=false;}
-  async open(owner) {
+  constructor({root,profilePath=join(root,'browser-profile'),log=()=>{}}){Object.assign(this,{root,profilePath,log});this.status='closed';this.sending=false;}
+  async open(owner,{foreground=false}={}) {
     if(this.context&&this.page&&!this.page.isClosed?.()){
-      await this.page.bringToFront();
-      if(!this.openFailed&&this.page.url().startsWith('https://www.douyin.com/chat'))return;
+      if(!this.openFailed&&this.page.url().startsWith('https://www.douyin.com/chat')){
+        if(!foreground)return this.page.bringToFront();
+        const activated=await this.focus();
+        await this.recoverChatStartup(2000);
+        return activated||this.focus();
+      }
     }
     if(!this.context){
-      await mkdir(join(this.root,'browser-profile'),{recursive:true});
-      const context=this.context=await chromium.launchPersistentContext(join(this.root,'browser-profile'),{channel:'msedge',headless:false,viewport:null,args:['--disable-notifications']});
+      await mkdir(this.profilePath,{recursive:true});
+      const context=this.context=await chromium.launchPersistentContext(this.profilePath,{channel:'msedge',headless:false,chromiumSandbox:true,viewport:null,args:['--disable-notifications']});
       context.on('close',()=>{if(this.context===context){this.context=null;this.page=null;this.status='closed';}});
     }
     this.page=this.context.pages().find(p=>p.url().startsWith('https://www.douyin.com/chat'))||this.context.pages()[0]||await this.context.newPage();
-    await this.page.bringToFront();
+    const activated=foreground?await this.focus():await this.page.bringToFront();
     try{
-      const target='https://www.douyin.com/chat?isPopup=1',navigate=()=>this.page.goto(target,{waitUntil:'domcontentloaded',timeout:60000});
+      const target='https://www.douyin.com/chat',navigate=()=>this.page.goto(target,{waitUntil:'domcontentloaded',timeout:60000});
       const internalError=e=>/interrupted by another navigation to ["']chrome-error:\/\/chromewebdata\//.test(e.message);
       for(let attempt=0;attempt<3;attempt++)try{await navigate();break;}catch(e){
         if(this.openFailed&&e.message.includes('interrupted by another navigation to "'+target+'"')){
@@ -281,7 +293,40 @@ export class DouyinAdapter {
       this.openFailed=false;this.status='waiting_login';
     }
     catch(e){this.openFailed=true;this.status='open_error';throw e;}
+    if(foreground)await this.recoverChatStartup(12000);
     if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回用户会话：'+e.message));
+    return activated||(foreground?this.focus():undefined);
+  }
+  async recoverChatStartup(waitMs){
+    const loaded=async timeout=>{
+      const until=Date.now()+timeout;
+      do{
+        const scan=await this.scan();
+        if(scan.loginRequired||scan.peer||scan.loggedIn&&!scan.diagnostics.chatLoading)return true;
+        this.status='loading';
+        await new Promise(resolve=>setTimeout(resolve,300));
+      }while(Date.now()<until);
+      return false;
+    };
+    if(await loaded(waitMs))return;
+    // Retry the actual stalled placeholder, without clearing account data.
+    const cdp=await this.context.newCDPSession(this.page);
+    try{
+      await cdp.send('Network.setBypassServiceWorker',{bypass:true});
+      await Promise.all([
+        this.page.waitForEvent('domcontentloaded',{timeout:15000}),
+        cdp.send('Page.reload',{ignoreCache:true})
+      ]);
+      if(await loaded(10000))return;
+      if(new URL(this.page.url()).searchParams.has('isPopup')){
+        await this.page.goto('https://www.douyin.com/chat',{waitUntil:'domcontentloaded',timeout:15000});
+        if(await loaded(10000))return;
+      }
+      throw new Error('抖音聊天页仍未显示登录框或会话。已重载并检查普通聊天入口，请稍后重试。');
+    }finally{
+      await cdp.send('Network.setBypassServiceWorker',{bypass:false}).catch(()=>{});
+      await cdp.detach().catch(()=>{});
+    }
   }
   async restoreOwner(owner){
     let clicked=false;
@@ -313,8 +358,8 @@ export class DouyinAdapter {
     const cookies=await this.context.cookies('https://www.douyin.com/'),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
     const marker=identityCookies.length?createHash('sha256').update(identityCookies.join(';')).digest('hex'):'';
     const value=bindScanIdentity(this,raw,marker);
-    value.loggedIn=!raw.loginRequired&&cookies.some(c=>/^(sessionid|sessionid_ss)$/.test(c.name)&&c.value);
-    if(!observeOnly){if(best){this.page=best.page;this.chatFrame=best.frame;}this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
+    value.loggedIn=!raw.loginRequired&&!raw.diagnostics.chatLoading&&cookies.some(c=>/^(sessionid|sessionid_ss)$/.test(c.name)&&c.value);
+    if(!observeOnly){if(best){this.page=best.page;this.chatFrame=best.frame;}this.lastScan=value;this.status=value.diagnostics.chatLoading?'loading':value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
   }
   async uiDiagnostics(){
     if(!this.page)return {opened:false};const frames=[];
@@ -506,19 +551,83 @@ export class DouyinAdapter {
     } catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
   }
   async focus(){
-    if(!this.page||this.page.isClosed())return;
+    if(!this.page||this.page.isClosed())return false;
     await this.page.bringToFront();
-    if(process.platform!=='win32')return;
+    if(process.platform!=='win32')return true;
     const command=String.raw`
 $profile=[regex]::Escape($env:BRIDGE_FOCUS_PROFILE)
-$pattern='(?:^|\s)--user-data-dir=(?:"'+$profile+'"|'+$profile+')(?=\s|$)'
+$pattern='(?:^|\s)(?:"--user-data-dir='+$profile+'"|--user-data-dir=(?:"'+$profile+'"|'+$profile+'))(?=\s|$)'
 $edge=Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -match $pattern -and $_.CommandLine -notmatch '\s--type=' } | Select-Object -First 1
-if($edge){$shell=New-Object -ComObject WScript.Shell; [void]$shell.AppActivate([int]$edge.ProcessId)}
+if(!$edge){exit 1}
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class BridgeWindow {
+    [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr processId);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr window, int command);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] public static extern bool PeekMessage(IntPtr message, IntPtr window, uint min, uint max, uint remove);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr window, uint flags);
+    public static bool IsExposed(IntPtr window) {
+        Rect r;
+        if (!GetWindowRect(window, out r)) return false;
+        var p = new Point { X = r.Left + (r.Right - r.Left) / 2, Y = r.Top + (r.Bottom - r.Top) / 2 };
+        return GetAncestor(WindowFromPoint(p), 2) == window;
+    }
+}
+'@
+$window=[IntPtr]::Zero
+for($i=0;$i -lt 10 -and $window -eq [IntPtr]::Zero;$i++){
+  $process=Get-Process -Id $edge.ProcessId -ErrorAction Stop
+  $window=$process.MainWindowHandle
+  if($window -eq [IntPtr]::Zero){Start-Sleep -Milliseconds 100}
+}
+if($window -eq [IntPtr]::Zero){exit 1}
+if([BridgeWindow]::IsIconic($window)){[void][BridgeWindow]::ShowWindowAsync($window,9)}
+[void][BridgeWindow]::SetForegroundWindow($window)
+if([BridgeWindow]::GetForegroundWindow() -ne $window){
+  # Create a queue for this short-lived helper before attaching it.
+  $message=[Runtime.InteropServices.Marshal]::AllocHGlobal(64)
+  try{[void][BridgeWindow]::PeekMessage($message,[IntPtr]::Zero,0,0,0)}
+  finally{[Runtime.InteropServices.Marshal]::FreeHGlobal($message)}
+  $caller=[BridgeWindow]::GetCurrentThreadId()
+  $current=[BridgeWindow]::GetWindowThreadProcessId([BridgeWindow]::GetForegroundWindow(),[IntPtr]::Zero)
+  if($current -and $current -ne $caller -and [BridgeWindow]::AttachThreadInput($caller,$current,$true)){
+    try{[void][BridgeWindow]::SetForegroundWindow($window)}
+    finally{[void][BridgeWindow]::AttachThreadInput($caller,$current,$false)}
+  }
+}
+for($i=0;$i -lt 8;$i++){
+  if([BridgeWindow]::GetForegroundWindow() -eq $window){exit 0}
+  Start-Sleep -Milliseconds 50
+}
+if([BridgeWindow]::IsExposed($window)){exit 0}
+# If keyboard activation is locked, raise only this window and restore its
+# normal z-order band immediately. Do not leave the browser always on top.
+if(([BridgeWindow]::GetWindowLong($window,-20) -band 8) -eq 0){
+  $flags=0x53
+  if([BridgeWindow]::SetWindowPos($window,[IntPtr](-1),0,0,0,0,$flags)){
+    try{Start-Sleep -Milliseconds 120}
+    finally{[void][BridgeWindow]::SetWindowPos($window,[IntPtr](-2),0,0,0,0,$flags)}
+    if([BridgeWindow]::IsExposed($window)){exit 0}
+  }
+}
+exit 1
 `;
     const powershell=join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-    await new Promise(resolve=>execFile(powershell,['-NoProfile','-NonInteractive','-Command',command],{
-      env:{...process.env,BRIDGE_FOCUS_PROFILE:join(this.root,'browser-profile')},windowsHide:true,timeout:5000
-    },()=>resolve()));
+    return new Promise(resolve=>execFile(powershell,['-NoProfile','-NonInteractive','-Command',command],{
+      env:{...process.env,BRIDGE_FOCUS_PROFILE:this.profilePath},windowsHide:true,timeout:7000
+    },error=>resolve(!error)));
   }
   async logout(){
     await this.open();
