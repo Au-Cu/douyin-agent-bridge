@@ -108,7 +108,7 @@ export function scanConversation() {
   const peer=current?{chatKey:chatKey||'peer:'+current.sender,peerUid:type==='group'?'group:'+chatKey:selfChat?selfUid:last?.sender||'',displayName:clean(title?.textContent)||last?.sender||chatKey,type,selfUid,...(selfChat?{selfChat:true}:{})}:null;
   const bodyText=clean(document.body.innerText);
   const visibleLoginControl=[...document.querySelectorAll('button,a,[role="button"]')].some(e=>e.getClientRects().length&&/^登录$/.test(clean(e.textContent)));
-  const loginRequired=!messages.length&&(visibleLoginControl||(location.pathname==='/'?/扫码登录|验证码登录/.test(bodyText):/扫码登录|登录后.*消息|验证码登录|登录抖音|登录后查看/.test(bodyText)));
+  const loginRequired=!messages.length&&(visibleLoginControl||((location.pathname==='/'||location.pathname==='/jingxuan')?/扫码登录|验证码登录/.test(bodyText):/扫码登录|登录后.*消息|验证码登录|登录抖音|登录后查看/.test(bodyText)));
   const hasInbox=!!document.querySelector('[class*="conversationConversationItemwrapper"],[data-e2e="conversation-item"]');
   const chatLoading=location.pathname==='/chat'&&!peer&&!loginRequired&&!hasInbox&&(
     !bodyText||/^(?:抖音聊天\s*)+(?:加载中[.…]*)?$/.test(bodyText)||
@@ -304,12 +304,13 @@ export class DouyinAdapter {
     if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回用户会话：'+e.message));
     return activated||(foreground?this.focus():undefined);
   }
-  isLoginHome(page){return !!page&&!page.isClosed()&&/^https:\/\/www\.douyin\.com\/(?:[?#].*)?$/.test(page.url());}
+  isLoginHome(page){return !!page&&!page.isClosed()&&/^https:\/\/www\.douyin\.com\/(?:jingxuan)?(?:[?#].*)?$/.test(page.url());}
   async openHomeLoginDialog(){
     if(!this.isLoginHome(this.page))return;
     const qr=this.page.getByText(/扫码登录|验证码登录/).filter({visible:true}).first();
     if(await qr.isVisible())return;
     const login=this.page.getByText('登录',{exact:true}).filter({visible:true});
+    await login.first().waitFor({state:'visible',timeout:12000}).catch(()=>{});
     if(await login.count()===1)await login.click({timeout:2500}).catch(()=>{});
   }
   async recoverChatStartup(waitMs){
@@ -317,7 +318,7 @@ export class DouyinAdapter {
       const until=Date.now()+timeout;
       do{
         const scan=await this.scan();
-        if(scan.loginRequired||scan.peer||scan.loggedIn&&!scan.diagnostics.chatLoading)return true;
+        if(scan.peer||scan.loggedIn||scan.loginRequired&&scan.url)return true;
         this.status='loading';
         await new Promise(resolve=>setTimeout(resolve,300));
       }while(Date.now()<until);
@@ -340,7 +341,8 @@ export class DouyinAdapter {
       const current=await this.scan();
       if(!current.loggedIn&&!current.peer){
         await this.page.goto('https://www.douyin.com/',{waitUntil:'domcontentloaded',timeout:15000});
-        if(await loaded(12000)){await this.openHomeLoginDialog();return;}
+        await this.openHomeLoginDialog();
+        return;
       }
       throw new Error('抖音聊天页和首页暂未显示登录入口。请在专用窗口打开抖音首页，或稍后重试。');
     }finally{
