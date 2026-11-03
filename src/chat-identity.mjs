@@ -10,5 +10,8 @@ export function bindScanIdentity(adapter,scan,externalMarker){
   const marker=externalMarker??scan.accountMarker??'';
   if(scan.loginRequired||scan.diagnostics?.selfIdentityConflict||adapter.verifiedIdentity&&marker!==adapter.verifiedIdentity.accountMarker)adapter.verifiedIdentity=null;
   if(!scan.loginRequired&&scan.peer?.selfUid)adapter.verifiedIdentity={selfUid:scan.peer.selfUid,accountMarker:marker,documentInstance:scan.documentInstance||''};
-  const value=applyVerifiedIdentity(scan,adapter.verifiedIdentity,externalMarker),{accountMarker,documentInstance,...safe}=value;return safe;
+  const witness=adapter.verifiedIdentity;
+  const verified=!!witness&&(marker?marker===witness.accountMarker:!!scan.documentInstance&&scan.documentInstance===witness.documentInstance);
+  const value=applyVerifiedIdentity(scan,witness,externalMarker),{accountMarker,documentInstance,...safe}=value;
+  return {...safe,accountUid:!scan.loginRequired&&verified?witness.selfUid:''};
 }

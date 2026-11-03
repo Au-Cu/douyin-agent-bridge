@@ -85,10 +85,11 @@ export class ChatSessions{
   state(peer){const s=this.current(peer),pending=this.db.prepare("SELECT COUNT(*) n FROM bot_messages WHERE peer=? AND revision=? AND status IN ('new','preparing','submitted','replying','delivery_uncertain','uncertain','held')").get(peer,this.chats.get(peer)?.revision).n;return {current:s?{id:s.id,harness:s.harness,seq:s.seq,tokens:s.tokens,state:s.state,error:s.error}:null,budget:effectiveConversation(this.store.config,this.chats.get(peer),this.store.config.chatHarness||'codex',{chat:true}).contextBudget,busy:this.chats.running.has(peer),clearing:this.busy.has(peer),pending};}
   async reconcile(id){
     const s=this.get(id);if(!s)throw new Error('未找到登记的群聊会话');
+    if(this.chats.isInactive?.(s.peer))throw new Error('请登录此聊天所属的抖音账号后核实');
     const rows=this.db.prepare("SELECT b.* FROM bot_messages b JOIN chat_session_messages m ON m.message_id=b.id WHERE m.session_id=? AND b.status='uncertain'").all(id);
     if(!rows.length)return {verified:0,remaining:0,reason:'没有待核实的回合'};
     const native=await this.runtime.readSession(s.harness,s.thread);if(!native)return {verified:0,remaining:rows.length,reason:'DSH ACP 不提供完整原生回合核实；保留现场，不重跑。'};let verified=0;
-    for(const row of rows){const turn=row.thread===s.thread&&row.turn&&native.turns?.find(t=>t.id===row.turn);if(!turn||!['completed','failed','interrupted'].includes(turn.status))continue;
+    for(const row of rows){if(this.chats.isInactive?.(s.peer))break;const turn=row.thread===s.thread&&row.turn&&native.turns?.find(t=>t.id===row.turn);if(!turn||!['completed','failed','interrupted'].includes(turn.status))continue;
       if(this.db.prepare('SELECT status FROM bot_messages WHERE id=?').get(row.id)?.status!=='uncertain')continue;
       if(turn.status==='completed'){const text=turn.items?.filter(i=>i.type==='agentMessage').at(-1)?.text;if(!text)continue;
         const chat=this.chats.get(row.peer);if(chat?.enabled&&chat.mode==='chat'&&chat.revision===row.revision){this.chats.queueResult(row,chat,{text});this.complete(s,{text},Buffer.byteLength(row.body,'utf8'));}else this.chats.set(row.id,'cancelled','原生结果已核实，但聊天配置变化，未自动发送：'+text);
@@ -98,7 +99,7 @@ export class ChatSessions{
     if(!remaining)this.db.prepare('UPDATE chat_sessions SET state=?,error=\'\',updated=? WHERE id=?').run(this.current(s.peer)?.id===id?'current':'history',Date.now(),id);
     return {verified,remaining,reason:remaining?'原回合仍在运行或缺少确切回合证据，保留现场，未重跑。':'已核实原生结果，未重新调用模型；可交付的结果已接回原发送队列。'};
   }
-  async reconcileUncertain(){for(const s of this.db.prepare("SELECT s.id FROM chat_sessions s LEFT JOIN archive_records a ON a.kind='chat_session' AND a.id=s.id WHERE s.harness='codex' AND (s.state='uncertain' OR a.archived=1 AND a.desired=1 AND a.state='attention') ORDER BY s.updated LIMIT 2").all()){if(this.closing)return;try{await this.reconcile(s.id);const current=this.get(s.id),archive=this.store.archiveRecord('chat_session',s.id);if(archive?.archived&&archive.desired&&archive.state==='attention'&&current.state!=='uncertain'&&this.current(current.peer)?.id!==current.id)await this.archive(s.id,true);}catch{ /* Read failure preserves all unknown work. */ }}}
+  async reconcileUncertain(){for(const s of this.db.prepare("SELECT s.id FROM chat_sessions s LEFT JOIN archive_records a ON a.kind='chat_session' AND a.id=s.id WHERE s.harness='codex' AND s.peer NOT IN (SELECT value FROM json_each(?)) AND (s.state='uncertain' OR a.archived=1 AND a.desired=1 AND a.state='attention') ORDER BY s.updated LIMIT 2").all(JSON.stringify(this.chats.inactiveKeys?.()||[]))){if(this.closing)return;try{await this.reconcile(s.id);const current=this.get(s.id),archive=this.store.archiveRecord('chat_session',s.id);if(archive?.archived&&archive.desired&&archive.state==='attention'&&!this.chats.isInactive?.(current.peer)&&current.state!=='uncertain'&&this.current(current.peer)?.id!==current.id)await this.archive(s.id,true);}catch{ /* Read failure preserves all unknown work. */ }}}
   async transcript(id){
     const s=this.get(id);if(!s)throw new Error('未找到本桥接器登记的群聊会话');let native=null,error='';
     try{native=await this.runtime.readSession(s.harness,s.thread);}catch(e){error='原生历史暂不可读，以下为本桥接器的原始交流记录';}

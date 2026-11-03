@@ -30,3 +30,20 @@ test('opening an existing loading shell focuses it and retries once, then keeps 
     assert.equal(focuses,2);
   }finally{await context.close();}
 });
+
+test('the dedicated Douyin homepage can open the real-site login control in the same tab',async()=>{
+  await mkdir(base,{recursive:true});
+  const root=await mkdtemp(join(base,'home-login-'));
+  const context=await chromium.launchPersistentContext(root,{channel:browserChannel,headless:true});
+  const adapter=new DouyinAdapter({root});
+  try{
+    await context.route('https://www.douyin.com/',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<button onclick="this.outerHTML=\'<h1>扫码登录</h1>\'">登录</button>'}));
+    adapter.context=context;adapter.page=context.pages()[0];
+    adapter.focus=async()=>true;
+    await adapter.page.goto('https://www.douyin.com/');
+    assert.equal(await adapter.open(undefined,{foreground:true}),true);
+    assert.equal((await adapter.scan()).loginViaHome,true);
+    assert.equal((await adapter.scan()).loginRequired,true);
+    assert.equal(await adapter.page.getByText('扫码登录',{exact:true}).isVisible(),true);
+  }finally{await context.close();}
+});

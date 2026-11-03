@@ -13,11 +13,12 @@ export class DeliveryReview{
   startBatch({kind,id}={}){
     if(this.batch?.status==='running')return this.batch;
     if((kind&&!id)||(!kind&&id))throw new Error('请完整指定核实范围');
-    const rows=kind?this.rows(kind,id):this.db.prepare("SELECT * FROM outbox WHERE status IN ('uncertain','sending') ORDER BY peer,created,rowid").all(),ids=rows.filter(o=>o.status==='uncertain').map(o=>o.id);
+    const rows=kind?this.rows(kind,id):this.db.prepare("SELECT * FROM outbox WHERE status IN ('uncertain','sending') ORDER BY peer,created,rowid").all().filter(o=>!this.isInactive(o)),ids=rows.filter(o=>o.status==='uncertain').map(o=>o.id);
     this.batch={id:randomUUID(),kind:kind||'all',scopeId:id||'',status:'running',total:ids.length,checked:0,verified:0,unresolved:0,waiting:rows.filter(o=>o.status==='sending').length,started:Date.now(),finished:0};this.saveBatch();
     this.batchWork=(async()=>{for(const key of ids){if(this.closing){this.batch.status='interrupted';break;}const row=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(key);if(row?.status==='uncertain')try{const result=await this.reconcile(key);if(result.verified)this.batch.verified++;else this.batch.unresolved++;}catch(e){this.batch.unresolved++;const current=this.db.prepare('SELECT status FROM outbox WHERE id=?').get(key);if(current?.status==='uncertain')this.store.mergeOutboxPayload(key,{deliveryRecheck:{verified:false,at:Date.now(),method:'batch_read_only',reason:String(e.message).slice(0,240)}});}this.batch.checked++;this.saveBatch();await new Promise(resolve=>setImmediate(resolve));}if(this.batch.status==='running')this.batch.status='done';this.batch.finished=Date.now();this.saveBatch();})().catch(()=>{this.batch.status='interrupted';this.batch.finished=Date.now();this.saveBatch();});return this.batch;
   }
   target(out){const p=data(out);if(p.chatbot)return this.chats.deliveryTarget(p,out.peer);const owner=this.store.config.owner;return owner?.chatKey===out.peer?owner:null;}
+  isInactive(out){return !!data(out).chatbot&&!!this.chats.isInactive?.(out.peer);}
   rows(kind,id){
     let operationIds;
     if(kind==='chat'||kind==='chat_session'){
@@ -78,6 +79,7 @@ export class DeliveryReview{
   resolve(id,status,{confirmed=false}={}){
     if(confirmed!==true)throw new Error('请先在本机确认回执的实际情况。');
     const out=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(id));if(!out||!(['uncertain'].includes(out.status)||['pending','held'].includes(out.status)&&status==='abandoned'||out.status==='sent'&&out.kind==='text'&&status==='sent'))throw new Error('此回执无需人工处理，请刷新查看');
+    if(this.isInactive(out))throw new Error('请登录此聊天所属的抖音账号后处理');
     if(!['sent','pending','abandoned'].includes(status))throw new Error('无效处理方式');const p=data(out);
     if(status==='pending'&&(out.kind!=='text'||!this.target(out)||this.target(out).deliveryPaused||p.contextReset||p.recipientVisibility?.state==='reported_invisible'||this.engine.interrupts.record(p.operationId)||this.store.isArchived('task',p.operationId)))throw new Error('仅可重新发送未归档、未中断、未清空、未报告接收方不可见且聊天未暂停的文字；表情不会重复点击。');
     const next=status==='abandoned'?(out.kind==='progress_reaction'?'unavailable':'superseded'):status;
@@ -86,6 +88,7 @@ export class DeliveryReview{
   }
   reportInvisible(id,{confirmed=false}={}){
     const out=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(id)),p=out&&data(out);if(!confirmed||!out||out.kind!=='text'||!p.chatbot||!['sent','uncertain'].includes(out.status))throw new Error('请明确确认这条普通聊天回复在接收方不可见');
+    if(this.isInactive(out))throw new Error('请登录此聊天所属的抖音账号后处理');
     this.store.mergeOutboxPayload(out.id,{recipientVisibility:{state:'reported_invisible',method:'manual_recipient',at:Date.now()}});this.store.delivery(out.id,'uncertain','用户反馈接收方不可见；此前仅确认助手端显示');
     this.db.prepare("UPDATE bot_messages SET status='delivery_uncertain',updated=? WHERE id=? AND status NOT IN ('cancelled','uncertain')").run(Date.now(),p.botId);this.chats.pauseDelivery(out.peer,true,'用户反馈本群消息仅助手端可见，待核实');return {ok:true};
   }

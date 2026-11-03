@@ -8,6 +8,38 @@ async function configure(h,peer=group){h.native.scan=async()=>({peer,messages:[]
 async function settle(h){await h.chats.process();await Promise.all([...h.chats.running.values()]);}
 async function drain(h){for(let i=0;i<50&&h.s.pendingOutbox().length;i++)await h.engine.deliver();h.chats.reconcile();for(let i=0;i<10&&h.s.pendingOutbox().length;i++)await h.engine.deliver();}
 
+test('logout hides ordinary chats and the same platform group is independent across accounts',async()=>{
+  const h=setup();
+  try{
+    const legacy=await configure(h),other={...group,selfUid:'888888'};
+    let uid=group.selfUid;
+    h.chats.account=()=>uid;
+    h.chats.configure({chatKey:legacy.chatKey,mode:'chat',enabled:true,groupReplyMode:'all'});
+    assert.equal(h.chats.ingest(legacy,message()),true);
+    const pending=h.s.enqueueReply(legacy.chatKey,'first account reply',{payload:{chatbot:true,chatRevision:legacy.revision}});
+    const first=await h.chats.observe();
+    uid='';
+    assert.equal(h.chats.state().chats.some(c=>c.mode==='chat'),false);
+    assert.deepEqual(h.chats.state().messages,[]);
+    await h.engine.deliver();
+    assert.equal(h.s.db.prepare('SELECT status FROM outbox WHERE id=?').get(pending).status,'pending');
+    assert.throws(()=>h.chats.configure({token:first.token,mode:'chat',enabled:true}),/账号已退出或变化/);
+    uid=other.selfUid;
+    const second=await configure(h,other);
+    assert.notEqual(second.chatKey,legacy.chatKey);
+    assert.equal(second.platformChatKey,group.chatKey);
+    assert.equal(second.groupReplyMode,'mentions');
+    h.native.scan=async()=>({peer:other,messages:[message('90000000000001',{mentionedUids:[other.selfUid]})]});
+    await h.chats.scan();
+    assert.deepEqual(h.chats.state().messages.map(m=>m.peer),[second.chatKey]);
+    uid=group.selfUid;
+    assert.equal(h.chats.get(legacy.chatKey).groupReplyMode,'all');
+    assert.equal(h.chats.get(second.chatKey),undefined);
+    assert.deepEqual(h.chats.state().messages.map(m=>m.peer),[legacy.chatKey]);
+    assert.equal(h.s.db.prepare('SELECT COUNT(*) n FROM bot_messages').get().n,2);
+  }finally{h.s.close();}
+});
+
 test('existing personal Agent is preserved; only locally observed chats can enable reply-only mode',async()=>{const h=setup();try{assert.equal(h.chats.agentEnabled(),true);assert.deepEqual(h.s.config.owner,owner);assert.throws(()=>h.chats.configure({chatKey:'forged',mode:'chat',enabled:true}),/先从实际/);const g=await configure(h);assert.equal(g.mode,'chat');assert.throws(()=>h.chats.configure({chatKey:g.chatKey,mode:'agent',enabled:true}),/现有绑定用户/);assert.equal(h.chats.agentEnabled(),true);assert.equal(h.s.config.coordinator,'personal-assistant');}finally{h.s.close();}});
 
 test('group gate requires exact native mention and current identity; literal names, all, quotes and history stay silent',()=>{const c={...group,enabled:true,mode:'chat',enabledAt:Date.now()-1000},now=Date.now()-500;assert.equal(acceptsChatMessage(message(),c,now),true);for(const m of [message('1',{mentionedUids:[]}),message('2',{text:'@助手 @999999',mentionedUids:['111111']}),message('3',{mentionedUids:['0','all']}),message('4',{replyTo:{mentionedUids:[c.selfUid]},mentionedUids:[]}),message('5',{direction:'out'}),message('6',{created:now-5000}),message('7',{conversation:'other'}),message('8',{sender:c.selfUid})])assert.equal(acceptsChatMessage(m,c,now),false);assert.equal(acceptsChatMessage(message(),{...c,selfUid:''},now),false);});

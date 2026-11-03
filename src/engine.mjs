@@ -534,7 +534,7 @@ export class BridgeEngine {
     let out,target,payload;
     const enabled=this.store.config.enabled;
     this.deliveryTurns??=new Map();this.deliveryTurn??=0;
-    for(const candidate of this.store.pendingOutbox(200)){
+    for(const candidate of this.store.pendingOutbox(200,this.chats?.inactiveKeys?.())){
       if(!enabled&&candidate.priority<900)continue;
       const p=JSON.parse(candidate.payload||'{}');
       let peer;
@@ -569,7 +569,7 @@ export class BridgeEngine {
       const operationId=JSON.parse(out.payload||'{}').operationId;if(operationId)this.progress.sync(operationId);
       if(out.kind==='video_ack')this.store.event('已在抖音确认收到视频（'+(method==='reaction'?'消息表情回应':'私信文字')+'）');
     }
-    catch(e){let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DELIVERY_PAUSED'?'held':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
+    catch(e){if(!e.uncertain&&e.code==='CHAT_ACCOUNT_INACTIVE'&&e.notSubmitted){this.store.delivery(out.id,'pending',e.message);return;}let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DELIVERY_PAUSED'?'held':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
       let retryAfter;
       if(status==='pending'&&out.kind==='text'){
         const failures=Math.min(6,(payload.deliveryRetry?.failures||0)+1);

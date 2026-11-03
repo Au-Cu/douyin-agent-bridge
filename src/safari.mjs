@@ -88,7 +88,8 @@ export class SafariDouyinAdapter {
     if(!this.page)return {peer:null,messages:[],diagnostics:{},loginRequired:true};
     try{const result=await this.inTab(`const scan=(${scanConversation.toString()}),all=[];function walk(w,path){try{if(!/^https:\\/\\/(www\\.)?douyin\\.com\\//.test(w.location.href))return;all.push({path,value:scan.call(w)});const frames=[...w.document.querySelectorAll('iframe')];for(let i=0;i<frames.length;i++){const f=frames[i],r=f.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,top=w.document.elementFromPoint(x,y);if(r.width&&r.height&&(top===f||f.contains(top)))try{walk(f.contentWindow,path.concat(i))}catch{}}}catch{}}walk(window,[]);all.sort((a,b)=>Number(b.value.diagnostics.interactiveRows>0)-Number(a.value.diagnostics.interactiveRows>0)||b.value.messages.length-a.value.messages.length);return all[0]||null;`);
       const raw=result?.value||{peer:null,messages:[],diagnostics:{pages:1},loginRequired:true},value=bindScanIdentity(this,raw);
-      value.loggedIn=!raw.loginRequired&&!!(raw.accountMarker||raw.peer?.selfUid);
+      value.loggedIn=!raw.loginRequired&&!!(raw.accountMarker||value.accountUid);
+      if(value.loggedIn&&raw.accountMarker)value.accountKey='safari:'+raw.accountMarker;
       if(!observeOnly){this.framePath=result?.path||[];this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
     }catch(e){if(!observeOnly)this.status='blocked';throw e;}
   }
