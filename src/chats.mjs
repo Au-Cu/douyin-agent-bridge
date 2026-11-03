@@ -32,12 +32,13 @@ export class Chats {
   agentEnabled(){const owner=this.store.config.owner;return !!owner&&this.get(owner.chatKey)?.enabled&&this.get(owner.chatKey)?.mode==='agent';}
   bots(){return this.list().filter(c=>c.enabled&&c.mode==='chat');}
   refreshBrowserMode(){this.adapter.multiple=this.bots().length>0;}
-  state(){return {chats:this.list().map(c=>({...c,...(c.type==='group'&&this.sessions?{sessions:this.sessions.state(c.chatKey)}:{})})),selecting:!!this.adapter.selecting,messages:this.store.db.prepare('SELECT id,peer,status,result,thread,turn,created,updated FROM bot_messages ORDER BY created DESC LIMIT 25').all().map(r=>({...r,sessionId:this.sessions?.forMessage(r.id)?.id,canRetry:r.status==='failed'&&!r.thread&&!r.turn,name:this.get(r.peer)?.displayName||'已停用聊天',uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};}
-  beginSelection(){this.adapter.selection?.(true);}
+  state(){return {chats:this.list().map(c=>({...c,...(c.type==='group'&&this.sessions?{sessions:this.sessions.state(c.chatKey)}:{})})),selecting:!!this.adapter.selecting&&this.adapter.selectionKind!=='self',messages:this.store.db.prepare('SELECT id,peer,status,result,thread,turn,created,updated FROM bot_messages ORDER BY created DESC LIMIT 25').all().map(r=>({...r,sessionId:this.sessions?.forMessage(r.id)?.id,canRetry:r.status==='failed'&&!r.thread&&!r.turn,name:this.get(r.peer)?.displayName||'已停用聊天',deliveryIssue:r.status==='replying'?this.store.db.prepare("SELECT error FROM outbox WHERE status='pending' AND kind='text' AND error<>'' AND json_extract(payload,'$.botId')=? ORDER BY rowid LIMIT 1").get(r.id)?.error?.split('\n')[0]:undefined,uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};}
+  beginSelection(){return this.adapter.selection?.(true);}
   endSelection(){this.adapter.selection?.(false);}
   async observe(){
     const scan=await this.adapter.scan(),peer=scan.peer,owner=this.store.config.owner;
     if(!peer||!peer.chatKey||!peer.peerUid||scan.loginRequired)throw new Error('请先在抖音窗口打开目标聊天');
+    if(peer.selfChat)throw new Error('自聊请使用连接助手中的「绑定自己」');
     if(peer.chatKey.startsWith('peer:'))throw new Error('没有取得稳定的抖音聊天 ID，暂不允许启用');
     const legacy=owner?.chatKey===peer.chatKey&&owner.peerUid===peer.peerUid&&peer.type==='unknown';
     if(!['single','group'].includes(peer.type)&&!legacy)throw new Error('未能核验单聊或群聊类型，暂不允许启用；请在该聊天发一条普通消息后重新读取');

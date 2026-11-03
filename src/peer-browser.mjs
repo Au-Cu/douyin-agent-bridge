@@ -29,6 +29,7 @@ export class PeerBrowser {
     Promise.resolve().then(job.run).then(job.resolve,job.reject).finally(()=>{this.stats.completed++;this.stats.maxOperationMs=Math.max(this.stats.maxOperationMs,this.now()-job.started);this.active=null;this.pump();});
   }
   async select(peer){
+    if(this.selecting)throw new Error('正在手动选择抖音聊天，自动切换暂时暂停');
     checkWork();const before=await this.adapter.scan();if(matchesPeer(before.peer,peer))return before;
     await this.adapter.restoreOwner(peer);checkWork();let snapshot=await this.adapter.scan();
     if(!matchesPeer(snapshot.peer,peer))throw new Error('未核验到选定的抖音聊天，操作已停止');
@@ -43,12 +44,22 @@ export class PeerBrowser {
     }
     return {...snapshot,messages:[...messages.values()].sort((a,b)=>(a.created||0)-(b.created||0))};
   }
-  selection(active){this.selectionUntil=active?this.now()+5*60*1000:0;}
+  selection(active,kind='chat'){
+    if(this.selecting&&this.selectionKind!==kind){
+      if(active)throw new Error('请先完成或取消当前的聊天选择');
+      return;
+    }
+    this.selectionMode=active?kind:'';
+    this.selectionUntil=active?this.now()+5*60*1000:0;
+    if(active)return this.serial(()=>{}, {kind:'selection',priority:30});
+  }
   get selecting(){return this.selectionUntil>this.now();}
-  open(...args){return this.serial(()=>this.adapter.open(...args),{kind:'open',priority:10});}
+  get selectionKind(){return this.selecting?this.selectionMode:'';}
+  open(owner){return this.serial(()=>this.adapter.open(this.selecting?undefined:owner),{kind:'open',priority:10});}
   scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect'});}
   async wantsRead(peer){
-    if(matchesPeer(this.adapter.lastScan?.peer,peer))return true;
+    if(peer.selfChat||matchesPeer(this.adapter.lastScan?.peer,peer))return true;
+    if((this.pollBackoff?.get(peer.chatKey)||0)>this.now())return false;
     if(!this.adapter.inbox)return true;
     if(!this.inboxCache||this.now()-this.inboxCache.at>=1000){try{this.inboxCache={at:this.now(),value:await this.adapter.inbox()};this.stats.inboxChecks++;}catch{return true;}}
     const rows=this.inboxCache.value?.entries?.filter(e=>e.ids?.includes(peer.chatKey))||[];
@@ -63,11 +74,11 @@ export class PeerBrowser {
     const key=JSON.stringify([peer,background]),shared=this.polls.get(key);if(shared){this.stats.coalesced++;return shared;}
     // Reading the already selected owner must remain available to /中断 while
     // a reply awaits confirmation. observeOnly never changes cached UI handles.
-    if(!this.multiple||['send','reaction','acknowledge'].includes(this.active?.kind)&&matchesPeer(this.active.peer,peer)&&matchesPeer(this.adapter.lastScan?.peer,peer))return this.adapter.scan({observeOnly:true});
-    const pending=this.serial(async()=>{if(this.selecting)throw new Error('正在面板中选择抖音聊天，轮询暂时暂停');if(background&&!await this.wantsRead(peer))return null;const scan=await this.select(peer);this.visited.set(peer.chatKey,this.now());return scan;},{kind:'poll',peer});this.polls.set(key,pending);
+    if((!this.multiple&&!peer.selfChat)||['send','reaction','acknowledge'].includes(this.active?.kind)&&matchesPeer(this.active.peer,peer)&&matchesPeer(this.adapter.lastScan?.peer,peer))return this.adapter.scan({observeOnly:true});
+    const pending=this.serial(async()=>{if(this.selecting)throw new Error('正在面板中选择抖音聊天，轮询暂时暂停');if(background&&!await this.wantsRead(peer))return null;try{const scan=await this.select(peer);this.visited.set(peer.chatKey,this.now());this.pollBackoff?.delete(peer.chatKey);return scan;}catch(error){if(background&&!peer.selfChat){this.pollBackoff??=new Map();this.pollBackoff.set(peer.chatKey,this.now()+30000);}throw error;}},{kind:'poll',peer});this.polls.set(key,pending);
     pending.then(()=>this.polls.delete(key),()=>this.polls.delete(key));return pending;
   }
-  mutate(kind,peer,fn){return this.serial(async()=>{checkWork();if(this.selecting)throw new Error('正在面板中选择聊天，操作暂时暂停');if(this.multiple)await this.select(peer);checkWork();return fn();},{kind,peer,priority:20});}
+  mutate(kind,peer,fn){return this.serial(async()=>{checkWork();if(this.selecting)throw new Error('正在面板中选择聊天，操作暂时暂停');if(this.multiple||peer.selfChat)await this.select(peer);checkWork();return fn();},{kind,peer,priority:20});}
   send(peer,...args){return this.mutate('send',peer,()=>this.adapter.send(peer,...args));}
   react(peer,...args){return this.mutate('reaction',peer,()=>this.adapter.react(peer,...args));}
   acknowledge(peer,...args){return this.mutate('acknowledge',peer,()=>this.adapter.acknowledge(peer,...args));}

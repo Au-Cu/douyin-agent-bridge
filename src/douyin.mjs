@@ -54,6 +54,8 @@ export function scanConversation() {
     p=p||{};
     const messageId=id(m.serverId||m.serverMessageId||m.server_message_id||m.messageId||m.msgId||m.id);
     const conversation=id(m.conversationId||m.conversation_id||m.conversationShortId||m.conversation_short_id);
+    const fullId=id(m.conversationId||m.conversation_id||m.conversation?.id);
+    const selfPair=fullId.match(/^\d+:1:(\d{5,32}):\1$/)?.[1];
     const conversationType=Number(m.conversationType??m.conversation_type??m.conversation?.type);
     if([1,2].includes(conversationType))conversationTypes.add(conversationType);
     const sender=id(m.sender?.uid||m.sender?.id||m.senderId||m.senderUserId||m.fromUserId||(typeof m.sender!=='object'?m.sender:''));
@@ -90,7 +92,7 @@ export function scanConversation() {
     // ranges identify that prefix; never strip an arbitrary @name by regex.
     const mentionPrefix=replyTo?.messageId&&Array.isArray(p.richTextInfos)?p.richTextInfos.find(r=>Number(r.location)===0&&Number.isSafeInteger(Number(r.length))&&Number(r.length)>0&&Number(r.length)<rawText.length&&/^\d{5,32}$/.test(id(r.info?.uid))&&rawText.startsWith('@')):null;
     const nativeReplyBody=mentionPrefix?{uid:id(mentionPrefix.info.uid),text:clean(rawText.slice(Number(mentionPrefix.length)))}:null;
-    messages.push({id:messageId,conversation,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,mentionedUids,...(replyTo?{replyTo}:{}),...(nativeReplyBody?{nativeReplyBody}:{})});
+    messages.push({id:messageId,conversation,selfPair,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,mentionedUids,...(replyTo?{replyTo}:{}),...(nativeReplyBody?{nativeReplyBody}:{})});
   }
   messages.sort((a,b)=>a.created-b.created);
   const interactiveRows=rows.filter(row=>{const e=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row,r=e.getBoundingClientRect(),x=r.x+Math.min(24,r.width/4),y=r.y+Math.min(24,r.height/4);if(x<0||y<0||x>=innerWidth||y>=innerHeight)return false;const hit=document.elementFromPoint(x,y);return !!hit&&(e===hit||e.contains(hit));}).length;
@@ -100,7 +102,9 @@ export function scanConversation() {
   if(idType)conversationTypes.add(Number(idType[1]));
   const type=conversationTypes.size===1?([...conversationTypes][0]===2?'group':'single'):'unknown';
   const ownIds=[...new Set(messages.filter(m=>m.direction==='out').map(m=>m.sender))],selfUid=ownIds.length===1?ownIds[0]:'';
-  const peer=current?{chatKey:chatKey||'peer:'+current.sender,peerUid:type==='group'?'group:'+chatKey:last?.sender||'',displayName:clean(title?.textContent)||last?.sender||chatKey,type,selfUid}:null;
+  // A single-chat participant pair verifies self-chat independently of its title.
+  const selfChat=type==='single'&&!!selfUid&&messages.every(m=>m.conversation===chatKey&&m.sender===selfUid)&&messages.some(m=>m.selfPair===selfUid);
+  const peer=current?{chatKey:chatKey||'peer:'+current.sender,peerUid:type==='group'?'group:'+chatKey:selfChat?selfUid:last?.sender||'',displayName:clean(title?.textContent)||last?.sender||chatKey,type,selfUid,...(selfChat?{selfChat:true}:{})}:null;
   return {url:location.href,title:clean(title?.textContent),peer,messages,accountMarker,documentInstance:scope.__douyinBridgeDocumentIdentity,diagnostics:{rows:rows.length,parsed:messages.length,interactiveRows,unknownDirection,withoutIdentity,conversationType:type,selfIdentified:!!selfUid,selfIdentityConflict:ownIds.length>1},loginRequired:!messages.length&&/扫码登录|登录后.*消息|验证码登录/.test(document.body.innerText)};
 }
 
@@ -117,7 +121,18 @@ export function isOwnerMessage(message,owner,armedAt) {
   // Do not interpret newly rendered old history as fresh user commands.
   return message.created>0&&message.created>=armedAt-1500&&['text','video'].includes(message.kind);
 }
-export function matchesPeer(observed,expected){return !!(observed&&expected&&observed.chatKey===expected.chatKey&&observed.peerUid===expected.peerUid&&(!expected.type||expected.type==='unknown'||observed.type===expected.type||expected.legacy&&observed.type==='unknown')&&(!expected.selfUid||observed.selfUid===expected.selfUid));}
+export function selfChatInput(message,owner,armedAt) {
+  if(message.sender!==owner.selfUid||message.conversation!==owner.chatKey||
+    !Number.isFinite(message.created)||message.created<armedAt||message.created<=0||
+    !/^\d{5,32}$/.test(message.id))return null;
+  // The bridge only sends text and reactions. A native video card can be
+  // forwarded as-is. Text requires an explicit trigger on the first line.
+  if(message.kind==='video'&&/^\d{5,32}$/.test(message.awemeId))return message;
+  const command=message.kind==='text'&&message.text.match(/^\/助手\s+(\S[\s\S]*)$/);
+  return command?{...message,text:command[1].trim()}:null;
+}
+export const selfReplyPrefix='AI 回复\n\n';
+export function matchesPeer(observed,expected){return !!(observed&&expected&&observed.chatKey===expected.chatKey&&observed.peerUid===expected.peerUid&&(!expected.type||expected.type==='unknown'||observed.type===expected.type||expected.legacy&&observed.type==='unknown')&&(!expected.selfChat||observed.selfChat===true)&&(!expected.selfUid||observed.selfUid===expected.selfUid));}
 
 export function safeMediaUrl(value) {
   try {

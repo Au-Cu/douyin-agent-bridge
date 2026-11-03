@@ -29,3 +29,32 @@ test('chat-only setup works without an Agent binding; start skips visible histor
 test('existing single-chat Agent can still receive interruption messages while a reply is sending',async()=>{let release;const native={scan:async()=>({peer:owner,messages:[{text:'/中断 1'}]}),send:()=>new Promise(r=>release=r)},browser=new PeerBrowser(native);const pending=browser.send(owner,'fixture');await new Promise(r=>setTimeout(r,0));assert.equal((await browser.scanPeer(owner)).messages[0].text,'/中断 1');release();await pending;});
 
 test('explicit recovery gathers only recent unsubmitted native mentions, never replays uncertain model turns',async()=>{const h=setup();try{const g=await configure(h),m1=message('90000000000021'),m2=message('90000000000022'),normal=message('90000000000023',{mentionedUids:[]});h.native.scan=async()=>({peer:group,messages:[m1,m2,normal],diagnostics:{}});await h.chats.baseline();h.s.db.prepare('INSERT INTO bot_messages VALUES(?,?,?,?,?,?,?,?,?,?)').run(group.chatKey+':'+m2.id,g.chatKey,g.revision,JSON.stringify(m2),'uncertain','已提交但结果未知','bot-old','turn-old',Date.now(),Date.now());assert.deepEqual(await h.chats.recover(g.chatKey),{recovered:1});assert.deepEqual(await h.chats.recover(g.chatKey),{recovered:0});await settle(h);assert.equal(h.sandbox.inputs.length,1);assert.equal(h.s.db.prepare('SELECT status FROM bot_messages WHERE id=?').get(group.chatKey+':'+m2.id).status,'uncertain');}finally{h.s.close();}});
+
+test('one unreachable chat backs off without blocking other peers or sending its later segments out of order',async()=>{
+  const h=setup();try{
+    const g=await configure(h),attempts=[];
+    h.engine.adapter={send:async(peer,text)=>{
+      attempts.push(text);
+      if(peer.chatKey===g.chatKey)throw new Error('无法恢复群聊');
+      return {messageId:'90000000000001'};
+    }};
+    const payload={chatbot:true,chatRevision:g.revision,group:'multipart',totalSegments:2};
+    const first=h.s.enqueueReply(g.chatKey,'group part 1',{priority:100,payload:{...payload,segment:1}});
+    const second=h.s.enqueueReply(g.chatKey,'group part 2',{priority:100,payload:{...payload,segment:2}});
+    const personal=h.s.enqueueReply(owner.chatKey,'personal result');
+    const row=id=>h.s.db.prepare('SELECT * FROM outbox WHERE id=?').get(id);
+    await h.engine.deliver();
+    assert.equal(row(first).status,'pending');
+    assert.equal(row(first).error,'无法恢复群聊');
+    assert.ok(row(first).next_attempt>Date.now());
+    assert.equal(h.s.pendingOutbox(20).some(x=>x.id===second),false);
+    // Make the stalled row eligible again before another peer gets its turn.
+    h.s.db.prepare('UPDATE outbox SET next_attempt=0 WHERE id=?').run(first);
+    await h.engine.deliver();
+    assert.equal(row(personal).status,'sent');
+    await h.engine.deliver();
+    assert.equal(JSON.parse(row(first).payload).deliveryRetry.failures,2);
+    assert.ok(row(first).next_attempt>Date.now()+10000);
+    assert.deepEqual(attempts,['group part 1','personal result','group part 1']);
+  }finally{h.s.close();}
+});
