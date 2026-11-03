@@ -223,15 +223,17 @@ try {
   await check('within-conversation navigation preserves scroll and setup return links depend on how the page was opened',async()=>{
     await page.setViewportSize({width:1280,height:720});
     await page.locator('a[data-view="chats"]').click();await page.locator('#chatDirectory a[href="#chats/peer/demo-group"]').click();
+    await page.locator('#botHistory').filter({hasText:'这段视频的关键交互是什么'}).waitFor();
     await page.locator('#activeChatRecords').evaluate(e=>e.style.minHeight='960px');
     await page.locator('#activeChatSettings').evaluate(e=>e.style.minHeight='960px');
     await page.evaluate(()=>scrollTo(0,225));
+    await page.waitForFunction(()=>Math.abs(scrollY-225)<=2);
     await page.locator('#conversationSettingsTab').evaluate(e=>e.click());
     await page.waitForFunction(()=>!document.querySelector('#activeChatSettings').hidden);
-    assert.ok(Math.abs(await page.evaluate(()=>scrollY)-225)<=2);
+    await page.waitForFunction(()=>Math.abs(scrollY-225)<=2);
     await page.locator('#conversationHistoryTab').evaluate(e=>e.click());
     await page.waitForFunction(()=>!document.querySelector('#activeChatRecords').hidden);
-    assert.ok(Math.abs(await page.evaluate(()=>scrollY)-225)<=2);
+    await page.waitForFunction(()=>Math.abs(scrollY-225)<=2);
     assert.equal(await page.locator('#chatDirectory a[href="#chats/account"]').count(),0);
     await page.setViewportSize({width:390,height:844});
     await page.locator('#chatBack').evaluate(e=>e.click());await page.locator('#chatSearch').waitFor();
