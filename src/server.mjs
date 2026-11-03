@@ -41,11 +41,14 @@ import {visibleSettings} from './harness-settings.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const startupSince=Date.now();
-const {values:args}=parseArgs({options:{port:{type:'string'},'data-dir':{type:'string'}}});
+const {values:args}=parseArgs({options:{port:{type:'string'},'data-dir':{type:'string'},'douyin-profile':{type:'string'}}});
+if(args['douyin-profile']&&(process.platform!=='win32'||!['default','recovery'].includes(args['douyin-profile'])))throw new Error('抖音浏览器配置仅在 Windows 支持 default 或 recovery');
 if(args['data-dir'])process.env.BRIDGE_DATA_DIR=args['data-dir'];
 const dataRoot=await prepareDataRoot(project),store=new Store(dataRoot);
 const log=(message,level)=>store.event(message,level);
-const adapter=new PeerBrowser(process.platform==='darwin'?new SafariDouyinAdapter({root:store.root,log}):new DouyinAdapter({root:store.root,log}));
+if(args['douyin-profile'])store.saveConfig({douyinBrowserProfile:args['douyin-profile'],resumeOnStartup:false});
+const profilePath=join(store.root,process.platform==='win32'&&store.config.douyinBrowserProfile==='recovery'?'browser-profile-recovery':'browser-profile');
+const adapter=new PeerBrowser(process.platform==='darwin'?new SafariDouyinAdapter({root:store.root,log}):new DouyinAdapter({root:store.root,profilePath,log}));
 const {codex,taskCodex,localCodex,desktopCodex,dsh,active}=runtimeClients({store,cwd:project,log});
 const media=new MediaProcessor({root:store.root,adapter,log});
 const preferences=new Preferences({store,codex});
@@ -191,9 +194,10 @@ const server=http.createServer(async(req,res)=>{
       }
       if(path==='/api/browser/open'){
         if(changingDouyinMode)throw new Error('正在切换使用模式，请稍后再打开抖音窗口');
-        await adapter.open(body.guided?undefined:store.config.owner);
-        if(body.guided){await adapter.focus();waitingForDouyinLogin=true;loginCompletedAt=0;}
-        return json(res,{ok:true});
+        let foreground=await adapter.open(body.guided?undefined:store.config.owner,{foreground:true});
+        if(process.platform==='darwin'){await adapter.focus();foreground=true;}
+        if(body.guided){waitingForDouyinLogin=true;loginCompletedAt=0;}
+        return json(res,{ok:true,foreground:foreground===true});
       }
       if(path==='/api/douyin/mode'){
         if(!['self','assistant'].includes(body.mode))throw new Error('无效的抖音使用模式');
@@ -346,7 +350,7 @@ server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被
 engine.start();codex.startAuthWatcher();
 let retentionWork=Promise.resolve();const retentionTimer=setInterval(()=>{retentionWork=Promise.allSettled([retention.run().catch(()=>log('归档保留策略检查失败，记录已保留','attention')),chatSessions.reconcileUncertain()]);},60000);
 const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 '+(active==='dsh'?'DeepSeek Harness':'Codex')+' 已连接');}).catch(e=>log('助手连接失败：'+e.message,'error'));
-if(!store.config.douyinRebindRequired&&(store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
+if(!store.config.douyinRebindRequired&&(store.config.owner||chats.bots().length)&&existsSync(profilePath))adapter.open(store.config.owner).then(async()=>{
   await codexReady;if(closing||!store.config.resumeOnStartup)return;
   try{await engine.arm(true,{resumeSince:startupSince});log('已恢复保存的会话与监听，补收本次启动期间的消息；已有记录不会重复执行');}catch(e){log('绑定和资料已保留，等待恢复抖音会话：'+e.message,'attention');}
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
