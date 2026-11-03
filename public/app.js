@@ -192,7 +192,7 @@ function renderOnboarding(runtime,agentReady){
   $('agentStatusCard').classList.toggle('needs-setup',!agentReady);
   $('asrStatusCard').classList.toggle('needs-setup',!runtime.asrReady);
   $('safariSetupHint').hidden=runtime.browserEngine!=='safari'||loggedIn||!mode;
-  $('browserStatus').textContent=loggedIn?'已登录':runtime.browser==='open_error'?'打开失败，可重试':runtime.browser==='waiting_login'?'等待登录':'未连接';
+  $('browserStatus').textContent=loggedIn?'已登录':runtime.browser==='loading'?'抖音聊天页正在加载':runtime.browser==='open_error'?'打开失败，可重试':runtime.browser==='waiting_login'?'等待登录':'未连接';
   $('ownerStatus').textContent=loggedIn?(owner?'已绑定 · '+owner.displayName:'已登录，可前往会话添加聊天'):(mode?modeName(mode):'选择账号使用方式后登录');
   if(!douyinModeDirty)$('douyinMode').value=mode;
   $('douyinModeStatus').textContent=mode?'当前设置 · '+modeName(mode):'尚未选择使用模式';
@@ -367,7 +367,8 @@ async function refresh(){
 action('prepareDesktopShared',async()=>{const r=await api('desktop/prepare',{});$('desktopSharedState').textContent='入口已准备。先结束桌面中的工作并完全退出，再运行：'+r.launcher+'。之后点击检查共享连接。';notice('共享入口已准备，当前聊天和任务未被中断。');});
 action('recoverDesktopTasks',async()=>{const r=await api('desktop/recover',{});notice('已恢复 '+r.recovered+' 项可证明未提交的写入受阻任务；结果不明、归档及中断的任务保持原状态。');});
 action('checkDesktopShared',async()=>{const r=await api('desktop/check',{});$('desktopSharedState').textContent=r.message;notice(r.message,!r.ready);});
-const openDouyin=async()=>{notice('正在恢复已保存的抖音登录态和绑定会话。只有平台要求重新验证时才需登录。');await api('browser/open',{});};
+const foregroundHint='抖音窗口已打开。如果桌面没有切过去，请点击任务栏里的 Edge 窗口。';
+const openDouyin=async()=>{notice('正在恢复已保存的抖音登录态和绑定会话。只有平台要求重新验证时才需登录。');const r=await api('browser/open',{});if(r.foreground===false)notice(foregroundHint,true);};
 if(!classic){
   action('setupAccountLink',async()=>{
     showSetupPrompt('是否使用助手账号？','请选择你要使用的账号模式。',[
@@ -396,8 +397,8 @@ async function chooseDouyinMode(mode,confirmed=false){
 }
 action('openBrowser',async()=>{
   if(classic)return openDouyin();
-  await api('browser/open',{guided:true});
-  if(!state.runtime.browserLoggedIn)showSetupPrompt('登录抖音','请在打开的抖音窗口完成登录，成功后会打开工作台。');
+  const r=await api('browser/open',{guided:true});
+  if(!state.runtime.browserLoggedIn)showSetupPrompt('登录抖音',(r.foreground===false?foregroundHint+' ':'')+'请在抖音窗口完成登录。如果页面只显示「登录」按钮，点它打开扫码浮窗。成功后会打开工作台。');
 });
 action('selectAiChat',async()=>{await api('ai-chats/select',{});observedAiChat=null;$('enableAiChat').disabled=true;$('observedChat').textContent='在抖音窗口打开目标聊天后，点击读取。';notice('轮询与发送已暂时暂停，请在抖音窗口选择需要配置的单聊或群聊。');});
 action('finishAiSelection',async()=>{await api('ai-chats/cancel',{});observedAiChat=null;notice('已恢复聊天轮询。');});
