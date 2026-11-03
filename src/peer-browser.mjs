@@ -2,6 +2,11 @@ import {AsyncLocalStorage} from 'node:async_hooks';
 import {matchesPeer} from './douyin.mjs';
 import {checkWork} from './execution.mjs';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const platformPeer=peer=>peer?.platformChatKey?{...peer,chatKey:peer.platformChatKey}:peer;
+function localScan(scan,peer){
+  if(!peer.platformChatKey||!matchesPeer(scan.peer,platformPeer(peer)))return scan;
+  return {...scan,peer:{...scan.peer,chatKey:peer.chatKey},messages:(scan.messages||[]).map(message=>message.conversation===peer.platformChatKey?{...message,conversation:peer.chatKey}:message)};
+}
 
 // One lease covers selection, stable collection and the complete native send /
 // reaction verification. Inference uses copied messages and never holds it.
@@ -30,19 +35,20 @@ export class PeerBrowser {
   }
   async select(peer){
     if(this.selecting)throw new Error('正在手动选择抖音聊天，自动切换暂时暂停');
-    checkWork();const before=await this.adapter.scan();if(matchesPeer(before.peer,peer))return before;
-    await this.adapter.restoreOwner(peer);checkWork();let snapshot=await this.adapter.scan();
-    if(!matchesPeer(snapshot.peer,peer))throw new Error('未核验到选定的抖音聊天，操作已停止');
+    const native=platformPeer(peer);
+    checkWork();const before=await this.adapter.scan();if(matchesPeer(before.peer,native))return localScan(before,peer);
+    await this.adapter.restoreOwner(native);checkWork();let snapshot=await this.adapter.scan();
+    if(!matchesPeer(snapshot.peer,native))throw new Error('未核验到选定的抖音聊天，操作已停止');
     this.stats.switches++;
     const start=this.now(),messages=new Map(),fingerprint=s=>JSON.stringify((s.messages||[]).map(m=>[m.id,m.text,m.awemeId]));let signature=fingerprint(snapshot),changed=start;
     for(;;){
-      for(const m of snapshot.messages||[])if(!m.conversation||m.conversation===peer.chatKey)messages.set(m.id,m);
+      for(const m of snapshot.messages||[])if(!m.conversation||m.conversation===native.chatKey)messages.set(m.id,m);
       const elapsed=this.now()-start;if(elapsed>=this.readTimeoutMs||elapsed>=this.settleMs&&this.now()-changed>=this.quietMs)break;
       await this.wait(Math.min(150,this.readTimeoutMs-elapsed));checkWork();snapshot=await this.adapter.scan();
-      if(!matchesPeer(snapshot.peer,peer))throw Object.assign(new Error('采集消息时会话或账号发生变化，已停止读取'),{code:'CHAT_CHANGED',notSubmitted:true});
+      if(!matchesPeer(snapshot.peer,native))throw Object.assign(new Error('采集消息时会话或账号发生变化，已停止读取'),{code:'CHAT_CHANGED',notSubmitted:true});
       const next=fingerprint(snapshot);if(next!==signature){signature=next;changed=this.now();}
     }
-    return {...snapshot,messages:[...messages.values()].sort((a,b)=>(a.created||0)-(b.created||0))};
+    return localScan({...snapshot,messages:[...messages.values()].sort((a,b)=>(a.created||0)-(b.created||0))},peer);
   }
   selection(active,kind='chat'){
     if(this.selecting&&this.selectionKind!==kind){
@@ -60,11 +66,12 @@ export class PeerBrowser {
   logout(){return this.serial(()=>this.adapter.logout(),{kind:'logout',priority:30});}
   scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect'});}
   async wantsRead(peer){
-    if(peer.selfChat||matchesPeer(this.adapter.lastScan?.peer,peer))return true;
+    const native=platformPeer(peer);
+    if(peer.selfChat||matchesPeer(this.adapter.lastScan?.peer,native))return true;
     if((this.pollBackoff?.get(peer.chatKey)||0)>this.now())return false;
     if(!this.adapter.inbox)return true;
     if(!this.inboxCache||this.now()-this.inboxCache.at>=1000){try{this.inboxCache={at:this.now(),value:await this.adapter.inbox()};this.stats.inboxChecks++;}catch{return true;}}
-    const rows=this.inboxCache.value?.entries?.filter(e=>e.ids?.includes(peer.chatKey))||[];
+    const rows=this.inboxCache.value?.entries?.filter(e=>e.ids?.includes(native.chatKey))||[];
     if(rows.length!==1||rows[0].unread===null||rows[0].unread===undefined)return true;
     if(rows[0].unread>0)return true;
     if(!this.visited.has(peer.chatKey)||this.now()-this.visited.get(peer.chatKey)>=this.reconcileMs)return true;
@@ -76,14 +83,14 @@ export class PeerBrowser {
     const key=JSON.stringify([peer,background]),shared=this.polls.get(key);if(shared){this.stats.coalesced++;return shared;}
     // Reading the already selected owner must remain available to /中断 while
     // a reply awaits confirmation. observeOnly never changes cached UI handles.
-    if((!this.multiple&&!peer.selfChat)||['send','reaction','acknowledge'].includes(this.active?.kind)&&matchesPeer(this.active.peer,peer)&&matchesPeer(this.adapter.lastScan?.peer,peer))return this.adapter.scan({observeOnly:true});
+    if((!this.multiple&&!peer.selfChat)||['send','reaction','acknowledge'].includes(this.active?.kind)&&matchesPeer(this.active.peer,peer)&&matchesPeer(this.adapter.lastScan?.peer,platformPeer(peer)))return this.adapter.scan({observeOnly:true}).then(scan=>localScan(scan,peer));
     const pending=this.serial(async()=>{if(this.selecting)throw new Error('正在面板中选择抖音聊天，轮询暂时暂停');if(background&&!await this.wantsRead(peer))return null;try{const scan=await this.select(peer);this.visited.set(peer.chatKey,this.now());this.pollBackoff?.delete(peer.chatKey);return scan;}catch(error){if(background&&!peer.selfChat){this.pollBackoff??=new Map();this.pollBackoff.set(peer.chatKey,this.now()+30000);}throw error;}},{kind:'poll',peer});this.polls.set(key,pending);
     pending.then(()=>this.polls.delete(key),()=>this.polls.delete(key));return pending;
   }
   mutate(kind,peer,fn){return this.serial(async()=>{checkWork();if(this.selecting)throw new Error('正在面板中选择聊天，操作暂时暂停');if(this.multiple||peer.selfChat)await this.select(peer);checkWork();return fn();},{kind,peer,priority:20});}
-  send(peer,...args){return this.mutate('send',peer,()=>this.adapter.send(peer,...args));}
-  react(peer,...args){return this.mutate('reaction',peer,()=>this.adapter.react(peer,...args));}
-  acknowledge(peer,...args){return this.mutate('acknowledge',peer,()=>this.adapter.acknowledge(peer,...args));}
+  send(peer,...args){return this.mutate('send',peer,()=>this.adapter.send(platformPeer(peer),...args));}
+  react(peer,...args){return this.mutate('reaction',peer,()=>this.adapter.react(platformPeer(peer),...args));}
+  acknowledge(peer,...args){return this.mutate('acknowledge',peer,()=>this.adapter.acknowledge(platformPeer(peer),...args));}
   async resolveVideo(...args){
     // Both native adapters resolve media only in their own validated video tab.
     // Release the chat lease after starting it, while retaining lifecycle cleanup.

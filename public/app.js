@@ -70,7 +70,7 @@ function renderChatDirectory(data,owner){
   const matchesAgent=!search||owner?.displayName?.toLocaleLowerCase().includes(search)||'个人 agent 自聊'.includes(search);
   updateHTML($('chatDirectory'),(matchesAgent?row('agent','个人 Agent',binding?modeName(mode)+' · '+binding.displayName:'尚未绑定'):'')+
     '<p class="section-caption">普通聊天</p>'+visible.map(c=>row('peer/'+encodeURIComponent(c.chatKey),c.displayName,(c.type==='group'?'群聊':'单聊')+' · '+(c.enabled?(c.deliveryPaused?'回复已暂停':'已启用'):'已停用'))).join('')+
-    (visible.length?'':'<p class="empty">'+(search?'没有匹配的聊天':'尚未配置普通聊天')+'</p>'));
+    (visible.length?'':'<p class="empty">'+(search?'没有匹配的聊天':data.accountVerified===false?(state.runtime.browserLoggedIn?'请打开当前账号发过消息的私信或群聊，核验身份后恢复普通聊天。':'登录抖音后会显示该账号的普通聊天。'):'尚未配置普通聊天')+'</p>'));
   const pane=selected||ownerIsAgent?'detail':destination==='add'?'add':'empty';
   for(const el of view.querySelectorAll('[data-chat-pane]'))el.hidden=el.dataset.chatPane!==pane;
   $('conversationTitle').textContent=(ownerIsAgent?'个人 Agent':selected?.displayName)||({add:'添加聊天',empty:'选择会话'})[pane];
@@ -117,6 +117,9 @@ if(!classic){
 function renderAiChats(){
   groupUI.render(state);
   const data=state.aiChats||{chats:[],messages:[]},owner=state.config.owner;
+  const chatScope=JSON.stringify(data.chats.filter(c=>c.mode==='chat').map(c=>c.chatKey).sort());
+  if(lastChatScope!==chatScope&&reviewDialog.open&&['chat','chat_session'].includes(reviewSelection?.kind)){reviewSelection=null;reviewDialog.close();}
+  lastChatScope=chatScope;
   const selected=classic?null:renderChatDirectory(data,owner);
   const backend=backendName(state.runtime.harness?.chat);
   $('chatsSummary').textContent='已启用 '+data.chats.filter(c=>c.enabled).length+' 个聊天 · '+backend+' · '+(state.config.chatModel||'默认模型')+(data.selecting?' · 正在选择聊天':'');
@@ -216,7 +219,7 @@ const deleteDialog=document.createElement('dialog');deleteDialog.id='deleteDialo
 deleteDialog.innerHTML='<h2 id="deleteHeading">彻底删除归档记录</h2><p id="deleteLabel"></p><p id="deleteCounts"></p><p id="deleteWarning"></p><label class="delete-check"><input id="deleteAcknowledge" type="checkbox">我理解这是永久删除，不能恢复显示</label><p id="deleteError" role="alert"></p><div class="button-row"><button id="cancelDelete" class="secondary">取消</button><button id="confirmDelete" class="delete-record" disabled>确认彻底删除</button></div>';
 document.body.append(deleteDialog);
 const reviewDialog=document.createElement('dialog');reviewDialog.id='deliveryReviewDialog';reviewDialog.setAttribute('aria-labelledby','reviewHeading');reviewDialog.innerHTML='<div class="section-title"><h2 id="reviewHeading">核实送达</h2><button id="closeDeliveryReview" class="secondary">关闭</button></div><p class="hint">自动核验读取助手端原聊天，不重发或补点表情。助手端有消息气泡不代表群成员可见；请在接收方确认后再人工标记。旧回复可以停止发送，原文仍保留。</p><div class="button-row"><button id="reconcileReviewBatch" class="secondary">一键核实本组</button></div><p id="reviewBatchStatus" role="status"></p><p id="reviewError" role="alert"></p><div id="deliveryReviewRows"></div>';
-document.body.append(reviewDialog);$('closeDeliveryReview').addEventListener('click',()=>reviewDialog.close());let reviewSelection=null;
+document.body.append(reviewDialog);$('closeDeliveryReview').addEventListener('click',()=>reviewDialog.close());let reviewSelection=null,lastChatScope='';
 let reviewBatchTimer;
 async function followReviewBatch(){
   clearTimeout(reviewBatchTimer);try{const {batch}=await api('outbox/reconcile-batch');if(!batch)return;const summary='只读核实：'+batch.checked+'/'+batch.total+' 条，已确认 '+batch.verified+' 条，仍需核实 '+batch.unresolved+' 条'+(batch.waiting?'；'+batch.waiting+' 条正在发送，本次未干预':'')+'。'+(batch.status==='running'?'正在核实…':batch.status==='done'?'核实结束；未重发文字或点击表情。':'检查已停止，未确认的记录继续保留。');$('reviewBatchStatus').textContent=summary;$('allDeliveryBatchStatus').textContent=summary;$('reconcileAllDeliveries').disabled=batch.status==='running';$('reconcileReviewBatch').disabled=batch.status==='running';if(batch.status==='running')reviewBatchTimer=setTimeout(followReviewBatch,1500);else{if(reviewDialog.open)await loadDeliveryReview();notice(summary);await refresh();}}catch(e){$('reviewBatchStatus').textContent=e.message;$('reconcileAllDeliveries').disabled=false;$('reconcileReviewBatch').disabled=false;}
@@ -398,7 +401,7 @@ async function chooseDouyinMode(mode,confirmed=false){
 action('openBrowser',async()=>{
   if(classic)return openDouyin();
   const r=await api('browser/open',{guided:true});
-  if(!state.runtime.browserLoggedIn)showSetupPrompt('登录抖音',(r.foreground===false?foregroundHint+' ':'')+'请在抖音窗口完成登录。如果页面只显示「登录」按钮，点它打开扫码浮窗。成功后会打开工作台。');
+  if(!state.runtime.browserLoggedIn)showSetupPrompt('登录抖音',(r.foreground===false?foregroundHint+' ':'')+(r.loginViaHome?'已打开抖音首页。请点页面上的「登录」打开扫码浮窗。':'请在抖音窗口完成登录。如果页面只显示「登录」按钮，点它打开扫码浮窗。')+'成功后会打开工作台。');
 });
 action('selectAiChat',async()=>{await api('ai-chats/select',{});observedAiChat=null;$('enableAiChat').disabled=true;$('observedChat').textContent='在抖音窗口打开目标聊天后，点击读取。';notice('轮询与发送已暂时暂停，请在抖音窗口选择需要配置的单聊或群聊。');});
 action('finishAiSelection',async()=>{await api('ai-chats/cancel',{});observedAiChat=null;notice('已恢复聊天轮询。');});

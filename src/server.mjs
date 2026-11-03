@@ -49,6 +49,21 @@ const log=(message,level)=>store.event(message,level);
 if(args['douyin-profile'])store.saveConfig({douyinBrowserProfile:args['douyin-profile'],resumeOnStartup:false});
 const profilePath=join(store.root,process.platform==='win32'&&store.config.douyinBrowserProfile==='recovery'?'browser-profile-recovery':'browser-profile');
 const adapter=new PeerBrowser(process.platform==='darwin'?new SafariDouyinAdapter({root:store.root,log}):new DouyinAdapter({root:store.root,profilePath,log}));
+const storedAccounts=store.db.prepare("SELECT value FROM app_settings WHERE key='douyinAccountWitnesses'").get();
+const accountWitnesses=new Map(Object.entries(storedAccounts?JSON.parse(storedAccounts.value):{}));
+function currentDouyinAccount(){
+  const scan=adapter.lastScan;
+  if(!adapter.page||!scan?.loggedIn||scan.loginRequired||scan.diagnostics?.selfIdentityConflict)return '';
+  const key=scan.accountKey,uid=scan.accountUid;
+  if(/^\d{5,32}$/.test(uid||'')){
+    if(key&&accountWitnesses.get(key)!==uid){
+      accountWitnesses.set(key,uid);
+      store.db.prepare("INSERT OR REPLACE INTO app_settings VALUES('douyinAccountWitnesses',?,?)").run(JSON.stringify(Object.fromEntries(accountWitnesses)),Date.now());
+    }
+    return uid;
+  }
+  return accountWitnesses.get(key)||'';
+}
 const {codex,taskCodex,localCodex,desktopCodex,dsh,active}=runtimeClients({store,cwd:project,log});
 const media=new MediaProcessor({root:store.root,adapter,log});
 const preferences=new Preferences({store,codex});
@@ -56,10 +71,14 @@ const conversations=new Conversations({store,codex,preferences});
 const visual=new VisualAnalyzer({codex,log,settings:()=>preferences.agentWork()});
 const engine=new BridgeEngine({store,adapter,media,codex,taskCodex,visual,preferences,conversations});
 const deletion=new ArchivedDeletion({store,engine,conversations});
-const codeSandbox=new CodeSandbox({root:store.root}),chatCapabilities=()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox}),chatSandbox=new ChatRuntime({store,sandboxes:{codex:new ChatSandbox({root:store.root,codex:localCodex,log,codeSandbox,capabilities:chatCapabilities}),dsh:new DshChatSandbox({root:store.root,dsh,log,codeSandbox,capabilities:chatCapabilities})}}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
+const codeSandbox=new CodeSandbox({root:store.root}),chatCapabilities=()=>({webSearch:store.config.chatWebSearch,publicTools:true,codeSandbox:store.config.chatCodeSandbox}),chatSandbox=new ChatRuntime({store,sandboxes:{codex:new ChatSandbox({root:store.root,codex:localCodex,log,codeSandbox,capabilities:chatCapabilities}),dsh:new DshChatSandbox({root:store.root,dsh,log,codeSandbox,capabilities:chatCapabilities})}}),chats=new Chats({store,adapter,sandbox:chatSandbox,preferences,account:currentDouyinAccount,canChangeAgent:()=>!engine.busy&&!engine.taskBusy&&!engine.picking&&!engine.scanBusy&&!engine.outboxBusy&&![...engine.interrupts.scopes.values()].some(s=>s.users>0)});engine.chats=chats;
 preferences.chatCatalogProvider=harness=>harness==='dsh'?chatSandbox.catalog(harness):codex.models('codex');
 const deliveryReview=new DeliveryReview({store,adapter,engine,chats});engine.deliveryReview=deliveryReview;chats.deliveryReview=deliveryReview;
 const chatSessions=new ChatSessions({store,chats,runtime:chatSandbox});chats.sessions=chatSessions;chats.media=new ChatMedia({store,media,preferences});
+function requireVisibleChatSession(id){
+  const session=chatSessions.get(id);
+  if(!session||chats.isInactive(session.peer))throw new Error('请登录此聊天所属的抖音账号后查看或处理');
+}
 const retention=new ArchiveRetention({store,deletion,sessions:chatSessions});
 let sandboxPreparing=false;
 const token=randomBytes(32).toString('hex');let asrInstalling=false,asrProgress='',asrError='';let closing=false;
@@ -98,6 +117,13 @@ const server=http.createServer(async(req,res)=>{
         const visualReports=new Map(),readVisualReport=item=>{if(!visualReports.has(item.id))visualReports.set(item.id,readFile(join(dirname(item.path),'visual-report.json'),'utf8').then(JSON.parse));return visualReports.get(item.id);};
         const knowledgeView=async k=>{try{const v=await readVisualReport(k);return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}};
         const snapshot=store.snapshot();snapshot.config={...visibleSettings(store.config,active),agentBindings:agentBindings(store.config)};snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(knowledgeView));
+        const inactive=new Set(chats.inactiveKeys());
+        snapshot.config.aiChats=snapshot.config.aiChats.filter(c=>!inactive.has(c.chatKey));
+        snapshot.outbox=snapshot.outbox.filter(o=>!inactive.has(o.peer)||!JSON.parse(o.payload||'{}').chatbot);
+        snapshot.config.conversationOverrides=Object.fromEntries(Object.entries(snapshot.config.conversationOverrides||{}).filter(([key])=>{
+          if(!key.startsWith('conversation:["chat",'))return true;
+          try{return !inactive.has(JSON.parse(key.slice('conversation:'.length))[1]);}catch{return false;}
+        }));
         snapshot.recentKnowledge=await Promise.all(store.knowledgeList({scope:'current'}).slice(0,3).map(knowledgeView));
         snapshot.retention=retention.state();snapshot.deliveryReviewBatch=deliveryReview.batchState();const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
         const chat=url.searchParams.get('chat')||'',historyPeer=chat&&(chats.get(chat)||Object.values(agentBindings(store.config)).some(p=>p?.chatKey===chat))?chat:'';
@@ -109,8 +135,8 @@ const server=http.createServer(async(req,res)=>{
       if(req.method==='GET'&&path==='/api/commands')return json(res,{text:commandHelp});
       if(req.method==='GET'&&path==='/api/outbox/review')return json(res,deliveryReview.view(url.searchParams.get('kind'),String(url.searchParams.get('id')||'')));
       if(req.method==='GET'&&path==='/api/outbox/reconcile-batch')return json(res,{batch:deliveryReview.batchState()});
-      if(req.method==='GET'&&path==='/api/chat-sessions')return json(res,{sessions:chatSessions.list(String(url.searchParams.get('peer')||''),{scope:archiveScope(url.searchParams.get('scope')||'all')})});
-      if(req.method==='GET'&&path==='/api/chat-sessions/read')return json(res,await chatSessions.transcript(String(url.searchParams.get('id')||'')));
+      if(req.method==='GET'&&path==='/api/chat-sessions'){const peer=String(url.searchParams.get('peer')||'');return json(res,{sessions:chats.isInactive(peer)?[]:chatSessions.list(peer,{scope:archiveScope(url.searchParams.get('scope')||'all')})});}
+      if(req.method==='GET'&&path==='/api/chat-sessions/read'){const id=String(url.searchParams.get('id')||'');requireVisibleChatSession(id);const transcript=await chatSessions.transcript(id);requireVisibleChatSession(id);return json(res,transcript);}
       if(req.method==='GET'&&path==='/api/threads'){const internal=new Set(store.db.prepare('SELECT thread FROM need_threads').all().map(r=>r.thread));return json(res,(await codex.threads(url.searchParams.get('q')||'',harnessValue(url.searchParams.get('harness')||active))).filter(t=>!internal.has(t.id)));}
       if(req.method==='GET'&&path==='/api/approvals')return json(res,[...codex.approvals.entries(),...taskCodex.approvals.entries()].map(([id,r])=>({id,description:JSON.stringify(r.params,null,2)})));
       if(req.method==='GET'&&path==='/api/browser/reaction-diagnostics')return json(res,{lastReceipt:adapter.lastReceipt||null,menu:adapter.lastReactionDiagnostic||null});
@@ -150,6 +176,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/ai-chats/recover')return json(res,await chats.recover(body.chatKey));
       if(path==='/api/ai-chats/save'){
         if(body.enabled===true&&body.mode==='chat')await chatSandbox.prepare();
+        if(body.mode==='chat')await adapter.scan();
         const saved=chats.configure(body);configurePanel(store,'chats');return json(res,saved);
       }
       if(path==='/api/tasks/interrupt')return json(res,await engine.interrupts.request(String(body.id||'')));
@@ -157,8 +184,8 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/chat-sessions/reset'){if(body.confirmed!==true||body.stopPending!==undefined&&typeof body.stopPending!=='boolean')throw new Error('请明确确认清空群聊上下文');return json(res,await chatSessions.reset(String(body.peer||''),()=>preferences.chatWork(undefined,chats.get(String(body.peer||''))),store.config.chatHarness||'codex',{stopPending:body.stopPending===true}));}
       if(path==='/api/ai-chats/pause-delivery')return json(res,chats.pauseDelivery(String(body.peer||''),body.paused));
       if(path==='/api/outbox/recipient-invisible')return json(res,deliveryReview.reportInvisible(body.id,{confirmed:body.confirmed}));
-      if(path==='/api/chat-sessions/archive'){if(typeof body.archived!=='boolean')throw new Error('请选择归档或恢复');return json(res,await chatSessions.archive(String(body.id||''),body.archived));}
-      if(path==='/api/chat-sessions/reconcile')return json(res,await chatSessions.reconcile(String(body.id||'')));
+      if(path==='/api/chat-sessions/archive'){const id=String(body.id||'');if(typeof body.archived!=='boolean')throw new Error('请选择归档或恢复');requireVisibleChatSession(id);return json(res,await chatSessions.archive(id,body.archived));}
+      if(path==='/api/chat-sessions/reconcile'){const id=String(body.id||'');requireVisibleChatSession(id);return json(res,await chatSessions.reconcile(id));}
       if(path==='/api/ai-chats/retry'){if(body.confirmed!==true)throw new Error('请确认重试尚未提交的消息');return json(res,chats.retryUnsubmitted(body.id));}
       if(path==='/api/archive/delete/prepare')return json(res,deletion.prepare(body.kind,String(body.id||'')));
       if(path==='/api/archive/delete')return json(res,deletion.remove(body));
@@ -197,7 +224,7 @@ const server=http.createServer(async(req,res)=>{
         let foreground=await adapter.open(body.guided?undefined:store.config.owner,{foreground:true});
         if(process.platform==='darwin'){await adapter.focus();foreground=true;}
         if(body.guided){waitingForDouyinLogin=true;loginCompletedAt=0;}
-        return json(res,{ok:true,foreground:foreground===true});
+        return json(res,{ok:true,foreground:foreground===true,loginViaHome:adapter.lastScan?.loginViaHome===true});
       }
       if(path==='/api/douyin/mode'){
         if(!['self','assistant'].includes(body.mode))throw new Error('无效的抖音使用模式');
@@ -350,15 +377,18 @@ server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被
 engine.start();codex.startAuthWatcher();
 let retentionWork=Promise.resolve();const retentionTimer=setInterval(()=>{retentionWork=Promise.allSettled([retention.run().catch(()=>log('归档保留策略检查失败，记录已保留','attention')),chatSessions.reconcileUncertain()]);},60000);
 const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 '+(active==='dsh'?'DeepSeek Harness':'Codex')+' 已连接');}).catch(e=>log('助手连接失败：'+e.message,'error'));
-if(!store.config.douyinRebindRequired&&(store.config.owner||chats.bots().length)&&existsSync(profilePath))adapter.open(store.config.owner).then(async()=>{
+if(!store.config.douyinRebindRequired&&(store.config.owner||chats.all().some(c=>c.mode==='chat'&&c.enabled))&&existsSync(profilePath))adapter.open(store.config.owner).then(async()=>{
+  await adapter.scan();
   await codexReady;if(closing||!store.config.resumeOnStartup)return;
   try{await engine.arm(true,{resumeSince:startupSince});log('已恢复保存的会话与监听，补收本次启动期间的消息；已有记录不会重复执行');}catch(e){log('绑定和资料已保留，等待恢复抖音会话：'+e.message,'attention');}
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
 const statusTimer=setInterval(()=>{
   if(!adapter.page||adapter.sending)return;
-  adapter.scan().then(scan=>{
+  adapter.scan().then(async scan=>{
     if(!waitingForDouyinLogin||!scan.loggedIn||changingDouyinMode)return;
-    waitingForDouyinLogin=false;loginCompletedAt=Date.now();returnToWorkbench();
+    waitingForDouyinLogin=false;
+    if(scan.loginViaHome)await adapter.open().catch(()=>log('抖音已登录，聊天页暂未打开，请在窗口打开抖音私信','attention'));
+    loginCompletedAt=Date.now();returnToWorkbench();
   }).catch(()=>{});
 },2000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();

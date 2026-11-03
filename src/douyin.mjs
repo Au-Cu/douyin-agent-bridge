@@ -108,7 +108,7 @@ export function scanConversation() {
   const peer=current?{chatKey:chatKey||'peer:'+current.sender,peerUid:type==='group'?'group:'+chatKey:selfChat?selfUid:last?.sender||'',displayName:clean(title?.textContent)||last?.sender||chatKey,type,selfUid,...(selfChat?{selfChat:true}:{})}:null;
   const bodyText=clean(document.body.innerText);
   const visibleLoginControl=[...document.querySelectorAll('button,a,[role="button"]')].some(e=>e.getClientRects().length&&/^登录$/.test(clean(e.textContent)));
-  const loginRequired=!messages.length&&(/扫码登录|登录后.*消息|验证码登录|登录抖音|登录后查看/.test(bodyText)||visibleLoginControl);
+  const loginRequired=!messages.length&&(visibleLoginControl||(location.pathname==='/'?/扫码登录|验证码登录/.test(bodyText):/扫码登录|登录后.*消息|验证码登录|登录抖音|登录后查看/.test(bodyText)));
   const hasInbox=!!document.querySelector('[class*="conversationConversationItemwrapper"],[data-e2e="conversation-item"]');
   const chatLoading=location.pathname==='/chat'&&!peer&&!loginRequired&&!hasInbox&&(
     !bodyText||/^(?:抖音聊天\s*)+(?:加载中[.…]*)?$/.test(bodyText)||
@@ -263,6 +263,13 @@ export class DouyinAdapter {
   constructor({root,profilePath=join(root,'browser-profile'),log=()=>{}}){Object.assign(this,{root,profilePath,log});this.status='closed';this.sending=false;}
   async open(owner,{foreground=false}={}) {
     if(this.context&&this.page&&!this.page.isClosed?.()){
+      if(foreground&&this.isLoginHome(this.page)){
+        const activated=await this.focus(),scan=await this.scan();
+        if(!scan.loggedIn&&scan.loginRequired){
+          await this.openHomeLoginDialog();
+          return activated||this.focus();
+        }
+      }
       if(!this.openFailed&&this.page.url().startsWith('https://www.douyin.com/chat')){
         if(!foreground)return this.page.bringToFront();
         const activated=await this.focus();
@@ -297,6 +304,14 @@ export class DouyinAdapter {
     if(owner)await this.restoreOwner(owner).catch(e=>this.log('请在项目窗口选回用户会话：'+e.message));
     return activated||(foreground?this.focus():undefined);
   }
+  isLoginHome(page){return !!page&&!page.isClosed()&&/^https:\/\/www\.douyin\.com\/(?:[?#].*)?$/.test(page.url());}
+  async openHomeLoginDialog(){
+    if(!this.isLoginHome(this.page))return;
+    const qr=this.page.getByText(/扫码登录|验证码登录/).filter({visible:true}).first();
+    if(await qr.isVisible())return;
+    const login=this.page.getByText('登录',{exact:true}).filter({visible:true});
+    if(await login.count()===1)await login.click({timeout:2500}).catch(()=>{});
+  }
   async recoverChatStartup(waitMs){
     const loaded=async timeout=>{
       const until=Date.now()+timeout;
@@ -313,16 +328,21 @@ export class DouyinAdapter {
     const cdp=await this.context.newCDPSession(this.page);
     try{
       await cdp.send('Network.setBypassServiceWorker',{bypass:true});
-      await Promise.all([
+      const reloaded=await Promise.all([
         this.page.waitForEvent('domcontentloaded',{timeout:15000}),
         cdp.send('Page.reload',{ignoreCache:true})
-      ]);
-      if(await loaded(10000))return;
+      ]).then(()=>true,()=>false);
+      if(reloaded&&await loaded(10000))return;
       if(new URL(this.page.url()).searchParams.has('isPopup')){
         await this.page.goto('https://www.douyin.com/chat',{waitUntil:'domcontentloaded',timeout:15000});
         if(await loaded(10000))return;
       }
-      throw new Error('抖音聊天页仍未显示登录框或会话。已重载并检查普通聊天入口，请稍后重试。');
+      const current=await this.scan();
+      if(!current.loggedIn&&!current.peer){
+        await this.page.goto('https://www.douyin.com/',{waitUntil:'domcontentloaded',timeout:15000});
+        if(await loaded(12000)){await this.openHomeLoginDialog();return;}
+      }
+      throw new Error('抖音聊天页和首页暂未显示登录入口。请在专用窗口打开抖音首页，或稍后重试。');
     }finally{
       await cdp.send('Network.setBypassServiceWorker',{bypass:false}).catch(()=>{});
       await cdp.detach().catch(()=>{});
@@ -347,7 +367,7 @@ export class DouyinAdapter {
   }
   async scan({observeOnly=false}={}) {
     if(!this.context)return {peer:null,messages:[],diagnostics:{},loginRequired:true};
-    const candidates=this.context.pages().filter(p=>!p.isClosed()&&p.url().startsWith('https://www.douyin.com/chat'));
+    const candidates=this.context.pages().filter(p=>!p.isClosed()&&(p.url().startsWith('https://www.douyin.com/chat')||p===this.page&&this.isLoginHome(p)));
     const scans=[];
     for(const page of candidates)for(const frame of page.frames()){
       if(!/^https:\/\/(www\.)?douyin\.com\//.test(frame.url()))continue;
@@ -358,7 +378,10 @@ export class DouyinAdapter {
     const cookies=await this.context.cookies('https://www.douyin.com/'),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
     const marker=identityCookies.length?createHash('sha256').update(identityCookies.join(';')).digest('hex'):'';
     const value=bindScanIdentity(this,raw,marker);
+    value.loginViaHome=!!best&&this.isLoginHome(best.page);
     value.loggedIn=!raw.loginRequired&&!raw.diagnostics.chatLoading&&cookies.some(c=>/^(sessionid|sessionid_ss)$/.test(c.name)&&c.value);
+    const accountCookie=cookies.find(c=>c.name==='uid_tt'&&c.value)||cookies.find(c=>c.name==='uid_tt_ss'&&c.value);
+    if(value.loggedIn&&accountCookie)value.accountKey=createHash('sha256').update('douyin-edge:'+accountCookie.value).digest('hex');
     if(!observeOnly){if(best){this.page=best.page;this.chatFrame=best.frame;}this.lastScan=value;this.status=value.diagnostics.chatLoading?'loading':value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
   }
   async uiDiagnostics(){
