@@ -1,4 +1,5 @@
 import {modelSettings,saveModelSettings} from './harness-settings.mjs';
+import {effectiveConversation,overrideKey} from './conversation-config.mjs';
 import {threadHarness} from './harness.mjs';
 export const effortNames={none:'无',minimal:'最小',low:'低',medium:'中',high:'高',xhigh:'极高',max:'Max',ultra:'Ultra'};
 const clean=s=>String(s||'').toLowerCase().replace(/[\s_.-]/g,'');
@@ -33,8 +34,33 @@ export class Preferences{
     return {model:model.model,effort,serviceTier:!light&&config.fastMode?fastTier.id:'default'};
   }
   work(){return this.resolve(modelSettings(this.store.config,this.codex.harnessName||'codex'));}
-  workFor(thread){const harness=threadHarness(thread);return this.resolve(modelSettings(this.store.config,harness),{harness});}
-  chatWork(harness=this.store.config.chatHarness||'codex'){return this.resolve(modelSettings(this.store.config,harness,{chat:true}),{textOnly:true,chat:true,harness});}
+  agentConfig(harness=this.codex.harnessName||'codex'){return effectiveConversation(this.store.config,this.store.config.owner,harness);}
+  agentWork(){const harness=this.codex.harnessName||'codex';return this.resolve(this.agentConfig(harness),{harness});}
+  workFor(thread){const harness=threadHarness(thread);return this.resolve(this.agentConfig(harness),{harness});}
+  chatWork(harness=this.store.config.chatHarness||'codex',peer){return this.resolve(effectiveConversation(this.store.config,peer,harness,{chat:true}),{textOnly:true,chat:true,harness});}
+  async updateConversation({peer,chat,harness,patch,current}){
+    const key=overrideKey(peer,chat),previous=this.store.config.conversationOverrides?.[key];
+    const model={};
+    if(patch.model!==undefined&&patch.model!==null)model.model=chooseModel(patch.model,await (chat?this.chatCatalog(harness):this.catalog(harness)));
+    if(patch.reasoningEffort!==undefined&&patch.reasoningEffort!==null)model.reasoningEffort=effortValue(patch.reasoningEffort);
+    if(patch.fastMode!==undefined&&patch.fastMode!==null){if(typeof patch.fastMode!=='boolean')throw new Error('快速模式必须选择继承、开启或关闭');model.fastMode=patch.fastMode;}
+    const next={...previous,models:{...previous?.models,[harness]:model}};
+    for(const [field,min,max] of [['contextBudget',4000,chat?96000:200000],...(!chat?[['maxVideoSeconds',30,7200],['visualFps',2,8]]:[])]){
+      const value=patch[field];
+      if(value==null){delete next[field];continue;}
+      if(!Number.isInteger(value)||value<min||value>max||field==='visualFps'&&![2,4,8].includes(value))throw new Error('会话覆盖值超出可用范围');
+      next[field]=value;
+    }
+    if(!chat){
+      if(patch.autoRoute==null)delete next.autoRoute;
+      else{if(typeof patch.autoRoute!=='boolean')throw new Error('需求路由必须选择继承、开启或关闭');next.autoRoute=patch.autoRoute;}
+    }
+    const defaults=modelSettings(this.store.config,harness,{chat});
+    if(Object.keys(model).length)await this.resolve({...defaults,...model},{textOnly:chat,chat,harness});
+    if(!current()||this.store.config.conversationOverrides?.[key]!==previous||JSON.stringify(modelSettings(this.store.config,harness,{chat}))!==JSON.stringify(defaults))throw new Error('会话或设置已变化，请刷新后重新保存');
+    this.store.saveConfig({conversationOverrides:{...this.store.config.conversationOverrides,[key]:next}});
+    return next;
+  }
   light(preferWork=false){return this.resolve(modelSettings(this.store.config,this.codex.harnessName||'codex'),{light:true,preferWork});}
   update(patch){const task=(this.updating||Promise.resolve()).catch(()=>{}).then(()=>this.applyUpdate(patch));this.updating=task;return task;}
   updateChat(patch){const task=(this.updating||Promise.resolve()).catch(()=>{}).then(()=>this.applyChatUpdate(patch));this.updating=task;return task;}
@@ -60,6 +86,6 @@ export class Preferences{
     const keys=['model','reasoningEffort','fastMode','autoRoute','contextBudget','visualFps'],modelKeys=['model','reasoningEffort','fastMode'];if(modelKeys.some(k=>k in patch))saveModelSettings(this.store,harness,Object.fromEntries(modelKeys.map(k=>[k,next[k]])));this.store.saveConfig(Object.fromEntries(keys.filter(k=>!modelKeys.includes(k)&&k in patch).map(k=>[k,next[k]])));
     if(keys.some(k=>k!=='visualFps'&&k in patch))configurePanel(this.store,'model');return this.store.config;
   }
-  describe(){const c={...this.store.config,...modelSettings(this.store.config,this.codex.harnessName||'codex')};const name=this.codex.harnessName==='dsh'?'DeepSeek Harness':'Codex';return `助手：${name}\n模型：${c.model||name+' 默认'}\n强度：${effortNames[c.reasoningEffort]||c.reasoningEffort||name+' 默认'}\n快速：${c.fastMode?'开':'关'}；密度：${c.visualFps} 帧/秒\n自动分聊：${c.autoRoute?'开':'关'}；上下文预算：${c.contextBudget} tokens`;}
+  describe(){const c={...this.store.config,...this.agentConfig()};const name=this.codex.harnessName==='dsh'?'DeepSeek Harness':'Codex';return `助手：${name}\n模型：${c.model||name+' 默认'}\n强度：${effortNames[c.reasoningEffort]||c.reasoningEffort||name+' 默认'}\n快速：${c.fastMode?'开':'关'}；密度：${c.visualFps} 帧/秒\n自动分聊：${c.autoRoute?'开':'关'}；上下文预算：${c.contextBudget} tokens`;}
 }
 import {configurePanel} from './ui-state.mjs';

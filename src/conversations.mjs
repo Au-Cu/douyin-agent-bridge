@@ -52,7 +52,7 @@ export class Conversations{
   }
   async create(title='新需求',{activate=true}={}){
     checkWork();
-    const settings=await this.preferences.work(),n=this.needs.create(String(title||'新需求').slice(0,60));
+    const settings=await (this.preferences.agentWork?.()||this.preferences.work()),n=this.needs.create(String(title||'新需求').slice(0,60));
     const thread=await this.codex.createCoordinator(coordinatorTools,false,{name:'抖音 · '+n.title,...settings});
     checkWork();
     const result=this.needs.bindThread(n.id,thread);if(activate)this.needs.activate(n.id);return result;
@@ -80,7 +80,7 @@ export class Conversations{
     }
     const candidate=this.needs.get(capture.needId||this.store.config.activeNeed),current=candidate&&!candidate.archived&&!(candidate.archiveDesired&&candidate.archiveState!=='done')?candidate:null,directory=this.needs.directory(message.text||message.title||'');
     let decision={action:'continue',needId:current?.id||'',title:current?.title||'新需求',reason:'自动分聊已关闭'};
-    if(this.store.config.autoRoute){
+    if(this.preferences.agentConfig?.().autoRoute??this.store.config.autoRoute){
       const segments=learned?.visual?.segments||[];
       const indices=Array.from({length:Math.min(20,segments.length)},(_,i)=>Math.round(i*(segments.length-1)/Math.max(1,Math.min(20,segments.length)-1)));
       const newMessage=message.kind==='video'?{kind:'video',title:learned?.title||message.title,videoId:message.awemeId,visualCoverage:learned?.visual?{status:learned.visual.status,seconds:learned.seconds,fps:learned.visual.fps}:null,observedContent:indices.length?indices.map(i=>({start:segments[i].start,end:segments[i].end,observation:segments[i].text.slice(0,160)})):learned?.visual?.notes?.slice(0,2200),narration:learned?.transcript?.slice(0,500)}:{kind:'text',text:message.text};
@@ -107,13 +107,13 @@ export class Conversations{
     need=this.needs.get(need.id);
     if(need.archived||need.archiveDesired&&need.archiveState!=='done')throw new Error('需求 '+need.number+' 已归档或正在归档，请先 /恢复需求 '+need.number);
     const bytes=tokenEstimate(message.text||message.title||'')+1500;
-    const budget=Math.min(this.store.config.contextBudget,need.model_window?Math.floor(need.model_window*.8):Infinity);
+    const budget=Math.min(this.preferences.agentConfig?.().contextBudget??this.store.config.contextBudget,need.model_window?Math.floor(need.model_window*.8):Infinity);
     if(need.context_tokens+bytes>budget)need=await this.rollover(need);
     this.needs.reserve(message,need);return {needId:need.id,threadId:need.thread,action,reason,memory:need.memory,historyPath:this.needs.history(need.id)};
   }
   async prepareInput(route,input,message){
     let n=this.needs.get(route.needId),context={type:'text',text:'当前需求记录：'+JSON.stringify(this.context(route))};
-    const budget=Math.min(this.store.config.contextBudget,n.model_window?Math.floor(n.model_window*.8):Infinity),reserve=Math.min(4000,Math.floor(budget*.15));
+    const budget=Math.min(this.preferences.agentConfig?.().contextBudget??this.store.config.contextBudget,n.model_window?Math.floor(n.model_window*.8):Infinity),reserve=Math.min(4000,Math.floor(budget*.15));
     let outgoing=[context,...input],size=tokenEstimate(JSON.stringify(outgoing))+tokenEstimate(assistantInstructions);
     if(n.context_tokens>0&&n.context_tokens+size+reserve>budget){n=await this.rollover(n);route={...route,threadId:n.thread};context={type:'text',text:'当前需求交接：'+JSON.stringify(this.context(route))};outgoing=[context,...input];size=tokenEstimate(JSON.stringify(outgoing))+tokenEstimate(assistantInstructions);}
     if(size+reserve>budget){

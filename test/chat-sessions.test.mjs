@@ -8,7 +8,7 @@ function setup(root){
   const chats=new Chats({store,adapter:{},sandbox:{},preferences:{}}),native=new Map(),calls=[];
   const runtime={async createSession(h,p){calls.push(['create',h,p]);const id='session-'+calls.length;native.set(id,{archived:false,turns:[]});return id;},async readSession(_h,id){calls.push(['read',id]);return native.get(id);},async archiveSession(h,id,value){calls.push(['archive',h,id,value]);if(h==='dsh')return {supported:false,reason:'DSH ACP 不支持原生归档，仅控制台归档'};native.get(id).archived=value;return {supported:true};}};
   const sessions=new ChatSessions({store,chats,runtime});chats.sessions=sessions;
-  const bot=(id,status='done',peer='one',text='用户消息',result='已送达的回答')=>{store.db.prepare('INSERT INTO bot_messages VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,peer,'r-'+peer,JSON.stringify({id,text,kind:'text'}),status,result,'','',Date.now(),Date.now());return {id,peer,revision:'r-'+peer};};
+  const bot=(id,status='done',peer='one',text='用户消息',result='已送达的回答')=>{store.db.prepare('INSERT INTO bot_messages VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,peer,chats.get(peer).revision,JSON.stringify({id,text,kind:'text'}),status,result,'','',Date.now(),Date.now());return {id,peer,revision:chats.get(peer).revision};};
   return {store,chats,sessions,runtime,native,calls,bot};
 }
 test('each group reuses exactly its own persistent chat and budget handoff contains only its delivered exchanges',async()=>{

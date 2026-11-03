@@ -250,15 +250,16 @@ export class BridgeEngine {
   async processNext() {
     if(!this.store.config.enabled||this.chats&&!this.chats.agentEnabled())return;
     // Approval replies must be handled while the model is paused awaiting approval.
-    const urgent=this.store.db.prepare("SELECT * FROM messages WHERE status='new' AND kind='text' AND trim(json_extract(body,'$.text')) LIKE '/中断%' ORDER BY created LIMIT 20").all();for(const row of urgent)if(parseCommand(JSON.parse(row.body).text)?.name==='interrupt'&&this.handleControl(JSON.parse(row.body)))return;
-    const pending=this.store.pendingMessages();
+    const peer=this.store.config.owner?.chatKey||'';
+    const urgent=this.store.db.prepare("SELECT * FROM messages WHERE status='new' AND (?='' OR peer=?) AND kind='text' AND trim(json_extract(body,'$.text')) LIKE '/中断%' ORDER BY created LIMIT 20").all(peer,peer);for(const row of urgent)if(parseCommand(JSON.parse(row.body).text)?.name==='interrupt'&&this.handleControl(JSON.parse(row.body)))return;
+    const pending=this.store.pendingMessages(peer);
     for(const row of pending)if(this.handleControl(JSON.parse(row.body)))return;
     if(this.busy||this.picking)return;
     this.picking=true;
     try{
       this.resumeWaitingVideos();
       let row,operationId;
-      for(const candidate of this.store.pendingMessages()){
+      for(const candidate of this.store.pendingMessages(peer)){
         const m=JSON.parse(candidate.body);try{this.prepareReference(m);}catch(e){this.referenceFailure(m,e);continue;}
         candidate.body=JSON.stringify(m);const triage=await this.interrupts.run(m.id,()=>this.progress.triage(m)).catch(e=>{if(e.code!=='TASK_INTERRUPTED')throw e;return null;});if(!triage||triage.relation==='duplicate')continue;
         if(!this.progress.canRun(triage.operationId)||!this.progress.mayAttempt({id:'message:'+candidate.id}))continue;
@@ -295,10 +296,11 @@ export class BridgeEngine {
       if(message.kind==='video') {
         this.progress.stage(operationId,'准备视频','下载与本地转写');
         await this.deliver();
+        if(this.store.knowledgeCleanupPending(message.awemeId))throw new Error('此视频的旧文件正在等待清理，请重启助手完成清理后再转发。');
         const existing=this.store.knowledge(message.awemeId);
         if(existing){learned=JSON.parse(await readFile(join(dirname(existing.path),'metadata.json'),'utf8'));learned.path=existing.path;this.store.event('复用已保存的视频资料，无需重复下载');}
         else {
-          learned=await this.media.process(message,this.store.config.maxVideoSeconds);
+          learned=await this.media.process(message,(this.preferences?.agentConfig?.().maxVideoSeconds??this.store.config.maxVideoSeconds));
           this.store.addKnowledge({...learned,summary:''});
         }
         await this.analyzeVisual(learned);
@@ -381,7 +383,7 @@ export class BridgeEngine {
   }
   async analyzeVisual(learned){
     if(!this.visual)throw new Error('全时段视觉分析组件未连接，不能只根据口播完成学习');
-    const fps=this.store.config.visualFps||4;
+    const fps=this.preferences?.agentConfig?.().visualFps??this.store.config.visualFps??4;
     const operationId=this.context.getStore()?.operationId;
     this.visualProgress={id:learned.id,operationId,fps,completed:0,total:0};
     try{learned.visual=await this.visual.analyze(learned,{fps,onProgress:(completed,total)=>{this.visualProgress={id:learned.id,operationId,fps,completed,total};this.progress.stage(operationId,'分析视频',`第 ${total?Math.min(total,completed+1):'…'}/${total||'…'} 段，已完成 ${completed} 段`);}});}
@@ -391,7 +393,7 @@ export class BridgeEngine {
   resumeWaitingVideos(){
     if(!this.authRecoveryPending||this.codex.authState?.status!=='ready')return;
     this.authRecoveryPending=false;
-    const rows=this.store.db.prepare("SELECT id FROM messages WHERE kind='video' AND status='waiting_auth' ORDER BY created").all();
+    const rows=this.store.db.prepare("SELECT id FROM messages WHERE kind='video' AND status='waiting_auth' AND (?='' OR peer=?) ORDER BY created").all(this.store.config.owner?.chatKey||'',this.store.config.owner?.chatKey||'');
     for(const row of rows)this.store.messageStatus(row.id,'new');
     if(rows.length)this.store.event('Codex 登录已恢复，将继续未完成的视频');
   }
@@ -438,8 +440,9 @@ export class BridgeEngine {
   }
   async runTask() {
     if(!this.store.config.enabled||this.chats&&!this.chats.agentEnabled())return;
-    for(const t of this.store.queuedTasks())if(t.turn)this.store.taskStatus(t.id,'uncertain','已有执行回合，需要核实，不能自动重跑');
-    const task=this.store.queuedTasks().find(t=>!this.taskRuns.has(t.thread)&&this.progress.mayAttempt(t));if(!task)return;
+    const peer=this.store.config.owner?.chatKey||'';
+    for(const t of this.store.queuedTasks(peer))if(t.turn)this.store.taskStatus(t.id,'uncertain','已有执行回合，需要核实，不能自动重跑');
+    const task=this.store.queuedTasks(peer).find(t=>!this.taskRuns.has(t.thread)&&this.progress.mayAttempt(t));if(!task)return;
     const context=JSON.parse(task.context||'{}');
     this.taskRuns.set(task.thread,task.id);this.taskBusy=true;
     try{return await this.interrupts.run(context.operationId,()=>this.processTask(task)).catch(e=>{if(e.code!=='TASK_INTERRUPTED')throw e;});}
@@ -538,6 +541,7 @@ export class BridgeEngine {
       if(p.chatbot){
         peer=this.chats?.deliveryTarget(p,candidate.peer);
         if(!peer){this.store.delivery(candidate.id,'superseded','普通聊天配置已变更，旧回复不再发送');continue;}
+        if(peer.deliveryPaused){this.store.delivery(candidate.id,'held','本群自动回复已暂停，保留原文');continue;}
       }else if(candidate.peer===this.store.config.owner?.chatKey&&(!this.chats||this.chats.agentEnabled()))peer=this.store.config.owner;
       if(peer&&(!out||(this.deliveryTurns.get(candidate.peer)||0)<(this.deliveryTurns.get(out.peer)||0))){
         out=candidate;target=peer;payload=p;
@@ -561,11 +565,11 @@ export class BridgeEngine {
       }
       else if(out.kind==='video_ack'&&this.adapter.acknowledge){const result=await this.adapter.acknowledge(this.store.config.owner,JSON.parse(out.payload),out.body);method=result.method;this.store.mergeOutboxPayload(out.id,{receiptResult:result});}
       else {const send=()=>this.adapter.send(target,out.body,{plainText:payload.plainText===true,...(payload.replyToMessageId?{replyToMessageId:payload.replyToMessageId,replyToSenderUid:payload.chatbot?JSON.parse(this.store.db.prepare('SELECT body FROM bot_messages WHERE id=?').get(payload.botId)?.body||'{}').sender||'':''}:{})});if(payload.chatbot)textReceipt=await this.chats.delivery(payload,out.peer,send);else {const operationId=payload.operationId;textReceipt=await this.interrupts.run(operationId,()=>{this.context.getStore().delivery={id:out.id,submitted:false};return send();});}}
-      if(out.kind==='text')this.store.confirmTextDelivery(out.id,textReceipt?.messageId);else this.store.delivery(out.id,'sent');
+      if(out.kind==='text'){this.store.confirmTextDelivery(out.id,textReceipt?.messageId);if(payload.chatbot)this.store.mergeOutboxPayload(out.id,{deliveryEvidence:{scope:'sender_client',at:Date.now()}});}else this.store.delivery(out.id,'sent');
       const operationId=JSON.parse(out.payload||'{}').operationId;if(operationId)this.progress.sync(operationId);
       if(out.kind==='video_ack')this.store.event('已在抖音确认收到视频（'+(method==='reaction'?'消息表情回应':'私信文字')+'）');
     }
-    catch(e){let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
+    catch(e){let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DELIVERY_PAUSED'?'held':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
       let retryAfter;
       if(status==='pending'&&out.kind==='text'){
         const failures=Math.min(6,(payload.deliveryRetry?.failures||0)+1);

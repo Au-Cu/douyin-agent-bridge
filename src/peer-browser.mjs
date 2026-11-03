@@ -88,7 +88,7 @@ export class PeerBrowser {
     const {task}=await this.serial(()=>{checkWork();const task=Promise.resolve().then(()=>this.adapter.resolveVideo(...args));this.media.add(task);task.then(()=>this.media.delete(task),()=>this.media.delete(task));return {task};},{kind:'video'});return task;
   }
   download(...args){return this.adapter.download(...args);}
-  uiDiagnostics(){return this.serial(()=>this.adapter.uiDiagnostics(),{kind:'inspect'});}
+  uiDiagnostics(peer){return this.serial(async()=>{if(peer)await this.select(peer);return this.adapter.uiDiagnostics();},{kind:'inspect',peer});}
   composerState(){return this.serial(()=>this.adapter.composerState(),{kind:'inspect'});}
   inbox(){return this.serial(()=>this.adapter.inbox?.()||{entries:[],rows:0},{kind:'inspect'});}
   quoteSchema(peer){return this.serial(async()=>{if(peer)await this.select(peer);return this.adapter.quoteSchema?.()||null;},{kind:'inspect'});}

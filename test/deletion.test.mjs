@@ -15,7 +15,7 @@ function setup(root){
 test('只删除已归档记录；必须显式预览范围并二次确认，恢复会使确认失效',async()=>{
   const h=setup();try{const n=await h.conversations.create('范围'),m=h.message(n);h.e.archives.restoreTask(m.id);assert.throws(()=>h.d.prepare('task',m.id),/先完成归档/);h.e.archives.archiveTask(m.id);
     assert.throws(()=>h.d.remove({kind:'task',id:m.id}),/确认已失效/);const p=h.d.prepare('task',m.id);assert.match(p.label,/任务 1/);assert.equal(p.counts.operations,1);assert.equal(p.counts.messages,1);assert.equal(h.e.progress.get(m.id).id,m.id);
-    h.e.archives.restoreTask(m.id);assert.throws(()=>h.d.remove({kind:'task',id:m.id,token:p.token}),/先完成归档/);assert.ok(h.e.progress.get(m.id));assert.throws(()=>h.d.prepare('knowledge','vid'),/仅支持/);
+    h.e.archives.restoreTask(m.id);assert.throws(()=>h.d.remove({kind:'task',id:m.id,token:p.token}),/先完成归档/);assert.ok(h.e.progress.get(m.id));assert.throws(()=>h.d.prepare('unknown','vid'),/仅支持/);
   }finally{h.s.close();}
 });
 test('删除任务清理请求、执行、完整回复组、回执、重试和引用缓存；保留同需求其他任务与学习资料',async()=>{
@@ -64,5 +64,48 @@ test('删除提交后清理失败可在重启续清理，数据库记录始终�
 test('清理拒绝遍历、符号链接及工作区以外路径，外部文件始终保留',async()=>{
   const h=setup();try{const n=await h.conversations.create('路径边界'),outside=mkdtempSync(join(base,'outside-'));writeFileSync(join(outside,'keep.txt'),'不可删除');for(const path of ['../outside','knowledge/vid','needs/../../outside','reply-references/anything.json'])assert.throws(()=>h.d.removeCache(path),/拒绝/);
     const folder=join(h.s.root,'needs',n.id);mkdirSync(folder,{recursive:true});symlinkSync(outside,join(folder,'external'),process.platform==='win32'?'junction':'dir');assert.throws(()=>h.d.removeCache('needs/'+n.id),/包含链接/);assert.equal(readFileSync(join(outside,'keep.txt'),'utf8'),'不可删除');
+  }finally{h.s.close();}
+});
+
+test('归档学习资料的删除移除 SQLite 索引与专属文件，引用和活动写入会阻止删除',async()=>{
+  const h=setup();try{
+    const id='1234567890123456789',folder=join(h.s.root,'knowledge',id);
+    mkdirSync(join(folder,'continuous'),{recursive:true});
+    for(const name of ['note.md','video.mp4','metadata.json','visual-report.json','continuous/frame.jpg'])writeFileSync(join(folder,name),'fixture');
+    const marker='private-knowledge-marker-'+randomUUID();
+    h.s.addKnowledge({id,title:'归档视频',transcript:marker,path:join(folder,'note.md')});
+    assert.throws(()=>h.d.prepare('knowledge',id),/先完成归档/);
+    h.s.setArchived('knowledge',id,true);
+    const preview=h.d.prepare('knowledge',id);assert.equal(preview.counts.knowledge,1);
+    const need=await h.conversations.create('引用资料');
+    h.conversations.needs.attach(need.id,id);
+    assert.throws(()=>h.d.remove({kind:'knowledge',id,token:preview.token}),/资料仍被引用/);
+    assert.ok(h.s.knowledge(id));assert.ok(existsSync(folder));
+    await h.e.archives.need(need.id,true);h.confirm('need',need.id);
+    h.e.busy=true;assert.throws(()=>h.d.prepare('knowledge',id),/正在处理/);h.e.busy=false;
+    h.s.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const db=join(h.s.root,'bridge.sqlite');
+    assert.ok(readFileSync(db).includes(marker));
+    assert.equal(h.confirm('knowledge',id).cleanupPending,false);
+    assert.equal(h.s.knowledge(id),undefined);
+    assert.equal(h.s.archiveRecord('knowledge',id),undefined);
+    assert.equal(h.s.search(marker).length,0);
+    assert.equal(existsSync(folder),false);
+    h.s.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    assert.equal(readFileSync(db).includes(marker),false);
+  }finally{h.s.close();}
+});
+
+test('删除任务也清理仅保存平台消息 ID 的历史回执，保留其他会话同 ID 的回执',async()=>{
+  const h=setup();try{
+    const n=await h.conversations.create('历史回执'),m=h.message(n);
+    const platformId=m.id.slice('owner:'.length);
+    const old=h.s.enqueueReply('owner','历史回执',{kind:'video_ack',payload:{messageId:platformId}});
+    const other=h.s.enqueueReply('another-peer','独立回执',{kind:'video_ack',payload:{messageId:platformId}});
+    h.s.delivery(old,'uncertain');
+    assert.throws(()=>h.d.prepare('task',m.id),/送达尚未核实/);
+    h.s.delivery(old,'sent');h.confirm('task',m.id);
+    const find=id=>h.s.db.prepare('SELECT id FROM outbox WHERE id=?').get(id);
+    assert.equal(find(old),undefined);assert.ok(find(other));
   }finally{h.s.close();}
 });

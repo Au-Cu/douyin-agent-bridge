@@ -14,12 +14,20 @@ export class DeliveryReview{
     if(this.batch?.status==='running')return this.batch;
     if((kind&&!id)||(!kind&&id))throw new Error('请完整指定核实范围');
     const rows=kind?this.rows(kind,id):this.db.prepare("SELECT * FROM outbox WHERE status IN ('uncertain','sending') ORDER BY peer,created,rowid").all(),ids=rows.filter(o=>o.status==='uncertain').map(o=>o.id);
-    this.batch={id:randomUUID(),kind:kind||'all',scopeId:id||'',status:'running',total:ids.length,checked:0,verified:0,unresolved:0,waiting:rows.length-ids.length,started:Date.now(),finished:0};this.saveBatch();
+    this.batch={id:randomUUID(),kind:kind||'all',scopeId:id||'',status:'running',total:ids.length,checked:0,verified:0,unresolved:0,waiting:rows.filter(o=>o.status==='sending').length,started:Date.now(),finished:0};this.saveBatch();
     this.batchWork=(async()=>{for(const key of ids){if(this.closing){this.batch.status='interrupted';break;}const row=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(key);if(row?.status==='uncertain')try{const result=await this.reconcile(key);if(result.verified)this.batch.verified++;else this.batch.unresolved++;}catch(e){this.batch.unresolved++;const current=this.db.prepare('SELECT status FROM outbox WHERE id=?').get(key);if(current?.status==='uncertain')this.store.mergeOutboxPayload(key,{deliveryRecheck:{verified:false,at:Date.now(),method:'batch_read_only',reason:String(e.message).slice(0,240)}});}this.batch.checked++;this.saveBatch();await new Promise(resolve=>setImmediate(resolve));}if(this.batch.status==='running')this.batch.status='done';this.batch.finished=Date.now();this.saveBatch();})().catch(()=>{this.batch.status='interrupted';this.batch.finished=Date.now();this.saveBatch();});return this.batch;
   }
   target(out){const p=data(out);if(p.chatbot)return this.chats.deliveryTarget(p,out.peer);const owner=this.store.config.owner;return owner?.chatKey===out.peer?owner:null;}
   rows(kind,id){
     let operationIds;
+    if(kind==='chat'||kind==='chat_session'){
+      const session=kind==='chat_session'&&this.chats.sessions?.get(id),peer=session?.peer||id;if((kind==='chat_session'&&!session)||!this.chats.get(peer))throw new Error('只能核实已配置的聊天');
+      const scope="SELECT * FROM outbox WHERE peer=? AND json_extract(payload,'$.chatbot')=1"+(session?" AND EXISTS (SELECT 1 FROM chat_session_messages WHERE session_id=? AND message_id=json_extract(outbox.payload,'$.botId'))":"");
+      const args=session?[peer,id]:[peer];
+      const unresolved=this.db.prepare(scope+" AND status IN ('uncertain','sending','pending','held') ORDER BY created DESC").all(...args);
+      const recentSent=this.db.prepare(scope+" AND status='sent' AND kind='text' ORDER BY created DESC LIMIT 150").all(...args);
+      return [...unresolved,...recentSent];
+    }
     if(kind==='task')operationIds=new Set([this.engine.archives.task(id).id]);
     else if(kind==='need'){
       const need=this.engine.conversations.needs.lookup(id,{includeArchived:true});
@@ -29,12 +37,13 @@ export class DeliveryReview{
     return this.db.prepare("SELECT * FROM outbox WHERE status IN ('uncertain','sending') ORDER BY created,rowid").all().filter(o=>operationIds.has(data(o).operationId));
   }
   view(kind,id){return {kind,id,rows:this.rows(kind,id).map(o=>{
-    const p=data(o),op=this.engine.progress.get(p.operationId),original=p.messageId&&this.db.prepare('SELECT body FROM messages WHERE peer=? AND (id=? OR id=?)').get(o.peer,p.messageId,o.peer+':'+p.messageId),m=original?JSON.parse(original.body):null;
-    return {id:o.id,operationId:p.operationId,number:op?.number,title:op?.title,kind:o.kind,status:o.status,label:o.kind==='progress_reaction'?'表情：'+(stages[p.stage]||p.stage):p.notification?'文字通知':`文字回复：第 ${p.segment||1}/${p.totalSegments||1} 段`,body:o.kind==='text'?o.body:'原消息：'+(m?.text||m?.title||m?.awemeId||'请在抖音核对原消息'),error:o.error,created:o.created,lastCheck:p.deliveryRecheck||null,canResend:o.kind==='text'&&!!this.target(o)&&!this.store.isArchived('task',p.operationId)&&!this.engine.interrupts.record(p.operationId)};
+    const p=data(o),op=this.engine.progress.get(p.operationId),bot=p.botId&&this.db.prepare('SELECT body FROM bot_messages WHERE id=?').get(p.botId),original=bot||p.messageId&&this.db.prepare('SELECT body FROM messages WHERE peer=? AND (id=? OR id=?)').get(o.peer,p.messageId,o.peer+':'+p.messageId),m=original?JSON.parse(original.body):null;
+    return {id:o.id,isChat:!!p.chatbot,operationId:p.operationId,number:op?.number,title:op?.title||this.chats.get(o.peer)?.displayName,kind:o.kind,status:o.status,label:o.kind==='progress_reaction'?'表情：'+(stages[p.stage]||p.stage):p.notification?'文字通知':`文字回复：第 ${p.segment||1}/${p.totalSegments||1} 段`,body:o.kind==='text'?o.body:'原消息：'+(m?.text||m?.title||m?.awemeId||'请在抖音核对原消息'),error:o.error,created:o.created,lastCheck:p.deliveryRecheck||null,recipientVisibility:p.recipientVisibility?.state||'unknown',canReportVisibility:o.kind==='text'&&p.chatbot&&this.chats.get(o.peer)?.type==='group'&&o.status==='sent',canResend:o.status==='uncertain'&&o.kind==='text'&&!!this.target(o)&&!this.target(o).deliveryPaused&&!p.contextReset&&p.recipientVisibility?.state!=='reported_invisible'&&!this.store.isArchived('task',p.operationId)&&!this.engine.interrupts.record(p.operationId)};
   })};}
   sync(out){const p=data(out);if(p.operationId)this.engine.progress.sync(p.operationId);if(p.chatbot)this.chats.reconcile();}
   checkText(out,scan){
     const target=this.target(out),p=data(out);if(!target||!matchesPeer(scan.peer,target)||!scan.peer?.selfUid)return {verified:false,reason:'原聊天或助手账号身份尚未核实。'};
+    if(p.recipientVisibility?.state==='reported_invisible')return {verified:false,reason:'用户已反馈接收方不可见；助手端气泡不能解除此状态，请人工确认接收方。'};
     let expectedSender='';if(p.replyToMessageId&&p.botId){const origin=this.db.prepare('SELECT body FROM bot_messages WHERE id=? AND peer=?').get(p.botId,out.peer);expectedSender=origin?JSON.parse(origin.body).sender:'';if(!expectedSender)return {verified:false,reason:'原生引用的发送者记录缺失，请人工核实。'};}
     const known=this.db.prepare('SELECT platform_id FROM outgoing_message_links WHERE outbox_id=?').get(out.id),attempt=p.deliveryAttempt;
     if(!known&&!p.replyToMessageId&&!(attempt?.started&&attempt.ended>=attempt.started))return {verified:false,reason:'这条历史文字没有保存发送时间边界，无法自动排除同文消息，请人工确认。'};
@@ -68,11 +77,16 @@ export class DeliveryReview{
   }
   resolve(id,status,{confirmed=false}={}){
     if(confirmed!==true)throw new Error('请先在本机确认回执的实际情况。');
-    const out=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(id));if(!out||out.status!=='uncertain')throw new Error('此回执无需人工处理，请刷新查看');
+    const out=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(id));if(!out||!(['uncertain'].includes(out.status)||['pending','held'].includes(out.status)&&status==='abandoned'||out.status==='sent'&&out.kind==='text'&&status==='sent'))throw new Error('此回执无需人工处理，请刷新查看');
     if(!['sent','pending','abandoned'].includes(status))throw new Error('无效处理方式');const p=data(out);
-    if(status==='pending'&&(out.kind!=='text'||!this.target(out)||this.engine.interrupts.record(p.operationId)||this.store.isArchived('task',p.operationId)))throw new Error('仅可重新发送未归档、未中断且聊天身份仍有效的文字；表情不会重复点击。');
+    if(status==='pending'&&(out.kind!=='text'||!this.target(out)||this.target(out).deliveryPaused||p.contextReset||p.recipientVisibility?.state==='reported_invisible'||this.engine.interrupts.record(p.operationId)||this.store.isArchived('task',p.operationId)))throw new Error('仅可重新发送未归档、未中断、未清空、未报告接收方不可见且聊天未暂停的文字；表情不会重复点击。');
     const next=status==='abandoned'?(out.kind==='progress_reaction'?'unavailable':'superseded'):status;
-    this.db.exec('BEGIN IMMEDIATE');try{this.store.mergeOutboxPayload(out.id,{deliveryReview:{at:Date.now(),method:'manual',resolution:status,previousStatus:out.status}});this.store.delivery(out.id,next,status==='sent'?'用户已在抖音人工确认送达':status==='abandoned'?'用户确认不再发送此回执；未将其标记为送达':'用户确认未收到，明确授权重新发送此段文字');this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
+    this.db.exec('BEGIN IMMEDIATE');try{this.store.mergeOutboxPayload(out.id,{deliveryReview:{at:Date.now(),method:'manual',resolution:status,previousStatus:out.status},...(status==='sent'&&out.kind==='text'&&p.chatbot?{recipientVisibility:{state:'confirmed',method:'manual_recipient',at:Date.now()}}:{})});this.store.delivery(out.id,next,status==='sent'?'用户已在抖音人工确认送达':status==='abandoned'?'用户确认不再发送此回执；未将其标记为送达':'用户确认未收到，明确授权重新发送此段文字');this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
     this.sync(out);return {ok:true,status:next};
+  }
+  reportInvisible(id,{confirmed=false}={}){
+    const out=this.db.prepare('SELECT * FROM outbox WHERE id=?').get(String(id)),p=out&&data(out);if(!confirmed||!out||out.kind!=='text'||!p.chatbot||!['sent','uncertain'].includes(out.status))throw new Error('请明确确认这条普通聊天回复在接收方不可见');
+    this.store.mergeOutboxPayload(out.id,{recipientVisibility:{state:'reported_invisible',method:'manual_recipient',at:Date.now()}});this.store.delivery(out.id,'uncertain','用户反馈接收方不可见；此前仅确认助手端显示');
+    this.db.prepare("UPDATE bot_messages SET status='delivery_uncertain',updated=? WHERE id=? AND status NOT IN ('cancelled','uncertain')").run(Date.now(),p.botId);this.chats.pauseDelivery(out.peer,true,'用户反馈本群消息仅助手端可见，待核实');return {ok:true};
   }
 }
