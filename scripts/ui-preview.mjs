@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { commandHelp } from '../src/commands.mjs';
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const version = JSON.parse(await readFile(join(project, 'package.json'), 'utf8')).version;
 const link = 'codex://threads/00000000-0000-0000-0000-000000000001';
 const stages = (active = true, done = false) => ['roger', 'active', 'done'].map((stage, i) => ({ stage, total: i === 0 || i === 1 && active || i === 2 && done ? 1 : 0, sent: i === 0 || i === 1 && active || i === 2 && done ? 1 : 0, pending: 0, uncertain: 0, unavailable: 0, errors: [] }));
 export function demoState() {
@@ -24,11 +25,14 @@ export function demoState() {
   ];
   return {
     preview: true,
-    config: { enabled: true, owner: { displayName: '演示用户', chatKey: 'demo-owner', peerUid: 'demo-user' }, coordinator: 'demo-coordinator', targets: [{ alias: '界面项目', name: '控制台界面优化', thread: 'demo-target' }], maxVideoSeconds: 1800, visualFps: 4, model: 'gpt-6.1-sol', reasoningEffort: 'high', fastMode: false, autoRoute: true, contextBudget: 48000, chatModel: 'gpt-6-luna', chatReasoningEffort: 'medium', chatWebSearch: true, chatCodeSandbox: false, uiPanels: { setup: true, model: true, targets: true, storage: true, chats: true }, uiConfigured: { setup: true } },
-    runtime: { harness: { active: 'codex', configured: 'codex', chat: 'codex' }, taskCodex: { ready: true }, codex: true, auth: { status: 'ready' }, asrReady: true, browser: 'ready', browserEngine: process.platform === 'darwin' ? 'safari' : 'edge', processing: true, visualProgress: { id: knowledge[0].id, operationId: 'demo-task-27', completed: 4, total: 17, fps: 4 } },
+    config: { enabled: true, owner: { displayName: '演示用户', chatKey: 'demo-owner', peerUid: '111111', selfUid:'999999' },agentBindings:{self:{displayName:'演示用户',chatKey:'demo-self',peerUid:'111111',selfUid:'111111',selfChat:true},assistant:{displayName:'演示用户',chatKey:'demo-owner',peerUid:'111111',selfUid:'999999'}}, coordinator: 'demo-coordinator', targets: [{ alias: '界面项目', name: '控制台界面优化', thread: 'demo-target' }], maxVideoSeconds: 1800, visualFps: 4, model: 'gpt-6.1-sol', reasoningEffort: 'high', fastMode: false, autoRoute: true, contextBudget: 48000, chatModel: 'gpt-6-luna', chatReasoningEffort: 'medium', chatWebSearch: true, chatCodeSandbox: false, uiPanels: { setup: true, model: true, targets: true, storage: true, chats: true }, uiConfigured: { setup: true } },
+    runtime: { harness: { active: 'codex', configured: 'codex', chat: 'codex' }, taskCodex: { ready: true }, codex: true, auth: { status: 'ready' }, asrReady: true, browser: 'ready', browserLoggedIn:true, browserEngine: process.platform === 'darwin' ? 'safari' : 'edge', processing: true, visualProgress: { id: knowledge[0].id, operationId: 'demo-task-27', completed: 4, total: 17, fps: 4 } },
     storage: { dataRoot: '独立演示数据（仅在内存中）', backup: { created: now - 600000 } },
     conversations: { current: needs[0], activeNeed: needs[0].id, needs, budget: 48000 }, knowledge,
-    aiChats: { chats: [{ chatKey: 'demo-group', displayName: '设计讨论 · 演示群聊', type: 'group', mode: 'chat', enabled: true, groupReplyMode: 'mentions' }], messages: [] },
+    aiChats: { chats: [{chatKey:'demo-owner',displayName:'演示用户',type:'single',mode:'agent',peerUid:'demo-user',enabled:true},{ chatKey: 'demo-group', displayName: '设计讨论 · 演示群聊', type: 'group', mode: 'chat', enabled: true, groupReplyMode: 'mentions',videoOverview:true,sessions:{budget:16000,current:{id:'demo-session',harness:'codex',seq:2,tokens:3200,state:'ready'}} },{chatKey:'demo-single',displayName:'读书搭子 · 演示单聊',type:'single',mode:'chat',enabled:false}], messages: [
+      {id:'demo-group-reply',peer:'demo-group',name:'设计讨论',input:'这段视频的关键交互是什么？',result:'切换分类后，卡片按新分类重新排列。',status:'done',created:now},
+      {id:'demo-single-reply',peer:'demo-single',name:'读书搭子',input:'帮我找一下这本书的作者',result:'这是一条独立的演示单聊记录。',status:'replying',deliveryIssue:'原消息暂不可操作',created:now}
+    ] },
     counts: { knowledge: 3, runningTasks: 1, queuedTasks: 1 },
     work: [
       { ...base, id: 'demo-task-27', number: '27', title: '学习视频中的排版方法', kind: 'video', status: 'running', phase: '分析视频', detail: '按完整时间轴读取画面，已保存的片段会继续保留。', visuals: [{ id: knowledge[0].id, source: 'running', status: 'running', completed: 4, total: 17, fps: 4, duration: 132.5, coveredUntil: 32 }] },
@@ -57,10 +61,12 @@ export function createPreviewServer() {
         res.writeHead(200, { 'Content-Type': name.endsWith('.html') ? 'text/html; charset=utf-8' : name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' });
         return res.end(await readFile(join(project, 'public', name)));
       }
-      if (req.method === 'GET' && path === '/api/instance') return json({ app: 'douyin-codex-bridge', version: '0.16.0 · UI 验收预览', preview: true });
+      if (req.method === 'GET' && path === '/api/instance') return json({ app: 'douyin-codex-bridge', version, preview: true });
       if (req.method === 'GET' && path === '/api/state') return json({ ...state,
         conversations: { ...state.conversations, needs: scoped(state.conversations.needs, url.searchParams.get('needs')) },
         knowledge: scoped(state.knowledge, url.searchParams.get('knowledge')), recentKnowledge: state.knowledge.filter(k => !k.archived).slice(0,3),
+        chatWork:url.searchParams.get('chat')===state.config.owner?.chatKey?state.work:undefined,
+        aiChats:{...state.aiChats,messages:state.aiChats.messages.filter(m=>!url.searchParams.has('chat')||m.peer===url.searchParams.get('chat'))},
         work: scoped(state.work, url.searchParams.get('work')).filter(w => !url.searchParams.has('status') || w.status === url.searchParams.get('status')) });
       if (req.method === 'GET' && path === '/api/commands') return json({ text: commandHelp });
       if (req.method === 'GET' && path === '/api/approvals') return json([]);
@@ -76,10 +82,10 @@ export function createPreviewServer() {
       const body = JSON.parse(raw || '{}');
       if (path === '/api/ui/panels') Object.assign(state.config.uiPanels, body);
       else if (path === '/api/archive/delete/prepare'||path === '/api/archive/delete') {
-        const list=body.kind==='task'?state.work:body.kind==='need'?state.conversations.needs:[],item=list.find(i=>i.id===body.id);
+        const list=body.kind==='task'?state.work:body.kind==='need'?state.conversations.needs:body.kind==='knowledge'?state.knowledge:[],item=list.find(i=>i.id===body.id);
         if(!item?.archived)return json({error:'请先归档记录'},400);
         if(['running','sending','uncertain','failed_delivery'].includes(item.status))return json({error:'结果尚未核实，不能删除'},400);
-        if(path.endsWith('/prepare')){const token='demo-'+Date.now()+'-'+Math.random();deletions.set(token,item);return json({token,label:(body.kind==='need'?'需求 ':'任务 ')+item.number+'：'+item.title,counts:{operations:1,tasks:0,messages:1,replies:1,receipts:3},warning:'演示：永久删除本机桥接记录；原聊天、学习资料与备份保留。'});}
+        if(path.endsWith('/prepare')){const token='demo-'+Date.now()+'-'+Math.random();deletions.set(token,item);if(body.kind==='knowledge')return json({token,label:item.title,counts:{knowledge:1},warning:'演示：删除本地原视频、转写、画面和分析笔记。'});return json({token,label:(body.kind==='need'?'需求 ':'任务 ')+item.number+'：'+item.title,counts:{operations:1,tasks:0,messages:1,replies:1,receipts:3},warning:'演示：永久删除本机桥接记录；原聊天、学习资料与备份保留。'});}
         if(deletions.get(body.token)!==item)return json({error:'删除确认失效'},400);
         deletions.delete(body.token);list.splice(list.indexOf(item),1);return json({deleted:true});
       }
@@ -93,8 +99,52 @@ export function createPreviewServer() {
       else if (path === '/api/needs/new') { const n={id:'demo-new-'+Date.now(),number:10+state.conversations.needs.length,title:body.title||'新的演示需求',summary:'验收预览中新建的需求。未创建真实助手聊天。',seq:1,contextTokens:0};state.conversations.needs.unshift(n);state.conversations.current=n;state.conversations.activeNeed=n.id;return json(n); }
       else if (path === '/api/preferences') Object.assign(state.config,body);
       else if (path === '/api/chat-preferences') Object.assign(state.config,{chatModel:body.model,chatReasoningEffort:body.reasoningEffort,chatFastMode:body.fastMode,chatWebSearch:body.webSearch,chatCodeSandbox:body.codeSandbox});
+      else if (path === '/api/codex/login') return json({url:'https://auth.openai.com/',preview:true});
+      else if (path === '/api/douyin/mode') {
+        const previous=state.config.douyinMode||(state.config.owner?(state.config.owner.selfChat?'self':'assistant'):'');
+        if(!['self','assistant'].includes(body.mode)||previous&&previous!==body.mode&&body.confirmed!==true)return json({error:'请确认切换模式'},400);
+        state.config.douyinMode=body.mode;
+        if(previous&&previous!==body.mode){state.config.douyinRebindRequired=true;state.runtime.browserLoggedIn=false;state.runtime.browser='waiting_login';state.runtime.loginCompletedAt=0;}
+        return json({mode:body.mode});
+      }
+      else if (path === '/api/browser/open'&&body.guided) {
+        state.runtime.browser='waiting_login';
+        return json({ok:true,preview:true});
+      }
+      else if (path === '/api/coordinator') {
+        if(state.runtime.auth.status!=='ready')return json({error:'请先完成登录'},400);
+        state.config.coordinator='demo-coordinator';
+      }
+      else if (path === '/api/asr/setup') {
+        state.runtime.asrInstalling=true;
+        state.runtime.asrProgress='正在解压转写模型…';
+      }
+      else if (path === '/api/bind/select') {if(state.config.enabled)return json({error:'请先暂停监听'},400);state.runtime.selfBinding=true;}
+      else if (path === '/api/bind/cancel') state.runtime.selfBinding=false;
+      else if (path === '/api/bind/inspect') {
+        if(!state.runtime.selfBinding)return json({error:'请先开始绑定'},400);
+        const mode=state.demoBindMode||'assistant',peer=state.config.agentBindings[mode];
+        return json({mode,chatKey:peer.chatKey,selfUid:peer.selfUid,mainUid:peer.peerUid,displayName:peer.displayName,replaceMain:false});
+      }
+      else if (path === '/api/bind'&&body.mode==='auto') {
+        const mode=state.demoBindMode||'assistant',owner=state.config.agentBindings[mode];
+        if(!state.runtime.selfBinding||body.chatKey!==owner.chatKey||body.selfUid!==owner.selfUid)return json({error:'请选择并核验会话'},400);
+        if(state.config.douyinMode&&state.config.douyinMode!==mode&&body.acceptModeMismatch!==true)return json({error:'请确认切换模式'},400);
+        Object.assign(state.config,{owner,douyinMode:mode,douyinRebindRequired:false});state.runtime.selfBinding=false;
+        state.aiChats.chats=state.aiChats.chats.filter(c=>c.mode!=='agent');
+        state.aiChats.chats.unshift({...owner,type:'single',mode:'agent',enabled:true});
+        return json({mode,owner});
+      }
+      else if (path === '/api/conversation-preferences') {
+        const peer=body.mode==='chat'?state.aiChats.chats.find(c=>c.chatKey===body.peer):state.config.agentBindings[body.mode];
+        if(!peer||peer.chatKey!==body.peer)return json({error:'请选择演示会话'},400);
+        const key='conversation:'+JSON.stringify([body.mode==='chat'?'chat':'agent',peer.chatKey,peer.selfUid||'']);
+        const old=state.config.conversationOverrides?.[key]||{};
+        const overrides={...Object.fromEntries(['contextBudget','maxVideoSeconds','visualFps','autoRoute'].filter(k=>body[k]!=null).map(k=>[k,body[k]])),models:{...old.models,[body.harness]:Object.fromEntries(['model','reasoningEffort','fastMode'].filter(k=>body[k]!=null).map(k=>[k,body[k]]))}};
+        state.config.conversationOverrides={...state.config.conversationOverrides,[key]:overrides};return json({overrides});
+      }
       else if (path === '/api/targets') state.config.targets=body.targets;
-      else if (path === '/api/config') Object.assign(state.config,body);
+      else if (path === '/api/config'||path === '/api/video-preferences') Object.assign(state.config,body);
       else if (path === '/api/listen') state.config.enabled=!!body.enabled;
       else if (path === '/api/harness') { state.runtime.harness.configured=body.harness;return json({restartRequired:body.harness!==state.runtime.harness.active}); }
       else if (path === '/api/chat-harness') state.runtime.harness.chat=body.harness;

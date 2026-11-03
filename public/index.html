@@ -1,49 +1,98 @@
 <!doctype html>
 <html lang="zh-CN" data-layout="modern"><head><meta charset="utf-8"><meta name="application-name" content="douyin-bridge-console"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>抖音 Agent Bridge</title><link rel="stylesheet" href="/style.css"><script src="/ui-layout.js"></script></head>
-<body><a class="skip-link" href="#mainContent">跳到主要内容</a><main id="mainContent">
+<body><a class="skip-link" href="#mainContent">跳到主要内容</a><main id="mainContent" tabindex="-1">
   <header class="app-header">
     <a class="brand" href="#workbench" aria-label="抖音 Agent Bridge 工作台"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h9a4 4 0 0 1 4 4v5l-4 4H5z"/><path d="M9 9h10v10H9z"/></svg></span><span><h1>抖音 Agent Bridge</h1><span class="brand-subtitle">本机助手控制台</span></span></a>
-    <div class="header-actions"><label class="layout-choice"><span class="sr-only">界面版本</span><select id="uiLayoutChoice" aria-label="界面版本"><option value="modern">新版</option><option value="classic">旧版</option></select></label><span id="liveBadge" class="badge">正在连接</span><button id="themeToggle" class="icon-button" aria-label="切换深色外观" title="切换深浅外观"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14a8 8 0 0 1-10-10 8 8 0 1 0 10 10Z"/></svg></button><button id="toggleListen" class="primary">开始监听</button></div>
+    <div class="header-actions"><span id="liveBadge" class="badge">正在连接</span><button id="toggleListen" class="primary">开始监听</button></div>
   </header>
-  <nav class="app-nav" aria-label="控制台导航"><a href="#workbench" class="nav-link" data-view="workbench" aria-current="page">工作台</a><a href="#library" class="nav-link" data-view="library">学习资料 <span id="libraryNavCount" class="nav-count">0</span></a><a href="#settings" class="nav-link" data-view="settings">设置</a><span class="sync-status" id="syncStatus" role="status">正在同步</span></nav>
+  <nav class="app-nav" aria-label="控制台导航"><a href="#workbench" class="nav-link" data-view="workbench" aria-current="page">工作台</a><a href="#chats" class="nav-link" data-view="chats">会话</a><a href="#library" class="nav-link" data-view="library">学习资料 <span id="libraryNavCount" class="nav-count">0</span></a><a href="#dispatch" class="nav-link" data-view="dispatch">项目派发</a><a href="#settings" class="nav-link" data-view="settings">系统</a><span class="sync-status" id="syncStatus" role="status">正在同步</span></nav>
   <div id="previewNotice" class="preview-notice" hidden>验收预览 · 演示资料独立保存，不连接真实账号或派发项目任务</div>
-  <div id="notice" role="status" aria-live="polite"></div>
+  <div id="notice" role="status" aria-live="polite"></div><aside id="setupPrompt" class="panel" aria-labelledby="setupPromptTitle" hidden><h2 id="setupPromptTitle"></h2><p id="setupPromptText" aria-live="polite"></p><div class="button-row" id="setupPromptActions"></div></aside>
   <section id="workbenchView" class="view" data-view-panel="workbench" aria-label="工作台">
-    <div class="view-heading"><div><p class="eyebrow">WORKSPACE</p><h2>工作台</h2><p>让每一项工作，都有清晰的进展。</p></div><button class="text-button" data-open-panel="setup">连接与运行设置 <span aria-hidden="true">↗</span></button></div>
-  <section class="status-grid"><article><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录助手账号，再选中你的会话</small></article><article><span id="agentBackendLabel">个人 Agent</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small></article><article><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
+    <div class="view-heading"><div><p class="eyebrow">WORKSPACE</p><h2>工作台</h2><p>让每一项工作，都有清晰的进展。</p></div></div>
+  <section class="status-grid"><article id="accountCard"><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录抖音，再绑定主号</small><button id="setupAccountLink" class="status-setup" hidden>连接抖音账号</button><button id="openBrowser" class="status-setup" hidden>打开抖音窗口</button><p id="safariSetupHint" class="hint" hidden>首次使用 Safari 时，在「设置 → 高级」显示开发者功能，再在「开发者 → 自动化」启用「允许来自 Apple 事件的 JavaScript」。如有系统提示，允许启动助手的应用控制 Safari。</p></article><article id="agentStatusCard"><span id="agentBackendLabel">个人 Agent</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small><a id="setupAgentLink" class="panel-link status-setup" href="#settings/runtime" data-setup-jump hidden>准备个人 Agent ↗</a></article><article id="asrStatusCard"><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small><a id="setupAsrLink" class="panel-link status-setup" href="#settings/transcription" data-setup-jump hidden>安装转写模型 ↗</a></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
 
     <div class="listening-strip"><span class="status-dot" aria-hidden="true"></span><span id="listenTitle">正在读取运行状态</span><span class="live-note">进度来自程序记录</span></div>
     <div class="work-grid"><div class="work-main">
-      <section class="panel current-need-panel" aria-labelledby="currentNeedTitle"><div class="need-heading"><div><p class="eyebrow">当前需求</p><h2 id="currentNeedTitle">尚未开始需求</h2></div><span class="pill" id="currentNeedSession"></span></div><p id="currentNeedSummary" class="need-summary">收到消息后，助手会判断是继续已有需求，还是开始新的工作。</p><div id="currentNeed" class="work-meta"></div><details class="need-directory" data-fold-key="need-directory"><summary>管理需求与历史记录 <span aria-hidden="true">↗</span></summary>    <div class="need-controls"><input id="newNeedTitle" maxlength="60" placeholder="新需求标题，可留空"><button id="newNeed">新建并切换对话</button></div>
+      <section class="panel current-need-panel" aria-labelledby="currentNeedTitle"><div class="need-heading"><div><p class="eyebrow">当前需求</p><h2 id="currentNeedTitle">尚未开始需求</h2></div><span class="pill" id="currentNeedSession"></span></div><p id="currentNeedSummary" class="need-summary">收到消息后，助手会判断是继续已有需求，还是开始新的工作。</p><div id="currentNeed" class="work-meta"></div></section>
+<section class="panel work-panel" id="workPanel" aria-labelledby="taskHeading"><div class="section-title"><h2 id="taskHeading">任务与回复 <span id="visibleTaskCount" class="count-tag">0</span></h2><span>完成并送达后自动归档</span></div><div class="list-filters"><label>任务范围 <select id="workScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label><label>状态 <select id="workStatus"><option value="all">全部状态</option><option value="queued">排队中</option><option value="running">执行中</option><option value="sending">发送中</option><option value="blocked">调度受阻</option><option value="uncertain">需要核实</option><option value="failed_delivery">送达需核实</option><option value="waiting">等待恢复</option><option value="done">已完成</option><option value="cancelled">已取消</option><option value="failed">处理失败</option></select></label></div><div class="button-row"><button id="reconcileAllDeliveries" class="secondary">一键核实送达</button></div><p id="allDeliveryBatchStatus" class="hint" role="status"></p><div id="approvalList"></div><div id="taskList" class="items"></div><div id="outboxList" class="items"></div></section>
+    </div><aside class="work-aside" aria-label="相关资料"><details class="panel need-directory config-panel" data-fold-key="need-directory"><summary>管理需求与历史记录 <span aria-hidden="true">↗</span></summary>    <div class="need-controls"><input id="newNeedTitle" maxlength="60" placeholder="新需求标题，可留空"><button id="newNeed">新建并切换对话</button></div>
     <div class="list-filters"><label>需求范围 <select id="needScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label></div>
     <div id="needList" class="need-list"></div>
-</details></section>
-<section class="panel work-panel" id="workPanel" aria-labelledby="taskHeading"><div class="section-title"><h2 id="taskHeading">任务与回复 <span id="visibleTaskCount" class="count-tag">0</span></h2><span>完成并送达后自动归档</span></div><div class="list-filters"><label>任务范围 <select id="workScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label><label>状态 <select id="workStatus"><option value="all">全部状态</option><option value="queued">排队中</option><option value="running">执行中</option><option value="sending">发送中</option><option value="blocked">调度受阻</option><option value="uncertain">需要核实</option><option value="failed_delivery">送达需核实</option><option value="waiting">等待恢复</option><option value="done">已完成</option><option value="cancelled">已取消</option><option value="failed">处理失败</option></select></label></div><div class="button-row"><button id="reconcileAllDeliveries" class="secondary">一键核实送达</button></div><p id="allDeliveryBatchStatus" class="hint" role="status"></p><div id="approvalList"></div><div id="taskList" class="items"></div><div id="outboxList" class="items"></div></section>
-    </div><aside class="work-aside" aria-label="相关资料"><section class="panel recent-panel"><div class="section-title"><h2>最近学习</h2><a href="#library" class="panel-link">查看全部 <span aria-hidden="true">↗</span></a></div><p class="section-caption">原视频、连续画面与学习笔记</p><div id="recentKnowledgeList" class="items"></div></section><section class="panel help-panel"><p class="eyebrow">进度怎么读</p><h3>处理、送达，各自有记录</h3><p>任务执行、文字回复和消息表情分别核验。最后一段确认送达后，才算交付完成。</p>    <details data-fold-key="help-commands" id="commandsPanel"><summary>抖音中的简洁命令</summary><pre id="commandHelp" class="command-help">/帮助  查看全部命令
-/模型  查看模型名单
-/强度  查看可用档位
-/快 开|关
-/密度 2|4|8
-/分聊 开|关
-/新建 标题
-/找 关键词
-/切换 需求ID
-/续看 [视频ID]
-/重连</pre></details>
-</section></aside></div>
-  <details class="panel logs" data-fold-key="logs"><summary>运行记录 <small>连接或处理失败时查看</small></summary><div id="eventList"></div></details>
+</details><section class="panel recent-panel"><div class="section-title"><h2>最近学习</h2><a href="#library" class="panel-link">查看全部 <span aria-hidden="true">↗</span></a></div><p class="section-caption">原视频、连续画面与学习笔记</p><div id="recentKnowledgeList" class="items"></div></section></aside></div>
+
 
   </section>
-  <section id="libraryView" class="view" data-view-panel="library" aria-label="学习资料" hidden><div class="view-heading"><div><p class="eyebrow">LIBRARY</p><h2>学习资料</h2><p>保留原始参考，随时回到具体画面。</p></div><a href="#workbench" class="panel-link">返回工作台 ↗</a></div><section class="panel library-panel"><div class="section-title"><h2>学习资料</h2><span>连续画面、口播、视觉观察和总结</span></div><div class="list-filters"><label>资料范围 <select id="knowledgeScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label></div><div id="knowledgeList" class="items"><p class="empty">分享第一条视频后，资料会出现在这里。</p></div></section>
+  <section id="libraryView" class="view" data-view-panel="library" aria-label="学习资料" hidden><div class="view-heading"><div><p class="eyebrow">LIBRARY</p><h2>学习资料</h2><p>保留原始参考，随时回到具体画面。</p></div></div><section class="panel library-panel"><div class="section-title"><h2>资料库</h2><span>连续画面、口播、视觉观察和总结</span></div><div class="list-filters"><label>资料范围 <select id="knowledgeScope"><option value="current">当前显示</option><option value="archived">已归档</option><option value="all">全部</option></select></label></div><div id="knowledgeList" class="items"><p class="empty">分享第一条视频后，资料会出现在这里。</p></div></section>
 </section>
-  <section id="settingsView" class="view settings-view" data-view-panel="settings" aria-label="设置" hidden><div class="view-heading"><div><p class="eyebrow">PREFERENCES</p><h2>设置</h2><p>连接、模型与授权配置，集中在这里管理。</p></div></div><div class="config-stack">  <details class="panel setup config-panel" id="setupPanel" data-panel="setup" open><summary><span>连接助手</span><small id="setupSummary">首次连接完成这三步</small></summary>
-    <div class="steps"><div><b>01</b><h3>连接抖音助手账号</h3><p id="browserInstructions">首次登录助手窗口；主号与它互关后，从手机给它发一条私信。</p><button id="openBrowser">打开抖音窗口</button></div>
-    <div><b>02</b><h3>绑定你的私信会话</h3><p>在浏览器里点开你的主号会话，再绑定。个人 Agent 只接受这个用户的直接指令；普通聊天在下方单独启用。</p><button id="bindOwner">绑定当前会话</button> <button id="startSelfBinding" class="secondary">选择自聊</button><div id="selfBindingControls" hidden><p class="hint">自动切换已暂停。请打开自己和自己的私信，再确认绑定。</p><button id="bindSelf">确认绑定自己</button> <button id="cancelSelfBinding" class="secondary">取消</button></div><p class="hint">同账号自聊的文字以「/助手 」开头，视频卡片直接转发。</p><small id="scanInfo"></small></div>
-    <div><b>03</b><h3>准备助手与口播转写</h3><p>建立固定的调度聊天。视频按完整时间轴逐段读取画面，口播在本机转写。</p><div class="button-row"><button id="createCoordinator">创建调度聊天</button><button id="reconnectCodex" class="secondary">重新连接助手</button><button id="setupAsr" class="secondary">安装转写模型</button></div></div></div>
-    <div class="button-row panel-tools"><button id="prepareDesktopShared" class="secondary">准备桌面共享连接</button><button id="checkDesktopShared" class="secondary">检查共享连接</button><button id="recoverDesktopTasks" class="secondary">恢复未提交的受阻任务</button></div><p id="desktopSharedState" class="hint">派发到已有 Codex 聊天需要桌面共用服务。准备完成后，完全退出桌面 Codex，再通过项目的“启动共享 Codex”入口打开；无需重新登录，也不会删除聊天。普通聊天与视频分析仍使用隔离的连接。</p>
+  <section id="chatsView" class="view" data-view-panel="chats" aria-label="会话" hidden>
+    <div class="view-heading"><div><p class="eyebrow">CONVERSATIONS</p><h2>会话</h2><p>管理抖音账号、私信与群聊。</p></div></div>
+    <div class="conversation-layout">
+      <aside class="panel conversation-sidebar" aria-label="会话目录">
+        <div class="section-title"><h2>会话目录</h2><button class="secondary" data-chat-destination="add">添加聊天</button></div>
+        <label class="conversation-search"><span class="sr-only">搜索已配置聊天</span><input id="chatSearch" type="search" placeholder="搜索已配置聊天"></label>
+        <div id="chatDirectory"></div>
+      </aside>
+      <div class="conversation-detail" id="conversationDetail">
+        <section class="panel conversation-heading" aria-labelledby="conversationTitle"><div class="section-title"><h2 id="conversationTitle" tabindex="-1">选择会话</h2><a class="panel-link" href="#chats" id="chatBack">会话目录</a></div><p id="conversationDescription" class="hint"></p><nav id="conversationTabs" class="conversation-tabs" aria-label="会话详情" hidden><a id="conversationHistoryTab" class="nav-link">最近记录</a><a id="conversationSettingsTab" class="nav-link">会话设置</a></nav></section>
+        <section class="panel" data-chat-pane="empty"><p class="empty">从目录选择个人 Agent、单聊或群聊。</p></section>
+        <div data-chat-pane="add" hidden><section class="panel"><h3>绑定个人 Agent</h3><p id="agentBindingLogin" class="hint" hidden>请先在<a href="#workbench">工作台</a>登录抖音。</p><div id="agentBindingForm">
+                <p class="hint">开始后会暂停自动切换。打开目标私信，再回到面板核验并确认绑定。</p>
+                <button id="startSelfBinding">开始选择私信</button>
+                <div id="selfBindingControls" hidden>
+                  <p id="bindingSelectionHint" class="hint"></p>
+                  <p id="agentBindingResult" class="hint" role="status"></p>
+                  <div class="button-row"><button id="bindOwner" class="secondary">核验当前会话</button><button id="bindSelf" disabled>确认绑定</button><button id="cancelSelfBinding" class="secondary">取消</button></div>
+                </div>
+                <small id="scanInfo"></small>
+              </div>
+</section><section class="panel"><h3>选择单聊或群聊</h3>    <div class="button-row panel-tools"><button id="selectAiChat">配置一个单聊或群聊</button><button id="finishAiSelection" class="secondary" hidden>完成选择，恢复轮询</button></div>
+    <div id="aiChatSelection" class="chat-selection" hidden>
+      <p class="hint">轮询与发送暂时暂停，最长 5 分钟。在助手的抖音窗口打开目标单聊或群聊，再读取。如果尚未核验助手身份，请从助手账号手动发一条普通消息。</p>
+      <button id="observeAiChat" class="secondary">读取当前抖音聊天</button>
+      <p id="observedChat" class="hint">尚未读取聊天</p>
+      <div class="button-row"><label>使用方式 <select id="observedChatMode"><option value="chat">普通聊天 AI · 仅回复</option><option value="agent">个人 Agent · 现有模式</option></select></label><label id="observedGroupReplyLabel" hidden>群聊回复范围 <select id="observedGroupReply"><option value="mentions">仅被 @ 时回复</option><option value="all">回复所有新消息</option></select></label><button id="enableAiChat" disabled>保存并启用此聊天</button></div>
+    </div>
+</section></div>
+        <div data-chat-pane="detail" hidden>
+          <div id="activeChatSettings">
+<section id="activeChatReplyOptions" class="panel"><h3>回复设置</h3><div id="aiChatList" class="ai-chat-list"></div><p id="activeChatModelSummary" class="hint"></p><div class="button-row"><a href="#settings/chat-defaults" class="panel-link" id="activeChatModelLink">普通聊天默认配置 ↗</a></div></section>
+          <section class="panel" id="instancePreferences" aria-labelledby="instanceSettingsHeading">
+              <h3 id="instanceSettingsHeading">此会话的覆盖设置</h3><p id="instancePreferenceHelp" class="hint">留空继承系统默认值。已设置的覆盖值仅应用于此会话。</p>
+              <div class="model-settings">
+                <label>模型<select id="instanceModel"></select></label>
+                <label>推理强度<select id="instanceEffort"></select></label>
+                <label>快速模式<select id="instanceFast"><option value="">继承默认</option><option value="on">开启</option><option value="off">关闭</option></select></label>
+                <label id="instanceContextRow">上下文预算（tokens）<input type="number" id="instanceBudget" min="4000" step="1000" placeholder="继承默认"></label>
+                <label id="instanceRouting">自动分聊<select id="instanceAutoRoute"><option value="">继承默认</option><option value="on">开启</option><option value="off">关闭</option></select></label>
+                <label id="instanceVideoDuration">视频时长上限（分钟）<input type="number" id="instanceVideoMinutes" min="0.5" max="120" step="0.5" placeholder="继承默认"></label>
+                <label id="instanceVideoDensity">视觉读取密度<select id="instanceVisualFps"><option value="">继承默认</option><option value="2">2 帧/秒</option><option value="4">4 帧/秒</option><option value="8">8 帧/秒</option></select></label>
+              </div>
+              <div class="button-row"><button id="saveInstancePreferences">保存会话覆盖</button><a href="#settings/agent-defaults" id="instanceSystemDefaults" class="panel-link">查看系统默认值 ↗</a></div>
+            </section>
+            <p class="hint" id="unboundAgentNotice" hidden><a href="#chats/add">绑定个人 Agent</a>后，可保存此会话的覆盖设置。</p>
+          </div>
+          <section id="activeChatRecords" class="panel conversation-records" aria-labelledby="conversationRecordsHeading"><div class="section-title"><h2 id="conversationRecordsHeading">最近消息与送达</h2><a href="#workbench" id="conversationWorkLink" class="panel-link" hidden>查看完整任务 ↗</a></div><p class="hint">显示桥接器保存的记录。</p><div class="button-row" id="conversationRecordActions"></div><div id="botHistory"></div><div id="agentChatHistory" hidden></div></section>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="dispatchView" class="view settings-view" data-view-panel="dispatch" aria-label="项目派发" hidden>
+    <div class="view-heading"><div><p class="eyebrow">DISPATCH</p><h2>项目派发</h2><p>管理目标聊天授权、桌面共享连接与受阻任务恢复。</p></div></div>
+    <div class="config-stack">  <details class="panel config-panel" id="targetsPanel" data-panel="targets" open><summary><span>可以交给哪些助手聊天</span><small id="targetsSummary">设置授权的目标聊天</small></summary><div class="button-row panel-tools"><label>目标后端 <select id="targetHarness"><option value="codex">Codex</option><option value="dsh">DeepSeek Harness</option></select></label><button id="loadThreads" class="secondary">读取本机聊天</button></div><p class="hint">给允许接收任务的聊天设置一个好记的别名。之后在抖音说「把这个交给别名去做」，或发送「/派给 别名 具体任务」。</p>
+    <div class="target-add"><select id="threadSelect"><option value="">先读取聊天列表</option></select><input id="targetAlias" placeholder="别名，例如：网站项目" maxlength="60"><button id="addTarget">加入名单</button></div><div id="targetList" class="target-list"></div>
   </details>
-  <details class="panel config-panel" id="modelPanel" data-panel="model" open>
-    <summary><span>个人 Agent 默认模型</span><small id="modelSummary">设置模型、推理强度与上下文预算</small></summary>
+
+      <section class="panel" aria-labelledby="desktopSharedHeading"><h2 id="desktopSharedHeading">桌面共享连接</h2>    <div class="button-row panel-tools"><button id="prepareDesktopShared" class="secondary">准备桌面共享连接</button><button id="checkDesktopShared" class="secondary">检查共享连接</button><button id="recoverDesktopTasks" class="secondary">恢复未提交的受阻任务</button></div><p id="desktopSharedState" class="hint">派发到已有 Codex 聊天需要桌面共用服务。准备完成后，完全退出桌面 Codex，再通过项目的“启动共享 Codex”入口打开；无需重新登录，也不会删除聊天。普通聊天与视频分析仍使用隔离的连接。</p>
+</section>
+    </div>
+  </section>
+  <section id="settingsView" class="view settings-view" data-view-panel="settings" aria-label="系统" hidden>
+    <div class="view-heading"><div><p class="eyebrow">SYSTEM</p><h2>系统</h2><p>配置个人 Agent 和普通聊天默认值，管理外观、备份与诊断。</p></div></div>
+    <div class="config-stack">
+<section class="panel"><h2>抖音使用模式</h2><p id="douyinModeStatus" class="hint"></p><div class="button-row"><label>使用模式 <select id="douyinMode"><option value="">请选择</option><option value="self">主号自聊</option><option value="assistant">助手代收</option></select></label><button id="saveDouyinMode">保存使用模式</button></div></section>
+<section class="panel system-defaults" aria-labelledby="defaultsHeading"><h2 id="defaultsHeading">默认模型配置</h2><p class="hint">为两类 AI 设置默认值。单独会话可在其设置中覆盖。</p>        <details class="config-panel defaults-subsection" id="modelPanel" data-panel="model" open>
+    <summary><span>个人 Agent</span><small id="modelSummary">设置模型、推理强度与上下文预算</small></summary>
     <div class="button-row panel-tools"><label>个人 Agent 后端 <select id="agentHarness"><option value="codex">Codex</option><option value="dsh">DeepSeek Harness</option></select></label><button id="saveHarness" class="secondary">保存后端</button><button id="reloadModels" class="secondary">刷新模型名单</button></div>
     <p id="harnessState" class="hint">Codex 为默认后端。切换个人 Agent 后端后重启生效；旧需求和目标聊天保持各自后端。</p>
     <p class="hint">个人 Agent 的回复、视频理解和派发任务使用这组配置；普通聊天独立设置。需求判断使用独立的轻量临时会话。快速模式会按 Codex 规则增加用量。</p>
@@ -55,10 +104,12 @@
       <label>上下文预算（tokens）<input type="number" id="contextBudget" min="4000" max="200000" step="1000" value="48000"></label>
       <button id="savePreferences">保存默认配置</button>
     </div>
+    <h3>视频读取默认值</h3>    <div class="settings-row video-defaults"><label>单条视频时长上限（分钟）<input type="number" id="maxMinutes" value="30" min="1" max="120"></label><label>视觉读取密度 <select id="visualFps"><option value="4">连续视觉 · 4 帧/秒</option><option value="8">动效细看 · 8 帧/秒</option><option value="2">较慢画面 · 2 帧/秒</option></select></label><label>收到视频时 <select id="ackMode" disabled><option value="auto">仅贴表情：收到 / 运行 / 完成</option></select></label><button id="saveConfig" class="secondary">保存配置</button></div>
+
     <p id="effectiveModel" class="hint">模型名单来自所选后端的本机登录，登录后可刷新。</p>
   </details>
-  <details class="panel config-panel" id="chatsPanel" data-panel="chats" open>
-    <summary><span>启用 AI 的抖音聊天</span><small id="chatsSummary">个人 Agent 与普通聊天分别配置</small></summary>
+        <details class="config-panel defaults-subsection" id="chatsPanel" data-panel="chats" open>
+    <summary><span>普通聊天 AI</span><small id="chatsSummary">个人 Agent 与普通聊天分别配置</small></summary>
     <p class="hint">个人 Agent 就是现有的用户单聊模式。普通聊天使用独立上下文，可查公开资料、计算和查询时间；启用容器后还可在隔离环境验证 Python 代码。本机项目、个人文件、账户、终端、浏览器操作和电脑控制保持关闭。群聊可选仅被原生 @ 时回复或回复所有新消息，每段回复原生引用触发消息。</p>
     <div class="model-settings">
       <label>普通聊天后端<select id="chatHarness"><option value="codex">Codex</option><option value="dsh">DeepSeek Harness</option></select></label>
@@ -72,21 +123,33 @@
     </div>
     <p id="chatEffectiveModel" class="hint">普通聊天独立选模型；留空跟随所选后端默认，不跟随个人 Agent 的设置。保存后从下一轮起生效。</p>
     <div class="button-row"><button id="checkCodeSandbox" class="secondary">检查代码沙箱</button><button id="setupCodeSandbox" class="secondary">准备容器镜像</button></div><p id="codeSandboxState" class="hint">代码沙箱需先安装并启动 Docker Linux 容器引擎，再准备固定 Python 镜像。无宿主目录挂载、无网络，限 256MB / 30秒。环境不通过核验时不执行代码。</p>
-    <div class="button-row panel-tools"><button id="selectAiChat">配置一个单聊或群聊</button><button id="finishAiSelection" class="secondary" hidden>完成选择，恢复轮询</button></div>
-    <div id="aiChatSelection" class="chat-selection" hidden>
-      <p class="hint">轮询与发送暂时暂停，最长 5 分钟。在助手的抖音窗口打开目标单聊或群聊，再读取。如果尚未核验助手身份，请从助手账号手动发一条普通消息。</p>
-      <button id="observeAiChat" class="secondary">读取当前抖音聊天</button>
-      <p id="observedChat" class="hint">尚未读取聊天</p>
-      <div class="button-row"><label>使用方式 <select id="observedChatMode"><option value="chat">普通聊天 AI · 仅回复</option><option value="agent">个人 Agent · 现有模式</option></select></label><label id="observedGroupReplyLabel" hidden>群聊回复范围 <select id="observedGroupReply"><option value="mentions">仅被 @ 时回复</option><option value="all">回复所有新消息</option></select></label><button id="enableAiChat" disabled>保存并启用此聊天</button></div>
+  </details>
+</section>
+      <section class="panel" aria-labelledby="runtimeHeading"><h2 id="runtimeHeading">运行组件</h2><div class="runtime-grid">
+        <section id="runtimeSection"><h3>个人 Agent</h3><p id="agentSetupStatus" class="hint" role="status">正在检查本机助手连接…</p><div class="button-row"><button id="beginCodexLogin" hidden>准备 ChatGPT 登录</button><a id="codexLoginLink" class="panel-link" target="_blank" rel="noopener noreferrer" hidden>打开 ChatGPT 登录页 ↗</a><button id="createCoordinator" disabled>创建调度聊天</button><button id="reconnectCodex" class="secondary">检查连接</button></div><a href="#workbench" class="panel-link setup-return" data-setup-return="#settings/runtime" hidden>返回工作台 ↗</a></section>
+        <section id="transcriptionSection"><h3>口播转写</h3><p class="hint">本机模型负责转写中文、粤语等口播。首次安装需下载约 163 MB。</p><p id="asrSetupStatus" class="hint" role="status">正在检查转写模型…</p><button id="setupAsr" class="secondary">安装转写模型</button><br><a href="#workbench" class="panel-link setup-return" data-setup-return="#settings/transcription" hidden>返回工作台 ↗</a></section>
+      </div></section>
+        <details class="panel config-panel" id="storagePanel" data-panel="storage"><summary><span>数据与恢复</span><small>配置与资料自动保存 · 展开查看备份</small></summary><p id="storagePath" class="hint">正在读取固定数据目录…</p><p id="backupInfo" class="hint">已保存的设置即时写入磁盘，无需等退出程序；原视频、画面、需求记忆和抖音登录态保存在同一固定目录。</p><div class="button-row"><button id="backupNow" class="secondary">备份配置与记录</button></div><section class="retention-settings" aria-labelledby="retentionHeading"><h3 id="retentionHeading">归档保留策略</h3><div class="retention-controls"><label class="check-label"><input id="retentionEnabled" type="checkbox">到期自动永久清理</label><div class="retention-duration"><label for="retentionAge">归档后保留</label><div class="button-row"><input id="retentionAge" type="number" min="1" max="3650" step="1" value="30" aria-label="归档保留时长"><select id="retentionUnit" aria-label="保留时间单位"><option value="days">天</option><option value="hours">小时</option></select></div></div><button id="saveRetention">保存保留策略</button></div><p class="hint">适用于已归档的需求、任务、学习资料及群聊会话记录。默认关闭。永久清理桥接记录与专属缓存；仍在执行、送达或原生归档未核实的记录会保留，被其他任务引用的资料也会保留。原生 Agent 会话继续归档，备份不删除。</p><p id="retentionStatus" class="hint"></p><details data-fold-key="retention-blocked"><summary>暂保留原因</summary><div id="retentionBlocked"></div></details></section></details>
+
+      <section class="panel" id="appearanceSection" aria-labelledby="appearanceHeading"><h2 id="appearanceHeading">界面外观</h2>
+        <div class="appearance-fields">
+          <label for="uiLayoutChoice"><span>界面风格</span><select id="uiLayoutChoice"><option value="modern">现行风格</option><option value="classic">经典风格（最初版）</option></select></label>
+          <div><span>深浅外观</span><button id="themeToggle" class="appearance-toggle" aria-label="切换深色外观"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14a8 8 0 0 1-10-10 8 8 0 1 0 10 10Z"/></svg><span id="themeValue">浅色</span></button></div>
+        </div>
+      </section>
+      <section class="panel help-panel" aria-labelledby="systemHelpHeading"><h2 id="systemHelpHeading">帮助与诊断</h2><h3>处理、送达，各自有记录</h3><p>任务执行、文字回复和消息表情分别核验。最后一段确认送达后，才算交付完成。</p>    <details data-fold-key="help-commands" id="commandsPanel"><summary>抖音中的简洁命令</summary><pre id="commandHelp" class="command-help">/帮助  查看全部命令
+/模型  查看模型名单
+/强度  查看可用档位
+/快 开|关
+/密度 2|4|8
+/分聊 开|关
+/新建 标题
+/找 关键词
+/切换 需求ID
+/续看 [视频ID]
+/重连</pre></details>
+  <details class="panel logs" data-fold-key="logs"><summary>运行记录 <small>连接或处理失败时查看</small></summary><div id="eventList"></div></details></section>
     </div>
-    <div id="aiChatList" class="ai-chat-list"></div>
-    <details data-fold-key="bot-history"><summary>普通聊天记录与送达状态</summary><p class="hint">每个群保留一个隔离会话，达到预算后交接到新会话，旧会话自动归档。单聊仍使用临时会话和有限历史。轻量看视频需逐群启用；所有聊天均不能操作本机项目或账户。</p><div id="botHistory"></div></details>
-  </details>
-  <details class="panel config-panel" id="targetsPanel" data-panel="targets" open><summary><span>可以交给哪些助手聊天</span><small id="targetsSummary">设置授权的目标聊天</small></summary><div class="button-row panel-tools"><label>目标后端 <select id="targetHarness"><option value="codex">Codex</option><option value="dsh">DeepSeek Harness</option></select></label><button id="loadThreads" class="secondary">读取本机聊天</button></div><p class="hint">给允许接收任务的聊天设置一个好记的别名。之后在抖音说「把这个交给别名去做」，或发送「/派给 别名 具体任务」。</p>
-    <div class="target-add"><select id="threadSelect"><option value="">先读取聊天列表</option></select><input id="targetAlias" placeholder="别名，例如：网站项目" maxlength="60"><button id="addTarget">加入名单</button></div><div id="targetList" class="target-list"></div>
-    <div class="settings-row"><label>单条视频时长上限 <input type="number" id="maxMinutes" value="30" min="1" max="120"> 分钟</label><label>视觉读取密度 <select id="visualFps"><option value="4">连续视觉 · 4 帧/秒</option><option value="8">动效细看 · 8 帧/秒</option><option value="2">较慢画面 · 2 帧/秒</option></select></label><label>收到视频时 <select id="ackMode" disabled><option value="auto">仅贴表情：收到 / 运行 / 完成</option></select></label><button id="saveConfig" class="secondary">保存配置</button></div>
-  </details>
-  <details class="panel config-panel" id="storagePanel" data-panel="storage"><summary><span>数据与恢复</span><small>配置与资料自动保存 · 展开查看备份</small></summary><div class="button-row panel-tools"><button id="backupNow" class="secondary">备份配置与记录</button></div><p id="storagePath" class="hint">正在读取固定数据目录…</p><p id="backupInfo" class="hint">已保存的设置即时写入磁盘，无需等退出程序；原视频、画面、需求记忆和抖音登录态保存在同一固定目录。</p><section class="retention-settings" aria-labelledby="retentionHeading"><h3 id="retentionHeading">归档保留策略</h3><div class="button-row"><label class="check-label"><input id="retentionEnabled" type="checkbox">到期自动永久清理</label><label>归档后保留 <input id="retentionAge" type="number" min="1" max="3650" step="1" value="30" aria-label="归档保留时长"></label><select id="retentionUnit" aria-label="保留时间单位"><option value="days">天</option><option value="hours">小时</option></select><button id="saveRetention">保存保留策略</button></div><p class="hint">适用于已归档的需求、任务、学习资料及群聊会话记录。默认关闭。永久清理桥接记录与专属缓存；仍在执行、送达或原生归档未核实的记录会保留，被其他任务引用的资料也会保留。原生 Agent 会话继续归档，备份不删除。</p><p id="retentionStatus" class="hint"></p><details data-fold-key="retention-blocked"><summary>暂保留原因</summary><div id="retentionBlocked"></div></details></section></details>
-</div></section>
+  </section>
   <footer><span class="footer-brand">Agent Bridge</span><span id="consoleVersion"></span></footer>
 </main><dialog id="noteDialog"><button id="closeNote" class="secondary">关闭</button><pre id="noteText"></pre></dialog><dialog id="visualDialog"><button id="closeVisual" class="secondary">关闭</button><h2>连续视觉覆盖</h2><p id="visualInfo"></p><div id="visualSheets"></div><pre id="visualNotes"></pre></dialog><script type="module" src="/app.js"></script></body></html>

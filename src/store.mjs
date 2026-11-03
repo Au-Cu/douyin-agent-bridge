@@ -14,7 +14,7 @@ export class Store {
     if(!existsSync(join(root,'bridge.sqlite'))&&(existsSync(join(root,'backups','latest.json'))||established&&['knowledge','needs','reply-references'].some(name=>existsSync(join(root,name))&&readdirSync(join(root,name)).length)))throw new Error('已保存资料的数据库文件缺失，已停止启动并保留资料与备份，不能创建空库替代。');
     this.db = new DatabaseSync(join(root, 'bridge.sqlite'));
     if(this.db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('数据库完整性检查未通过，已保留原文件；请从备份恢复并核实任务状态，不能创建空记忆替代。');
-    this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
+    this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA secure_delete=ON;PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS deleted_messages(hash TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS deleted_reply_links(hash TEXT PRIMARY KEY);
@@ -77,10 +77,11 @@ export class Store {
   wasDeletedMessage(id){return !!id&&!!this.db.prepare('SELECT 1 FROM deleted_messages WHERE hash=?').get(createHash('sha256').update(String(id)).digest('hex'));}
   retainNumber(key,minimum=0){return Number(this.db.prepare("INSERT INTO app_settings VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT) RETURNING value").get('sequence:'+key,String(minimum),Date.now()).value);}
   nextNumber(key,minimum=0){const next=this.retainNumber(key,minimum)+1;this.db.prepare('UPDATE app_settings SET value=?,updated=? WHERE key=?').run(String(next),Date.now(),'sequence:'+key);return next;}
-  pendingMessages() { return this.db.prepare("SELECT m.* FROM messages m WHERE m.status='new' AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=m.id) AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=m.id AND a.archived=1) ORDER BY m.created LIMIT 20").all(); }
+  pendingMessages(peer='') { return this.db.prepare("SELECT m.* FROM messages m WHERE m.status='new' AND (?='' OR m.peer=?) AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=m.id) AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=m.id AND a.archived=1) ORDER BY m.created LIMIT 20").all(peer,peer); }
   addKnowledge(item) {
     this.db.prepare('INSERT OR REPLACE INTO knowledge VALUES(?,?,?,?,?,?)').run(item.id,item.title,item.transcript||'',item.summary||'',item.path,Date.now());
   }
+  knowledgeCleanupPending(id){return !!this.db.prepare('SELECT 1 FROM deletion_cleanup, json_each(paths) WHERE value=? LIMIT 1').get('knowledge/'+id);}
   knowledge(id) { return this.db.prepare('SELECT * FROM knowledge WHERE id=?').get(id); }
   search(query='',limit=6) {
     const terms = String(query).trim().split(/[\s,，。；;]+/).filter(Boolean).slice(0,8);
@@ -96,7 +97,10 @@ export class Store {
     return id;
   }
   taskStatus(id,status,result='',turn='') { this.db.prepare('UPDATE tasks SET status=?,result=?,turn=CASE WHEN ?=\'\' THEN turn ELSE ? END WHERE id=?').run(status,result,turn,turn,id); }
-  queuedTasks() { return this.db.prepare("SELECT t.* FROM tasks t WHERE t.status='queued' AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=json_extract(t.context,'$.operationId')) AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=json_extract(t.context,'$.operationId') AND a.archived=1) ORDER BY t.created LIMIT 20").all(); }
+  queuedTasks(peer='') {
+    const scope=peer?" AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.id=json_extract(t.context,'$.operationId') AND o.peer<>?)":"";
+    return this.db.prepare("SELECT t.* FROM tasks t WHERE t.status='queued'"+scope+" AND NOT EXISTS(SELECT 1 FROM interruptions i WHERE i.operation_id=json_extract(t.context,'$.operationId')) AND NOT EXISTS(SELECT 1 FROM archive_records a WHERE a.kind='task' AND a.id=json_extract(t.context,'$.operationId') AND a.archived=1) ORDER BY t.created LIMIT 20").all(...(peer?[peer]:[]));
+  }
   knowledgeList({scope='current',limit=100}={}){const where=scope==='all'?'1=1':scope==='archived'?'COALESCE(a.archived,0)=1':'COALESCE(a.archived,0)=0';return this.db.prepare("SELECT k.*,COALESCE(a.archived,0) AS archived FROM knowledge k LEFT JOIN archive_records a ON a.kind='knowledge' AND a.id=k.id WHERE "+where+' ORDER BY k.created DESC LIMIT ?').all(limit);}
   enqueueReply(peer,body,{kind='text',payload={},priority=0,dedupe=''}={}) {
     const id=randomUUID();

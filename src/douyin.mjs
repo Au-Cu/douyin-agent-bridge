@@ -1,4 +1,5 @@
 import { chromium } from 'playwright-core';
+import {execFile} from 'node:child_process';
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { toPlainChatText,comparableChatText,matchesOutgoingText } from './chat-text.mjs';
@@ -163,7 +164,8 @@ export function inspectChatSurface(){
   const geometry=e=>{const r=e.getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)};};
   const rows=[...document.querySelectorAll('[data-bridge-message-id]')].filter(visible);
   const hit=e=>{const r=e.getBoundingClientRect(),x=Math.max(0,Math.min(innerWidth-1,r.x+Math.min(24,r.width/4))),y=Math.max(0,Math.min(innerHeight-1,r.y+Math.min(24,r.height/4))),top=document.elementFromPoint(x,y);return {clear:!!top&&(e===top||e.contains(top)),topClass:String(top?.className||'').slice(0,160),topTag:top?.tagName||'',modalId:top?.closest('[id]')?.id||''};};
-  return {viewport:{width:innerWidth,height:innerHeight},messages:rows.length,rows:rows.slice(-6).map(row=>{const target=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row;return {className:String(row.className),...geometry(target),hit:hit(target)};}),layers:[...document.querySelectorAll('[role="dialog"],[aria-modal="true"],#pc-im-popup-container,[class*="semi-modal-wrap"]')].filter(visible).map(e=>({tag:e.tagName,id:e.id,className:String(e.className).slice(0,160),...geometry(e),messageRows:e.querySelectorAll('[data-bridge-message-id]').length,iframes:e.querySelectorAll('iframe').length})).slice(0,12)};
+  const editors=[...document.querySelectorAll('[contenteditable="true"],textarea')].map(e=>{const r=e.getBoundingClientRect(),style=getComputedStyle(e),onScreen=visible(e)&&r.x<innerWidth&&r.y<innerHeight&&r.right>0&&r.bottom>0;return {tag:e.tagName,className:String(e.className).slice(0,160),...geometry(e),visible:visible(e),onScreen,display:style.display,visibility:style.visibility,hit:onScreen?hit(e):null,ancestors:[e.parentElement,e.parentElement?.parentElement,e.parentElement?.parentElement?.parentElement].filter(Boolean).map(p=>({tag:p.tagName,className:String(p.className).slice(0,120),...geometry(p),scrollHeight:p.scrollHeight,clientHeight:p.clientHeight,overflow:getComputedStyle(p).overflow}))};});
+  return {viewport:{width:innerWidth,height:innerHeight,outerWidth:globalThis.outerWidth,outerHeight:globalThis.outerHeight,visualHeight:globalThis.visualViewport?.height,visualScale:globalThis.visualViewport?.scale},editors,messages:rows.length,rows:rows.slice(-6).map(row=>{const target=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row;return {className:String(row.className),...geometry(target),hit:hit(target)};}),layers:[...document.querySelectorAll('[role="dialog"],[aria-modal="true"],#pc-im-popup-container,[class*="semi-modal-wrap"]')].filter(visible).map(e=>({tag:e.tagName,id:e.id,className:String(e.className).slice(0,160),...geometry(e),messageRows:e.querySelectorAll('[data-bridge-message-id]').length,iframes:e.querySelectorAll('iframe').length})).slice(0,12)};
 }
 
 // Inspect only a visible message context menu. Emoji identity must come from
@@ -258,7 +260,7 @@ export class DouyinAdapter {
     }
     if(!this.context){
       await mkdir(join(this.root,'browser-profile'),{recursive:true});
-      const context=this.context=await chromium.launchPersistentContext(join(this.root,'browser-profile'),{channel:'msedge',headless:false,viewport:{width:1280,height:860},args:['--disable-notifications']});
+      const context=this.context=await chromium.launchPersistentContext(join(this.root,'browser-profile'),{channel:'msedge',headless:false,viewport:null,args:['--disable-notifications']});
       context.on('close',()=>{if(this.context===context){this.context=null;this.page=null;this.status='closed';}});
     }
     this.page=this.context.pages().find(p=>p.url().startsWith('https://www.douyin.com/chat'))||this.context.pages()[0]||await this.context.newPage();
@@ -311,6 +313,7 @@ export class DouyinAdapter {
     const cookies=await this.context.cookies('https://www.douyin.com/'),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
     const marker=identityCookies.length?createHash('sha256').update(identityCookies.join(';')).digest('hex'):'';
     const value=bindScanIdentity(this,raw,marker);
+    value.loggedIn=!raw.loginRequired&&cookies.some(c=>/^(sessionid|sessionid_ss)$/.test(c.name)&&c.value);
     if(!observeOnly){if(best){this.page=best.page;this.chatFrame=best.frame;}this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
   }
   async uiDiagnostics(){
@@ -501,6 +504,27 @@ export class DouyinAdapter {
       if(!head.includes(Buffer.from('ftyp')))throw new Error('下载结果不是有效 MP4，未进行视频学习');
       await file.close();await rename(destination+'.part',destination);return size;
     } catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
+  }
+  async focus(){
+    if(!this.page||this.page.isClosed())return;
+    await this.page.bringToFront();
+    if(process.platform!=='win32')return;
+    const command=String.raw`
+$profile=[regex]::Escape($env:BRIDGE_FOCUS_PROFILE)
+$pattern='(?:^|\s)--user-data-dir=(?:"'+$profile+'"|'+$profile+')(?=\s|$)'
+$edge=Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -match $pattern -and $_.CommandLine -notmatch '\s--type=' } | Select-Object -First 1
+if($edge){$shell=New-Object -ComObject WScript.Shell; [void]$shell.AppActivate([int]$edge.ProcessId)}
+`;
+    const powershell=join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+    await new Promise(resolve=>execFile(powershell,['-NoProfile','-NonInteractive','-Command',command],{
+      env:{...process.env,BRIDGE_FOCUS_PROFILE:join(this.root,'browser-profile')},windowsHide:true,timeout:5000
+    },()=>resolve()));
+  }
+  async logout(){
+    await this.open();
+    await this.context.clearCookies({domain:/(?:^|\.)douyin\.com$/i});
+    this.lastScan=null;this.status='waiting_login';
+    await this.page.reload({waitUntil:'domcontentloaded'});
   }
   async close(){await this.context?.close();}
 }

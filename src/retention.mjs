@@ -1,4 +1,4 @@
-import {createHash,randomUUID} from 'node:crypto';import {resolve} from 'node:path';
+import {createHash,randomUUID} from 'node:crypto';
 const hash=value=>createHash('sha256').update(String(value)).digest('hex');
 export class ArchiveRetention{
   constructor({store,deletion,sessions}){Object.assign(this,{store,deletion,sessions});this.db=store.db;this.db.exec('CREATE TABLE IF NOT EXISTS archive_retention_checks(kind TEXT,id TEXT,checked INTEGER,PRIMARY KEY(kind,id))');}
@@ -20,15 +20,14 @@ export class ArchiveRetention{
   }
   cleanup(paths,fn){const key=randomUUID();this.db.exec('BEGIN IMMEDIATE');try{fn();this.db.prepare('INSERT INTO deletion_cleanup VALUES(?,?,?)').run(key,JSON.stringify(paths),Date.now());this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}this.deletion.cleanup();}
   knowledge(id){
-    const k=this.store.knowledge(id);if(!k)return;if(!/^\d{12,24}$/.test(id)||resolve(k.path)!==resolve(this.store.root,'knowledge',id,'note.md'))throw new Error('资料目录未通过归属校验，已保留');
-    if(this.db.prepare('SELECT 1 FROM need_assets WHERE video_id=?').get(id)||this.db.prepare("SELECT 1 FROM messages WHERE json_extract(body,'$.awemeId')=?").get(id)||this.db.prepare("SELECT 1 FROM tasks, json_each(tasks.context,'$.videos') v WHERE json_extract(v.value,'$.id')=?").get(id))throw new Error('资料仍被保留的需求或任务引用，暂不删除');
-    this.cleanup(['knowledge/'+id],()=>{this.db.prepare('DELETE FROM knowledge WHERE id=?').run(id);this.db.prepare("DELETE FROM archive_records WHERE kind='knowledge' AND id=?").run(id);});
+    const preview=this.deletion.prepare('knowledge',id);
+    return this.deletion.remove({kind:'knowledge',id,token:preview.token});
   }
   session(id){
     const s=this.sessions.get(id);if(!s)return;if(this.sessions.current(s.peer)?.id===id||!['done','unsupported'].includes(s.archive_state))throw new Error('当前会话或 Agent 端归档结果未核实，暂不删除');
     const messages=this.db.prepare('SELECT b.* FROM bot_messages b JOIN chat_session_messages m ON m.message_id=b.id WHERE m.session_id=?').all(id);
-    if(messages.some(m=>['new','preparing','submitted','replying','delivery_uncertain','uncertain'].includes(m.status)))throw new Error('该会话还有执行或送达未核实，暂不删除');
-    const ids=new Set(messages.map(m=>m.id)),out=this.db.prepare('SELECT * FROM outbox').all().filter(o=>ids.has(JSON.parse(o.payload||'{}').botId));if(out.some(o=>['pending','sending','uncertain'].includes(o.status)))throw new Error('该会话仍有待发送或未核实回执，暂不删除');
+    if(messages.some(m=>['new','preparing','submitted','replying','delivery_uncertain','uncertain','held'].includes(m.status)))throw new Error('该会话还有执行或送达未核实，暂不删除');
+    const ids=new Set(messages.map(m=>m.id)),out=this.db.prepare('SELECT * FROM outbox').all().filter(o=>ids.has(JSON.parse(o.payload||'{}').botId));if(out.some(o=>['pending','sending','uncertain','held'].includes(o.status)))throw new Error('该会话仍有待发送或未核实回执，暂不删除');
     const media=this.db.prepare('SELECT message_id,folder FROM chat_media').all().filter(m=>ids.has(m.message_id));if(media.some(m=>!/^[a-f\d]{64}$/.test(m.folder)))throw new Error('群聊视频缓存目录无效');
     this.cleanup(media.map(m=>'chat-media/'+m.folder),()=>{
       for(const m of messages){this.db.prepare('INSERT OR IGNORE INTO deleted_messages VALUES(?)').run(hash(m.id));this.db.prepare('DELETE FROM bot_messages WHERE id=?').run(m.id);const source=JSON.parse(m.body);this.db.prepare('DELETE FROM bot_seen WHERE peer=? AND platform_id=?').run(m.peer,String(source.id));this.db.prepare('DELETE FROM chat_media WHERE message_id=?').run(m.id);}

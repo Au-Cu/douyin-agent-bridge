@@ -1,3 +1,4 @@
+import {verifiedAgentBinding,agentBindings} from '../src/conversation-config.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtempSync,mkdirSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
 import {Store} from '../src/store.mjs';import {Preferences,chooseModel} from '../src/preferences.mjs';import {parseCommand,onOff} from '../src/commands.mjs';
 const base=fileURLToPath(new URL('../data/test-runs/',import.meta.url));mkdirSync(base,{recursive:true});
@@ -33,3 +34,37 @@ test('personal Agent and ordinary chat keep independent model, effort and fast d
 test('reply-only defaults allow text-only models while Agent visual validation still applies',async()=>{const store=new Store(mkdtempSync(join(base,'text-chat-'))),textCatalog={...catalog,models:catalog.models.map(m=>m.model==='test-luna'?{...m,inputModalities:['text']}:m)},p=new Preferences({store,codex:{models:async()=>textCatalog}});try{await p.updateChat({model:'test-luna',reasoningEffort:'high'});assert.equal((await p.chatWork()).model,'test-luna');await assert.rejects(p.update({model:'test-luna',reasoningEffort:'low'}),/支持图片/);}finally{store.close();}});
 
 test('upgrade copies the previously shared combination once, then further Agent changes do not change chat defaults',()=>{const root=mkdtempSync(join(base,'model-migrate-'));writeFileSync(join(root,'config.json'),JSON.stringify({model:'test-sol',reasoningEffort:'max',fastMode:true,owner:{chatKey:'owner',peerUid:'user'}}));const s=new Store(root);assert.equal(s.config.chatModel,'test-sol');assert.equal(s.config.chatReasoningEffort,'max');assert.equal(s.config.chatFastMode,true);s.saveConfig({model:'test-luna',reasoningEffort:'low',fastMode:false});s.close();const next=new Store(root);try{assert.equal(next.config.model,'test-luna');assert.equal(next.config.chatModel,'test-sol');assert.equal(next.config.chatReasoningEffort,'max');assert.equal(next.config.chatFastMode,true);assert.equal(next.config.owner.chatKey,'owner');}finally{next.close();}});
+
+test('verified main binding distinguishes self and assistant using the authenticated UID',()=>{
+  const main='111111',assistant='222222',self={chatKey:'0:1:111111:111111',type:'single',peerUid:main,selfUid:main,selfChat:true};
+  const direct={chatKey:'0:1:111111:222222',type:'single',peerUid:main,selfUid:assistant};
+  const scan=(peer,direction)=>({peer,messages:[{conversation:peer.chatKey,sender:main,created:1,direction}]});
+  assert.equal(verifiedAgentBinding(scan(self,'out')).mode,'self');
+  assert.equal(verifiedAgentBinding(scan(direct,'in')).mode,'assistant');
+  assert.throws(()=>verifiedAgentBinding(scan({...direct,selfUid:''},'in')),/当前登录账号/);
+  assert.throws(()=>verifiedAgentBinding(scan({...self,selfChat:false},'out')),/对应关系/);
+  assert.throws(()=>verifiedAgentBinding(scan(direct,'out')),/主号发出/);
+  assert.deepEqual(agentBindings({owner:direct,agentBindings:{self}}),{self,assistant:direct});
+});
+
+test('conversation overrides persist independently by peer, account, backend and mode',async()=>{
+  const store=new Store(mkdtempSync(join(base,'conversation-settings-')));
+  const prefs=new Preferences({store,codex:{models:async()=>catalog}}),self={chatKey:'self',selfUid:'111111'},assistant={chatKey:'assistant',selfUid:'222222'},group={chatKey:'group',selfUid:'222222'};
+  try{
+    store.saveConfig({owner:self});
+    await prefs.updateConversation({peer:self,chat:false,harness:'codex',patch:{model:'test-luna',reasoningEffort:'low',visualFps:8,maxVideoSeconds:90},current:()=>true});
+    await prefs.updateConversation({peer:group,chat:true,harness:'codex',patch:{model:'test-luna',reasoningEffort:'high',contextBudget:8000},current:()=>true});
+    assert.equal((await prefs.agentWork()).model,'test-luna');
+    assert.equal(prefs.agentConfig().visualFps,8);
+    assert.equal(prefs.agentConfig().maxVideoSeconds,90);
+    assert.equal((await prefs.work()).model,'test-sol');
+    assert.equal((await prefs.chatWork('codex',group)).model,'test-luna');
+    assert.equal((await prefs.chatWork('codex',{...group,selfUid:'999999'})).model,'test-sol');
+    store.saveConfig({owner:assistant});
+    assert.equal((await prefs.agentWork()).model,'test-sol');
+    assert.equal(prefs.agentConfig().visualFps,4);
+    await assert.rejects(prefs.updateConversation({peer:group,chat:true,harness:'codex',patch:{model:'test-luna',reasoningEffort:'high'},current:()=>false}),/设置已变化/);
+    await prefs.updateConversation({peer:group,chat:true,harness:'codex',patch:{},current:()=>true});
+    assert.equal((await prefs.chatWork('codex',group)).model,'test-sol');
+  }finally{store.close();}
+});

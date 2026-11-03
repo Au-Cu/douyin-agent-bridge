@@ -33,8 +33,8 @@ try {
     assert.ok(after.same&&after.focus);assert.ok(Math.abs(after.y-before)<=2);
   });
   await check('expanded help, commands and retry log survive updates',async()=>{
-    await page.locator('#commandsPanel>summary').click();
-    await page.locator('[data-fold-key="commands"]>summary').click();
+    await page.locator('a[data-view="settings"]').click();await page.locator('#commandsPanel>summary').click();
+    await page.locator('a[data-view="workbench"]').click();await page.locator('[data-fold-key="commands"]>summary').click();
     await page.locator('.retry-details>summary').click();
     await page.evaluate(()=>window.retryNode=document.querySelector('.retry-details'));
     state.work.find(w=>w.id==='demo-task-24').detail+=' 调度详情更新。';
@@ -42,14 +42,14 @@ try {
     assert.ok(await page.evaluate(()=>document.querySelector('#commandsPanel').open&&document.querySelector('[data-fold-key="commands"]').open&&document.querySelector('.retry-details').open&&window.retryNode===document.querySelector('.retry-details')));
   });
   await check('dirty model form and option focus survive polls',async()=>{
-    await page.locator('a[data-view="settings"]').click();await page.locator('#modelPanel>summary').click();
+    await page.locator('a[data-view="settings"]').click();if(!await page.locator('#modelPanel').evaluate(e=>e.open))await page.locator('#modelPanel>summary').click();
     await page.locator('#defaultModel').selectOption('gpt-6-astra');await page.locator('#defaultEffort').selectOption('max');await page.locator('#contextBudget').fill('65000');await page.locator('#defaultEffort').focus();
     await page.evaluate(()=>window.formProbe={focus:document.activeElement,option:document.querySelector('#defaultEffort option[value="max"]')});
     const synced=await page.locator('#syncStatus').textContent();await page.waitForFunction(previous=>document.querySelector('#syncStatus').textContent!==previous,synced);
     assert.equal(await page.locator('#defaultModel').inputValue(),'gpt-6-astra');assert.equal(await page.locator('#contextBudget').inputValue(),'65000');
     assert.ok(await page.evaluate(()=>window.formProbe.focus===document.activeElement&&window.formProbe.option===document.querySelector('#defaultEffort option[value="max"]')));
     await page.locator('#savePreferences').click();assert.equal(state.config.model,'gpt-6-astra');assert.equal(state.config.contextBudget,65000);
-    await page.locator('#targetsPanel>summary').click();await page.locator('#loadThreads').click();await page.waitForFunction(()=>document.querySelector('#threadSelect').options.length===3);
+    await page.locator('a[data-view="dispatch"]').click();await page.locator('#targetsPanel>summary').click();await page.locator('#loadThreads').click();await page.waitForFunction(()=>document.querySelector('#threadSelect').options.length===3);
     const option=await page.locator('#threadSelect').evaluate(e=>({text:e.options[2].text.length,title:e.options[2].title.length,direction:getComputedStyle(e).direction}));assert.ok(option.text<option.title);assert.equal(option.direction,'ltr');
   });
   await check('status filtering, reversible archive and immediate interruption',async()=>{
@@ -80,7 +80,7 @@ try {
     state.conversations.current.summary+='\n'+'LongUnbrokenSummary'.repeat(20);
     for(const width of [320,390,768]){
       await page.setViewportSize({width,height:844});
-      for(const view of ['workbench','library','settings']){
+      for(const view of ['workbench','chats','library','dispatch','settings']){
         await page.locator('a[data-view="'+view+'"]').click();
         if(view==='library'){await page.locator('.knowledge-summary>summary').first().click();}
         const sizes=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth}));assert.ok(sizes.scroll<=sizes.width,JSON.stringify({view,...sizes}));
@@ -88,8 +88,174 @@ try {
       }
     }
   });
+
+  await check('conversation directory scopes controls and history and becomes list/detail on mobile',async()=>{
+    await page.setViewportSize({width:1440,height:1080});
+    await page.locator('a[data-view="chats"]').click();
+    await page.locator('#chatSearch').fill('设计讨论');
+    assert.equal(await page.locator('#chatDirectory a[href="#chats/peer/demo-single"]').count(),0);
+    await page.locator('#chatSearch').fill('');
+    await page.locator('#chatDirectory a[href="#chats/peer/demo-group"]').click();
+    await page.locator('#botHistory').filter({hasText:'这段视频的关键交互是什么'}).waitFor();
+    assert.equal(await page.locator('#botHistory').getByText('这是一条独立的演示单聊记录。').count(),0);
+    assert.equal(await page.locator('[data-group-reset="demo-group"]').isVisible(),false);
+    await page.locator('#conversationSettingsTab').click();
+    await page.locator('[data-group-reset="demo-group"]').waitFor();
+    assert.equal(await page.locator('#activeAgentModel').isVisible(),false);
+    await page.screenshot({path:join(root,'desktop-conversation-settings.png'),fullPage:true});
+    await page.locator('#conversationHistoryTab').click();
+    await page.locator('#botHistory').waitFor();
+    await page.screenshot({path:join(root,'desktop-conversations.png'),fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    assert.equal(await page.locator('#chatSearch').isVisible(),false);
+    assert.equal(await page.locator('#chatBack').isVisible(),true);
+    await page.screenshot({path:join(root,'mobile-conversation.png'),fullPage:true});
+    await page.locator('#chatBack').click();await page.locator('#chatSearch').waitFor();
+    assert.equal(await page.locator('#conversationDetail').isVisible(),false);
+    await page.locator('#chatDirectory a[href="#chats/peer/demo-single"]').click();
+    await page.locator('#botHistory').filter({hasText:'这是一条独立的演示单聊记录'}).waitFor();
+    assert.equal(await page.locator('[data-group-reset]').count(),0);
+    assert.equal(await page.locator('#botHistory').getByText('发送受阻，等待重试').isVisible(),true);
+    assert.equal(await page.locator('#consoleVersion').textContent(),'v'+(await (await page.request.get(new URL('/api/instance',url).href)).json()).version+' · 预览');
+    await page.locator('a[data-view="workbench"]').click();
+  });
+
+  await check('workbench guides initial setup and each conversation inherits or overrides system defaults',async()=>{
+    await page.setViewportSize({width:1440,height:1080});
+    const originalConfig={...state.config},originalRuntime={...state.runtime},originalChats=state.aiChats.chats;
+    state.aiChats.chats=[];
+    Object.assign(state.config,{owner:null,enabled:false,douyinMode:''});
+    Object.assign(state.runtime,{browserLoggedIn:false,asrReady:false,browser:'closed',loginCompletedAt:0});
+    await page.locator('a[data-view="workbench"]').click();
+    await page.locator('#setupAccountLink').click();
+    assert.equal(await page.locator('.status-grid .needs-setup').count(),2);
+    await page.getByRole('button',{name:'是，我有小号作为助手账号'}).click();
+    await page.locator('#setupPromptText strong').filter({hasText:'助手账号'}).waitFor();
+    await page.locator('#openBrowser').click();
+    Object.assign(state.runtime,{browserLoggedIn:true,browser:'select_chat',loginCompletedAt:Date.now()});
+    await page.locator('#setupPromptTitle').filter({hasText:'抖音登录成功'}).waitFor();
+    assert.equal(await page.locator('#openBrowser').isVisible(),false);
+    state.runtime.asrReady=true;
+    await page.getByRole('link',{name:'前往添加会话'}).click();
+    await page.locator('#startSelfBinding').click();
+    state.demoBindMode='self';
+    await page.locator('#bindOwner').click();
+    await page.getByRole('button',{name:'否，重新绑定'}).click();
+    assert.equal(state.config.owner,null);
+    await page.locator('#bindOwner').click();
+    await page.getByRole('button',{name:'是，切换模式'}).click();
+    await page.locator('#selfBindingControls').waitFor({state:'hidden'});
+    assert.equal(state.config.owner.selfChat,true);
+    assert.equal(state.config.douyinMode,'self');
+    await page.locator('#startSelfBinding').click();
+    state.demoBindMode='assistant';
+    await page.locator('#bindOwner').click();
+    await page.getByRole('button',{name:'是，切换模式'}).click();
+    await page.locator('#selfBindingControls').waitFor({state:'hidden'});
+    assert.equal(!!state.config.owner.selfChat,false);
+    assert.equal(state.config.douyinMode,'assistant');
+    await page.locator('a[data-view="settings"]').click();
+    await page.locator('#douyinMode').selectOption('self');
+    await page.locator('#saveDouyinMode').click();
+    await page.getByRole('button',{name:'取消',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#douyinMode').value==='assistant');
+    assert.equal(state.config.douyinMode,'assistant');
+    await page.locator('#douyinMode').selectOption('self');
+    await page.locator('#saveDouyinMode').click();
+    await page.getByRole('button',{name:'确认切换',exact:true}).click();
+    await page.locator('#openBrowser').waitFor();
+    assert.equal(state.config.douyinMode,'self');
+    assert.equal(state.config.douyinRebindRequired,true);
+    assert.equal(state.runtime.browserLoggedIn,false);
+    await page.locator('#setupPrompt').getByRole('button',{name:'关闭',exact:true}).click();
+    Object.assign(state.config,{owner:state.config.agentBindings.self,douyinMode:'self',douyinRebindRequired:false});
+    Object.assign(state.runtime,{browserLoggedIn:true,browser:'ready'});
+    state.aiChats.chats=originalChats;
+    await page.locator('a[data-view="chats"]').click();
+    await page.locator('#chatDirectory a[href="#chats/agent"]').click();
+    assert.equal(await page.locator('#chatDirectory a[href^="#chats/agent"]').count(),1);
+    await page.locator('#conversationSettingsTab').click();
+    assert.equal(await page.locator('#openBrowser').isVisible(),false);
+    await page.locator('#instanceVisualFps').selectOption('8');await page.locator('#instanceVideoMinutes').fill('2');
+    await page.locator('#saveInstancePreferences').click();await page.waitForFunction(()=>!document.querySelector('#saveInstancePreferences').disabled);
+    const key='conversation:'+JSON.stringify(['agent','demo-self','111111']);
+    assert.equal(state.config.conversationOverrides[key].visualFps,8);assert.equal(state.config.visualFps,4);
+    await page.locator('#chatDirectory a[href="#chats/peer/demo-group"]').click();await page.locator('#conversationSettingsTab').click();
+    await page.locator('#instanceBudget').fill('8000');await page.locator('#saveInstancePreferences').click();
+    await page.waitForFunction(()=>!document.querySelector('#saveInstancePreferences').disabled);
+    assert.equal(state.config.conversationOverrides['conversation:'+JSON.stringify(['chat','demo-group',''])].contextBudget,8000);
+    await page.locator('#instanceSystemDefaults').click();await page.locator('#chatsPanel').waitFor();assert.equal(await page.locator('#chatsPanel').evaluate(e=>e.open),true);
+    assert.equal(await page.locator('#modelPanel').evaluate(e=>e.closest('.system-defaults')===document.querySelector('#chatsPanel').closest('.system-defaults')),true);
+    assert.equal(await page.locator('#appearanceSection #themeToggle').count(),1);assert.equal(await page.locator('.app-header #themeToggle').count(),0);
+    Object.assign(state.config,originalConfig);Object.assign(state.runtime,originalRuntime);state.aiChats.chats=originalChats;
+  });
+
+  await check('fresh Agent and transcription setup show the next action and return to the workbench',async()=>{
+    const {auth}=state.runtime,{coordinator}=state.config,{current}=state.conversations;
+    state.runtime.auth={status:'login'};
+    state.config.coordinator='';
+    state.conversations.current=null;
+    state.runtime.asrReady=false;
+    await page.locator('a[data-view="workbench"]').click();
+    await page.locator('#setupAgentLink').click();
+    await page.locator('#beginCodexLogin').waitFor();
+    assert.equal(await page.locator('#createCoordinator').isDisabled(),true);
+    await page.locator('#beginCodexLogin').click();
+    await page.locator('#codexLoginLink').waitFor();
+    assert.equal(await page.locator('#codexLoginLink').getAttribute('href'),'https://auth.openai.com/');
+    state.runtime.auth={status:'ready'};
+    await page.locator('#createCoordinator').click();
+    await page.locator('#agentSetupStatus').filter({hasText:'个人 Agent 已就绪'}).waitFor();
+    await page.locator('[data-setup-return="#settings/runtime"]').click();
+    await page.locator('#setupAsrLink').click();
+    await page.locator('#setupAsr').click();
+    await page.locator('#asrSetupStatus').filter({hasText:'正在解压'}).waitFor();
+    Object.assign(state.runtime,{asrReady:true,asrInstalling:false});
+    await page.locator('#asrSetupStatus').filter({hasText:'口播转写已就绪'}).waitFor();
+    await page.locator('[data-setup-return="#settings/transcription"]').click();
+    assert.equal(await page.locator('#setupAgentLink').isVisible(),false);
+    assert.equal(await page.locator('#setupAsrLink').isVisible(),false);
+    Object.assign(state.runtime,{auth,asrProgress:''});
+    state.config.coordinator=coordinator;
+    state.conversations.current=current;
+  });
+
+  await check('within-conversation navigation preserves scroll and setup return links depend on how the page was opened',async()=>{
+    await page.setViewportSize({width:1280,height:720});
+    await page.locator('a[data-view="chats"]').click();await page.locator('#chatDirectory a[href="#chats/peer/demo-group"]').click();
+    await page.locator('#botHistory').filter({hasText:'这段视频的关键交互是什么'}).waitFor();
+    await page.locator('#activeChatRecords').evaluate(e=>e.style.minHeight='960px');
+    await page.locator('#activeChatSettings').evaluate(e=>e.style.minHeight='960px');
+    await page.evaluate(()=>scrollTo(0,225));
+    await page.waitForFunction(()=>Math.abs(scrollY-225)<=2);
+    await page.locator('#conversationSettingsTab').evaluate(e=>e.click());
+    await page.waitForFunction(()=>!document.querySelector('#activeChatSettings').hidden);
+    await page.waitForFunction(()=>Math.abs(scrollY-225)<=2);
+    await page.locator('#conversationHistoryTab').evaluate(e=>e.click());
+    await page.waitForFunction(()=>!document.querySelector('#activeChatRecords').hidden);
+    await page.waitForFunction(()=>Math.abs(scrollY-225)<=2);
+    assert.equal(await page.locator('#chatDirectory a[href="#chats/account"]').count(),0);
+    await page.setViewportSize({width:390,height:844});
+    await page.locator('#chatBack').evaluate(e=>e.click());await page.locator('#chatSearch').waitFor();
+    await page.locator('#chatDirectory').evaluate(e=>e.style.minHeight='960px');
+    await page.evaluate(()=>scrollTo(0,210));
+    await page.locator('#chatDirectory a[href="#chats/peer/demo-group"]').evaluate(e=>e.click());
+    await page.locator('#chatBack').waitFor();await page.locator('#chatBack').evaluate(e=>e.click());
+    await page.waitForFunction(()=>Math.abs(scrollY-210)<=2);
+    await page.locator('#chatDirectory').evaluate(e=>e.style.minHeight='');
+    await page.locator('#activeChatRecords').evaluate(e=>e.style.minHeight='');
+    await page.locator('#activeChatSettings').evaluate(e=>e.style.minHeight='');
+    await page.locator('a[data-view="workbench"]').click();
+    state.runtime.asrReady=false;await page.locator('#setupAsrLink').click();
+    const back=page.locator('[data-setup-return="#settings/transcription"]');await back.waitFor();
+    assert.equal(await page.locator('[data-setup-return="#settings/runtime"]').isVisible(),false);
+    await back.click();await page.waitForURL('**/#workbench');
+    state.runtime.asrReady=true;await page.locator('#setupAsrLink').waitFor({state:'hidden'});
+    await page.evaluate(()=>location.hash='settings/transcription');await page.locator('#transcriptionSection').waitFor();
+    assert.equal(await back.isVisible(),false);
+  });
   await check('theme persists, reduced motion disables list movement',async()=>{
-    await page.setViewportSize({width:1440,height:1080});await page.locator('a[data-view="workbench"]').click();await page.locator('#themeToggle').click();
+    await page.setViewportSize({width:1440,height:1080});await page.locator('a[data-view="settings"]').click();await page.locator('#themeToggle').click();await page.locator('a[data-view="workbench"]').click();
     assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');await page.reload();await page.locator('#taskList .work-card').first().waitFor();
     assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');await page.screenshot({path:join(root,'dark.png'),fullPage:false});
     await page.emulateMedia({reducedMotion:'reduce'});await page.locator('#workStatus').selectOption('blocked');await page.waitForFunction(()=>document.querySelectorAll('#taskList .work-card').length===1);
@@ -121,10 +287,10 @@ try {
     }
     await page.locator('#workStatus').selectOption('blocked');
     await page.waitForFunction(()=>document.querySelectorAll('#taskList .work-card').length===1&&document.querySelector('#taskList .work-card').dataset.operation==='demo-task-24');
-    await page.locator('#chatsPanel>summary').click();
+    if(!await page.locator('#chatsPanel').evaluate(e=>e.open))await page.locator('#chatsPanel>summary').click();
     await page.locator('[data-ai-reply="demo-group"]').selectOption('all');
     await page.waitForFunction(()=>!document.querySelector('[data-ai-reply="demo-group"]').disabled);
-    assert.equal(state.aiChats.chats[0].groupReplyMode,'all');
+    assert.equal(state.aiChats.chats.find(c=>c.chatKey==='demo-group').groupReplyMode,'all');
     await page.locator('#uiLayoutChoice').selectOption('modern');await page.waitForURL('**/?ui=modern');await page.locator('#taskList .work-card').first().waitFor();
     assert.equal(await page.locator('html').getAttribute('data-layout'),'modern');
     await page.reload();assert.equal(await page.locator('html').getAttribute('data-layout'),'modern');
@@ -139,15 +305,32 @@ try {
     const synced=await page.locator('#syncStatus').textContent();await page.waitForFunction(previous=>document.querySelector('#syncStatus').textContent!==previous,synced);
     assert.equal(await page.locator('#deleteAcknowledge').isChecked(),true);assert.equal(await page.locator('#confirmDelete').isEnabled(),true);
     await page.locator('#confirmDelete').click();await page.waitForFunction(()=>!document.querySelector('#deleteDialog').open);assert.equal(state.work.some(w=>w.id==='demo-task-22'),false);
-    await page.locator('#uiLayoutChoice').selectOption('classic');await page.waitForURL('**/classic.html?ui=classic');await page.locator('#taskList .work-card').first().waitFor();if(!await page.locator('#modelPanel').evaluate(e=>e.open))await page.locator('#modelPanel>summary').click();await page.locator('#needScope').selectOption('archived');
+    await page.locator('a[data-view="settings"]').click();await page.locator('#uiLayoutChoice').selectOption('classic');await page.waitForURL('**/classic.html?ui=classic#settings');await page.locator('#taskList .work-card').first().waitFor();if(!await page.locator('#modelPanel').evaluate(e=>e.open))await page.locator('#modelPanel>summary').click();await page.locator('#needScope').selectOption('archived');
     await page.locator('[data-delete-kind="need"]').click();await page.locator('#deleteDialog').waitFor();assert.match(await page.locator('#deleteLabel').textContent(),/需求 7/);
     await page.setViewportSize({width:390,height:844});const sizes=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,dialog:document.querySelector('#deleteDialog').getBoundingClientRect().width}));assert.ok(sizes.scroll<=sizes.width&&sizes.dialog<=sizes.width);
     await page.locator('#deleteAcknowledge').check();await page.locator('#confirmDelete').click();await page.waitForFunction(()=>!document.querySelector('#deleteDialog').open);assert.equal(state.conversations.needs.some(n=>n.id==='demo-need-7'),false);
   });
+
+  await check('archived learning materials require explicit deletion in both layouts',async()=>{
+    const id='1000000000000000004',button=page.locator('[data-delete-kind="knowledge"][data-delete-id="'+id+'"]');
+    await page.locator('#knowledgeScope').selectOption('archived');await button.click();
+    await page.locator('#deleteDialog').waitFor();
+    assert.match(await page.locator('#deleteCounts').textContent(),/学习资料及其本地文件/);
+    assert.equal(await page.locator('#confirmDelete').isDisabled(),true);
+    await page.locator('#cancelDelete').click();
+    assert.ok(state.knowledge.some(k=>k.id===id));
+    await page.locator('#uiLayoutChoice').selectOption('modern');await page.waitForURL('**/?ui=modern#settings');
+    await page.locator('a[data-view="library"]').click();
+    await page.locator('#knowledgeScope').selectOption('archived');
+    await button.click();await page.locator('#deleteAcknowledge').check();await page.locator('#confirmDelete').click();
+    await page.waitForFunction(()=>!document.querySelector('#deleteDialog').open);
+    assert.equal(state.knowledge.some(k=>k.id===id),false);assert.equal(state.knowledge.length,3);
+    await page.locator('a[data-view="workbench"]').click();
+  });
   await check('errors stay visible while scrolled, fit narrow screens, preserve position and can be dismissed in both layouts',async()=>{
     await page.route('**/api/storage/backup',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'测试报错：未能完成备份。请检查磁盘空间。\n'+ '较长的排查说明，'.repeat(70)})}));
     for(const layout of ['classic','modern']){
-      if(await page.locator('html').getAttribute('data-layout')!==layout){await page.locator('#uiLayoutChoice').selectOption(layout);await page.waitForFunction(l=>document.documentElement.dataset.layout===l,layout);await page.locator('#taskList .work-card').first().waitFor();}
+      if(await page.locator('html').getAttribute('data-layout')!==layout){if(layout==='classic')await page.locator('a[data-view="settings"]').click();await page.locator('#uiLayoutChoice').selectOption(layout);await page.waitForFunction(l=>document.documentElement.dataset.layout===l,layout);await page.locator('#storagePanel').waitFor();}
       if(layout==='modern')await page.locator('a[data-view="settings"]').click();
       if(!await page.locator('#storagePanel').evaluate(e=>e.open))await page.locator('#storagePanel>summary').click();
       for(const width of [320,1440]){

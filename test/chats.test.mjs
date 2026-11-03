@@ -58,3 +58,13 @@ test('one unreachable chat backs off without blocking other peers or sending its
     assert.deepEqual(attempts,['group part 1','personal result','group part 1']);
   }finally{h.s.close();}
 });
+
+test('dashboard history returns only the selected peer and keeps request text out of the global list',()=>{
+  const h=setup();try{
+    const row=h.s.db.prepare('INSERT INTO bot_messages VALUES(?,?,?,?,?,?,?,?,?,?)');
+    row.run('a','group-a','r',JSON.stringify({text:'群 A 原文'}),'done','回复 A','','',Date.now()-10,Date.now());
+    row.run('b','group-b','r',JSON.stringify({text:'群 B 原文'}),'done','回复 B','','',Date.now(),Date.now());
+    assert.deepEqual(h.chats.state('group-a').messages.map(({peer,input,result})=>({peer,input,result})),[{peer:'group-a',input:'群 A 原文',result:'回复 A'}]);
+    assert.ok(h.chats.state().messages.every(m=>!Object.hasOwn(m,'input')));
+  }finally{h.s.close();}
+});

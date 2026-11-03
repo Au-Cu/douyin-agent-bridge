@@ -17,7 +17,8 @@ export class ArchivedDeletion{
     this.cleanup();
   }
   plan(kind,id){
-    if(!['task','need'].includes(kind))throw new Error('仅支持彻底删除已归档的任务或需求。');
+    if(kind==='knowledge')return this.planKnowledge(id);
+    if(!['task','need'].includes(kind))throw new Error('仅支持彻底删除已归档的任务、需求或学习资料。');
     const need=kind==='need'?this.conversations.needs.lookup(id,{includeArchived:true}):null;
     const selected=need||this.engine.archives.task(id),archive=this.store.archiveRecord(kind,selected.id);
     if(!archive?.archived||archive.state!=='done'||!archive.desired)throw new Error('请先完成归档，再彻底删除；归档仍需核实时不能删除。');
@@ -45,7 +46,7 @@ export class ArchivedDeletion{
     const needIds=new Set([...(need?[need.id]:[]),...ops.map(o=>o.need_id),...turns.map(t=>t.need_id),...tasks.map(t=>json(t.context).needId)].filter(Boolean));
     const messages=this.db.prepare('SELECT * FROM messages ORDER BY id').all().filter(m=>messageIds.has(m.id));
     if(messages.some(m=>unsafe.has(m.status)))throw new Error('关联消息仍在处理中或结果尚未核实，不能删除。');
-    const outbox=this.db.prepare('SELECT * FROM outbox ORDER BY id').all().filter(o=>{const p=json(o.payload);return ids.has(p.operationId)||taskIds.has(p.taskId)||messageIds.has(p.messageId);});
+    const outbox=this.db.prepare('SELECT * FROM outbox ORDER BY id').all().filter(o=>{const p=json(o.payload);return ids.has(p.operationId)||taskIds.has(p.taskId)||!p.chatbot&&p.messageId&&(messageIds.has(p.messageId)||messageIds.has(o.peer+':'+p.messageId));});
     if(outbox.some(o=>['sending','uncertain'].includes(o.status)))throw Object.assign(new Error('关联回复或表情的送达尚未核实，请先打开“核实送达”处理，不能直接删除发送现场。'),{code:'DELIVERY_UNCONFIRMED'});
     const outIds=new Set(outbox.map(o=>o.id));
     const references=this.db.prepare('SELECT * FROM reply_reference_links ORDER BY message_id').all().filter(r=>messageIds.has(r.message_id)||outIds.has(r.outbox_id));
@@ -77,9 +78,28 @@ export class ArchivedDeletion{
     // record invalidates an already displayed confirmation.
     plan.revision=hash(JSON.stringify(plan));return plan;
   }
+  planKnowledge(id){
+    const knowledge=this.store.knowledge(id),archive=this.store.archiveRecord('knowledge',id);
+    if(!knowledge)throw new Error('学习资料不存在。');
+    if(!archive?.archived||!archive.desired||archive.state!=='done')throw new Error('请先完成归档，再彻底删除学习资料。');
+    if(!/^\d{12,24}$/.test(id)||resolve(knowledge.path)!==resolve(this.store.root,'knowledge',id,'note.md'))throw new Error('资料目录未通过归属校验，已保留。');
+    if(this.engine.busy||this.engine.picking||this.engine.memoryUpdates?.size)throw new Error('助手正在处理或整理资料，请稍后再删除。');
+    const references=[
+      ['SELECT 1 FROM need_assets WHERE video_id=?','需求的资料索引'],
+      ['SELECT 1 FROM need_turns WHERE video_id=?','需求的原始交流'],
+      ["SELECT 1 FROM messages WHERE json_extract(body,'$.awemeId')=?",'转发视频的原任务'],
+      ["SELECT 1 FROM tasks, json_each(tasks.context,'$.videos') v WHERE json_extract(v.value,'$.id')=?",'已保留的项目任务'],
+      ["SELECT 1 FROM outbox WHERE json_extract(payload,'$.videoId')=?",'已保留的任务回复']
+    ].filter(([sql])=>this.db.prepare(sql).get(id)).map(([,label])=>label);
+    if(references.length)throw new Error('资料仍被引用：'+references.join('、')+'。请先处理对应的任务或需求记录。');
+    const plan={kind:'knowledge',id,knowledge,archive,label:knowledge.title,paths:['knowledge/'+id],
+      ops:[],tasks:[],messages:[],turns:[],outbox:[],references:[],outgoing:[],interruptions:[],needIds:[],messageIds:[]};
+    plan.revision=hash(JSON.stringify(plan));return plan;
+  }
   prepare(kind,id){
     const p=this.plan(kind,id),token=randomUUID();for(const [k,v]of this.confirmations)if(v.expires<Date.now())this.confirmations.delete(k);
     this.confirmations.set(token,{kind,id:p.id,revision:p.revision,expires:Date.now()+5*60000});
+    if(p.knowledge)return {token,label:p.label,counts:{knowledge:1},warning:'永久删除本机的学习资料索引、原视频、口播转写、连续画面与分析笔记。抖音原视频、原生聊天和已有备份保留。'};
     return {token,label:p.label,counts:{operations:p.ops.filter(o=>o.status!=='merged').length,tasks:p.tasks.length,messages:p.messages.length,replies:p.outbox.filter(o=>o.kind==='text').length,receipts:p.outbox.filter(o=>o.kind!=='text').length},warning:'永久删除本机桥接记录，无法用“恢复显示”找回。抖音消息、Codex／DSH 原聊天、学习资料、已有备份及其他独立任务中的副本保留。仅保留防重复处理的不可逆消息指纹和编号计数。'};
   }
   remove({kind,id,token}){
@@ -115,6 +135,10 @@ export class ArchivedDeletion{
         this.db.prepare("DELETE FROM archive_records WHERE kind='need' AND id=?").run(p.need.id);
         if(clearCurrent){const config={...this.store.config,activeNeed:'',coordinator:'',needEpoch:(this.store.config.needEpoch||0)+1};this.db.prepare("UPDATE app_settings SET value=?,updated=? WHERE key='config'").run(JSON.stringify(config),Date.now());}
       }
+      if(p.knowledge){
+        this.db.prepare('DELETE FROM knowledge WHERE id=?').run(p.id);
+        this.db.prepare("DELETE FROM archive_records WHERE kind='knowledge' AND id=?").run(p.id);
+      }
       this.db.prepare('INSERT INTO deletion_cleanup VALUES(?,?,?)').run(cleanupId,JSON.stringify(p.paths),Date.now());
       this.db.exec('COMMIT');
     }catch(e){this.db.exec('ROLLBACK');throw e;}
@@ -124,7 +148,7 @@ export class ArchivedDeletion{
     for(const task of taskIds)this.engine.taskObservations.delete(task);
     const remaining=this.cleanup();
     for(const nid of p.needIds)if(nid!==p.need?.id&&this.conversations.needs.get(nid))try{this.conversations.needs.history(nid);}catch{}
-    this.store.event('用户已彻底删除已归档的'+(kind==='need'?'需求':'任务')+'记录');
+    this.store.event('用户已彻底删除已归档的'+(kind==='need'?'需求':kind==='knowledge'?'学习资料':'任务')+'记录');
     return {deleted:true,cleanupPending:remaining>0,operations:p.ops.filter(o=>o.status!=='merged').length};
   }
   cleanup(){
@@ -139,7 +163,7 @@ export class ArchivedDeletion{
     const root=realpathSync(this.store.root),target=resolve(root,...path.split('/'));
     if(!target.startsWith(root+sep))throw new Error('清理路径越界');
     let current=root;
-    for(const part of path.split('/')){current=join(current,part);if(!existsSync(current))return;const info=lstatSync(current);if(info.isSymbolicLink()||realpathSync(current)!==current)throw new Error('缓存路径含链接，已保留待核实');}
+    for(const part of path.split('/')){current=join(current,part);let info;try{info=lstatSync(current);}catch(error){if(error.code==='ENOENT')return;throw error;}if(info.isSymbolicLink()||realpathSync(current)!==current)throw new Error('缓存路径含链接，已保留待核实');}
     const check=folder=>{for(const name of readdirSync(folder)){const child=join(folder,name),info=lstatSync(child);if(info.isSymbolicLink())throw new Error('缓存包含链接，已保留待核实');if(info.isDirectory())check(child);}};
     if(lstatSync(target).isDirectory())check(target);
     rmSync(target,{recursive:true,force:true});

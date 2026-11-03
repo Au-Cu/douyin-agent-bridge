@@ -2,28 +2,56 @@ import { updateHTML } from './dom.js';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const saved = (key, fallback) => { try { return localStorage.getItem(key) || fallback; } catch { return fallback; } };
+export function openSettingsSection(){
+  const section={runtime:'runtimeSection',transcription:'transcriptionSection','agent-defaults':'modelPanel','chat-defaults':'chatsPanel',appearance:'appearanceSection'}[location.hash.split('/')[1]];
+  if(!location.hash.startsWith('#settings/')||!section)return;
+  const target=$(section);
+  if(!target)return;
+  if(target.tagName==='DETAILS')target.open=true;
+  target.scrollIntoView({block:'start'});
+}
 export function initViews() {
   if (!$('themeToggle')) return;
-  const views = ['workbench', 'library', 'settings'];
+  const views = ['workbench', 'chats', 'library', 'dispatch', 'settings'];
+  let setupOrigin='',directoryScroll=0;
+  const viewFor=hash=>{const page=hash.slice(1).split('/')[0];return views.includes(page)?page:'workbench';};
+  function updateReturnLinks(){for(const link of document.querySelectorAll('[data-setup-return]'))link.hidden=location.hash!==setupOrigin||link.dataset.setupReturn!==setupOrigin;}
   function show() {
-    const view = views.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'workbench';
+    const view=viewFor(location.hash);
+    updateReturnLinks();
     for (const el of document.querySelectorAll('[data-view-panel]')) el.hidden = el.dataset.viewPanel !== view;
     for (const el of document.querySelectorAll('[data-view]')) {
       if (el.dataset.view === view) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
     }
   }
-  window.addEventListener('hashchange', show); show();
-  document.addEventListener('click', event => {
-    const button = event.target.closest('[data-open-panel]');
-    if (!button) return;
-    location.hash = 'settings'; show();
-    const panel = document.querySelector('[data-panel="' + button.dataset.openPanel + '"]');
-    if (panel) { panel.open = true; panel.querySelector('summary').focus(); panel.scrollIntoView({ block: 'center' }); }
+  window.addEventListener('hashchange', event=>{
+    const from=new URL(event.oldURL).hash,to=location.hash;
+    const previousView=viewFor(from),nextView=viewFor(to);
+    if(setupOrigin!==to)setupOrigin='';
+    if(previousView==='chats'&&from==='#chats')directoryScroll=window.scrollY;
+    show();
+    if(previousView!==nextView)window.scrollTo(0,0);
+    requestAnimationFrame(()=>{
+      if(location.hash!==to)return;
+      if(nextView==='settings')openSettingsSection();
+      if(previousView==='chats'&&to==='#chats'&&matchMedia('(max-width: 720px)').matches)window.scrollTo(0,directoryScroll);
+    });
+  });
+  show();
+  document.addEventListener('click',event=>{
+    const link=event.target.closest('a[href^="#"]');
+    if(!link||event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
+    if(link.classList.contains('skip-link')){
+      event.preventDefault();$('mainContent').focus();return;
+    }
+    setupOrigin=link.hasAttribute('data-setup-jump')?link.hash:'';
+    updateReturnLinks();
   });
   function theme(value) {
     document.documentElement.dataset.theme = value;
     $('themeToggle').setAttribute('aria-label', value === 'dark' ? '切换浅色外观' : '切换深色外观');
     $('themeToggle').setAttribute('aria-pressed', String(value === 'dark'));
+    if($('themeValue'))$('themeValue').textContent=value==='dark'?'深色':'浅色';
   }
   theme(saved('bridge-ui-theme', matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   $('themeToggle').addEventListener('click', () => {

@@ -56,6 +56,8 @@ export class PeerBrowser {
   get selecting(){return this.selectionUntil>this.now();}
   get selectionKind(){return this.selecting?this.selectionMode:'';}
   open(owner){return this.serial(()=>this.adapter.open(this.selecting?undefined:owner),{kind:'open',priority:10});}
+  focus(){return this.serial(()=>this.adapter.focus?.(),{kind:'focus',priority:10});}
+  logout(){return this.serial(()=>this.adapter.logout(),{kind:'logout',priority:30});}
   scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect'});}
   async wantsRead(peer){
     if(peer.selfChat||matchesPeer(this.adapter.lastScan?.peer,peer))return true;
@@ -88,7 +90,7 @@ export class PeerBrowser {
     const {task}=await this.serial(()=>{checkWork();const task=Promise.resolve().then(()=>this.adapter.resolveVideo(...args));this.media.add(task);task.then(()=>this.media.delete(task),()=>this.media.delete(task));return {task};},{kind:'video'});return task;
   }
   download(...args){return this.adapter.download(...args);}
-  uiDiagnostics(){return this.serial(()=>this.adapter.uiDiagnostics(),{kind:'inspect'});}
+  uiDiagnostics(peer){return this.serial(async()=>{if(peer)await this.select(peer);return this.adapter.uiDiagnostics();},{kind:'inspect',peer});}
   composerState(){return this.serial(()=>this.adapter.composerState(),{kind:'inspect'});}
   inbox(){return this.serial(()=>this.adapter.inbox?.()||{entries:[],rows:0},{kind:'inspect'});}
   quoteSchema(peer){return this.serial(async()=>{if(peer)await this.select(peer);return this.adapter.quoteSchema?.()||null;},{kind:'inspect'});}

@@ -52,6 +52,18 @@ export class CodexClient extends EventEmitter {
     await this.connect();return {deferred:false,auth:this.authState};
   }
   get authState(){return {...this.auth,reconnectPending:!!this.needsReconnect};}
+  async beginChatGptLogin(){
+    if(this.restricted||this.sharedRoot)throw new Error('此连接不支持登录');
+    await this.connect();
+    if(this.auth.status==='ready')return {ready:true};
+    if(this.runs.size||this.pending.size)throw authError('pending');
+    try{
+      const result=await this.request('account/login/start',{type:'chatgpt'});
+      const url=new URL(result.authUrl);
+      if(result.type!=='chatgpt'||url.protocol!=='https:'||!['auth.openai.com','chatgpt.com'].includes(url.host)||url.username||url.password)throw new Error('Invalid login URL');
+      return {url:url.href};
+    }catch{throw new Error('无法启动 Codex 登录。请稍后重试，或在 Codex 桌面完成登录后点「检查连接」。');}
+  }
   threadUrl(id){return /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(String(id||''))?'codex://threads/'+encodeURIComponent(id):null;}
   startAuthWatcher(intervalMs=3000){
     clearInterval(this.authTimer);
@@ -147,6 +159,9 @@ export class CodexClient extends EventEmitter {
     }
     if(msg.method==='serverRequest/resolved')this.approvals.delete(String(msg.params?.requestId));
     if(msg.method==='thread/closed')this.loaded.delete(msg.params?.threadId);
+    if(!this.restricted&&!this.sharedRoot&&msg.method==='account/login/completed'&&msg.params?.success){
+      this.needsReconnect=true;
+    }
     this.emit('notification',msg);
   }
   #finish(r,turn) {
