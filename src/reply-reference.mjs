@@ -12,12 +12,14 @@ export class ReplyReferences{
   find(message){
     const ref=message.replyTo;if(!ref)return null;
     if(this.db.prepare('SELECT 1 FROM deleted_reply_links WHERE hash=?').get(createHash('sha256').update(message.peer+':'+ref.messageId).digest('hex')))throw Object.assign(new Error('这条反馈的桥接记录已被彻底删除，无法再找回完整引用。请在新消息中提供要参考的内容。'),{code:'REFERENCE_UNRESOLVED'});
-    if(!/^\d{5,32}$/.test(ref.messageId||'')||[3,4].includes(ref.status)||ref.authorId&&ref.authorId===this.store.config.owner?.peerUid)throw Object.assign(new Error(question),{code:'REFERENCE_UNRESOLVED'});
+    const owner=this.store.config.owner,selfChat=owner?.selfChat&&owner.chatKey===message.peer;
+    if(!/^\d{5,32}$/.test(ref.messageId||'')||[3,4].includes(ref.status)||!selfChat&&ref.authorId&&ref.authorId===owner?.peerUid)throw Object.assign(new Error(question),{code:'REFERENCE_UNRESOLVED'});
     const previous=this.db.prepare('SELECT outbox_id FROM reply_reference_links WHERE message_id=? AND peer=?').get(message.id,message.peer);
     let row=previous&&this.db.prepare('SELECT * FROM outbox WHERE id=? AND peer=?').get(previous.outbox_id,message.peer);
     let method='saved';
     if(!row){const link=this.db.prepare('SELECT outbox_id FROM outgoing_message_links WHERE peer=? AND platform_id=?').get(message.peer,ref.messageId);row=link&&this.db.prepare("SELECT * FROM outbox WHERE id=? AND peer=? AND kind='text' AND status IN ('sent','uncertain')").get(link.outbox_id,message.peer);method='id';}
     if(!row){
+      if(selfChat)throw Object.assign(new Error(question),{code:'REFERENCE_UNRESOLVED'});
       const hint=comparableChatText(ref.hint);if(!hint)throw Object.assign(new Error(question),{code:'REFERENCE_UNRESOLVED'});
       const candidates=this.db.prepare("SELECT * FROM outbox WHERE peer=? AND kind='text' AND status IN ('sent','uncertain') AND created<=? ORDER BY created").all(message.peer,(message.created||Date.now())+10000).filter(o=>comparableChatText(o.body)===hint&&!!data(o).operationId);
       const distinct=new Set(candidates.map(o=>data(o).group||o.id));if(!candidates.length||distinct.size!==1)throw Object.assign(new Error(question),{code:'REFERENCE_UNRESOLVED'});row=candidates[0];method='legacy_exact_text';

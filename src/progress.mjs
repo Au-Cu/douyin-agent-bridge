@@ -147,7 +147,7 @@ export class Progress{
     if(op.submitted&&(!op.ended||tasks.some(t=>t.status==='running'))&&this.now()-op.changed>=this.stallAfter)return this.checks.get(id)?.state==='active'?`Codex 报告仍在运行，较长时间没有新结果。最近阶段：${op.phase}。`:'暂时无法确认运行状态；已提交的执行保留现场，不会自动重跑。';
     if(op.parent&&this.stopped(op.parent))return '原任务已中断，补充要求已保留并暂停；需明确重试此补充或发起新的独立要求。';
     if(op.parent&&this.get(op.parent)?.status!=='done')return '补充要求已保存，正在等待原要求执行及全部回复结束；原要求若需核实，补充也保持等待。';
-    if(parts.pending&&op.ended&&tasks.every(t=>t.status==='done')){const next=parts.rows.find(r=>['pending','sending'].includes(r.status)),p=JSON.parse(next?.payload||'{}');return `结果已生成，正在发送第 ${p.segment||Math.min(parts.total,parts.sent+1)}/${p.totalSegments||parts.total} 段。`;}
+    if(parts.pending&&op.ended&&tasks.every(t=>t.status==='done')){const next=parts.rows.find(r=>['pending','sending'].includes(r.status)),p=JSON.parse(next?.payload||'{}');const segment=`第 ${p.segment||Math.min(parts.total,parts.sent+1)}/${p.totalSegments||parts.total} 段`;return next?.status==='pending'?(next.error?`结果已生成，${segment}发送受阻，等待重试：${next.error.split('\n')[0]}`:`结果已生成，${segment}等待发送。`):`结果已生成，正在发送${segment}。`;}
     if(tasks.some(t=>t.status==='running'))return op.phase+(op.detail?'，'+op.detail:'')+'；其余 '+tasks.filter(t=>t.status==='queued').length+' 项待处理。';
     if(tasks.some(t=>t.status==='queued'))return '目标任务排队等待，尚未提交执行。';
     if(op.status==='done')return '任务及全部回复已完成。';

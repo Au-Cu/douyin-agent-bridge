@@ -80,7 +80,7 @@ const server=http.createServer(async(req,res)=>{
         const snapshot=store.snapshot();snapshot.config=visibleSettings(store.config,active);snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(knowledgeView));
         snapshot.recentKnowledge=await Promise.all(store.knowledgeList({scope:'current'}).slice(0,3).map(knowledgeView));
         snapshot.retention=retention.state();snapshot.deliveryReviewBatch=deliveryReview.batchState();const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
-        return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(engine.progress.cards({scope:workScope,status}),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,aiChats:chats.state(),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(engine.progress.cards({scope:workScope,status}),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,selfBinding:adapter.selectionKind==='self',scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models'){const chat=url.searchParams.get('mode')==='chat',harness=chat?store.config.chatHarness||'codex':active,data=await (chat?preferences.chatCatalog(harness):preferences.catalog(harness));return json(res,{...data,harness});}
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
@@ -122,7 +122,7 @@ const server=http.createServer(async(req,res)=>{
       if(path==='/api/harness'){const next=harnessValue(body.harness);store.saveConfig({harness:next});return json(res,{active,configured:next,restartRequired:next!==active,environmentOverride:!!process.env.BRIDGE_HARNESS});}
       if(path==='/api/chat-harness'){const next=harnessValue(body.harness);store.saveConfig({chatHarness:next});chatSandbox.invalidate();return json(res,{harness:next});}
       if(path==='/api/code-sandbox/setup'){if(!sandboxPreparing){sandboxPreparing=true;codeSandbox.setup().catch(()=>log('代码沙箱准备失败，请检查 Docker 引擎与镜像下载','attention')).finally(()=>sandboxPreparing=false);}return json(res,{preparing:sandboxPreparing});}
-      if(path==='/api/ai-chats/select'){chats.beginSelection();return json(res,{ok:true});}
+      if(path==='/api/ai-chats/select'){await chats.beginSelection();return json(res,{ok:true});}
       if(path==='/api/ai-chats/cancel'){chats.endSelection();return json(res,{ok:true});}
       if(path==='/api/ai-chats/current')return json(res,await chats.observe());
       if(path==='/api/ai-chats/recover')return json(res,await chats.recover(body.chatKey));
@@ -184,13 +184,31 @@ const server=http.createServer(async(req,res)=>{
           store.mergeOutboxPayload(item.id,{reactionRecheck:{status:result.verified?'verified':'unavailable',...result}});return json(res,result);
         }catch(e){store.mergeOutboxPayload(item.id,{reactionRecheck:{status:e.uncertain?'uncertain':'blocked',error:e.message}});throw e;}
       }
+      if(path==='/api/bind/select'){
+        if(store.config.enabled)throw new Error('请先暂停监听，再选择自聊');
+        await adapter.selection(true,'self');return json(res,{ok:true});
+      }
+      if(path==='/api/bind/cancel'){adapter.selection(false,'self');return json(res,{ok:true});}
       if(path==='/api/bind'){
+        if(body.selfChat===true&&adapter.selectionKind!=='self')throw new Error('请先点「选择自聊」，暂停自动切换');
+        if(body.selfChat!==true&&adapter.selectionKind==='self')throw new Error('请先完成或取消自聊绑定');
         const scan=await adapter.scan();if(!scan.peer)throw new Error('请先在助手账号中打开用户的私信会话，并由用户发一条消息');
         if(scan.peer.type==='group')throw new Error('个人 Agent 绑定现有用户单聊；群聊请在 AI 聊天卡片启用普通聊天模式');
-        if(!scan.messages.some(m=>m.direction==='in'&&m.sender===scan.peer.peerUid&&m.created>0))throw new Error('无法核实发信账号或时间，请让用户再发一条新私信');
+        if(body.selfChat===true){
+          if(adapter.selectionKind!=='self')throw new Error('自聊选择已结束，请重新选择');
+          if(!scan.peer.selfChat)throw new Error('无法核实当前会话是登录账号的自聊。请打开自己和自己的私信，并保留一条自己发出的消息。');
+        }else{
+          if(scan.peer.selfChat)throw new Error('这是自聊，请使用「绑定自己」');
+          if(!scan.messages.some(m=>m.direction==='in'&&m.sender===scan.peer.peerUid&&m.created>0))throw new Error('无法核实发信账号或时间，请让用户再发一条新私信');
+        }
         if(store.config.enabled||engine.busy||engine.taskBusy)throw new Error('请先暂停监听并等待当前任务结束，再更换绑定');
-        if(store.config.owner&&store.config.owner.peerUid!==scan.peer.peerUid&&store.pendingOutbox().length)throw new Error('旧账号仍有待发送消息，请先处理发件箱');
-        store.saveConfig({owner:scan.peer});store.event('已绑定用户会话：'+scan.peer.displayName);return json(res,{owner:scan.peer});
+        if(store.config.owner&&store.config.owner.chatKey!==scan.peer.chatKey&&store.db.prepare("SELECT 1 FROM outbox WHERE peer=? AND status IN ('pending','sending') LIMIT 1").get(store.config.owner.chatKey))throw new Error('旧账号仍有待发送消息，请先处理发件箱');
+        const old=store.config.owner;
+        if(old&&old.chatKey!==scan.peer.chatKey&&(old.selfChat||scan.peer.selfChat)&&(
+          store.db.prepare("SELECT 1 FROM messages WHERE peer=? AND status IN ('new','classifying','processing') LIMIT 1").get(old.chatKey)||
+          store.db.prepare("SELECT 1 FROM tasks t JOIN operations o ON o.id=json_extract(t.context,'$.operationId') WHERE o.peer=? AND t.status IN ('queued','running') LIMIT 1").get(old.chatKey)
+        ))throw new Error('原绑定还有待处理的个人 Agent 工作，请先完成或中断，再切换绑定');
+        store.saveConfig({owner:scan.peer});if(body.selfChat===true)adapter.selection(false,'self');store.event((body.selfChat===true?'已绑定自聊：':'已绑定用户会话：')+scan.peer.displayName);return json(res,{owner:scan.peer});
       }
       if(path==='/api/coordinator'){const id=await engine.createCoordinator();return json(res,{id});}
       if(path==='/api/listen'){await engine.arm(body.enabled===true,{resumeSince:body.resumeSince});return json(res,{enabled:store.config.enabled});}
