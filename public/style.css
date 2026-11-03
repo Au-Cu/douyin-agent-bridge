@@ -97,3 +97,10 @@
   .system-defaults .video-defaults,.retention-controls,.conversation-detail .ai-chat-item>.button-row{grid-template-columns:minmax(0,1fr)}
   .retention-controls>button{justify-self:start}
 }
+.status-grid article.needs-setup{background:var(--warn-bg);box-shadow:inset 0 3px var(--warn)}
+.status-grid article.needs-setup>span,.setup-emphasis{color:var(--warn)}
+.status-grid button.status-setup{margin-top:10px}
+#setupPrompt{position:fixed;z-index:90;inset:16px auto auto 50%;transform:translateX(-50%);width:min(580px,calc(100% - 28px));max-height:calc(100dvh - 32px);overflow:auto;border-top:3px solid var(--accent);margin:0}
+#setupPrompt.setup-error{border-top-color:var(--warn)}
+#setupPrompt h2{font-size:18px;margin:0}
+#setupPrompt p{margin:8px 0 14px}

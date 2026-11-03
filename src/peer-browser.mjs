@@ -56,6 +56,8 @@ export class PeerBrowser {
   get selecting(){return this.selectionUntil>this.now();}
   get selectionKind(){return this.selecting?this.selectionMode:'';}
   open(owner){return this.serial(()=>this.adapter.open(this.selecting?undefined:owner),{kind:'open',priority:10});}
+  focus(){return this.serial(()=>this.adapter.focus?.(),{kind:'focus',priority:10});}
+  logout(){return this.serial(()=>this.adapter.logout(),{kind:'logout',priority:30});}
   scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect'});}
   async wantsRead(peer){
     if(peer.selfChat||matchesPeer(this.adapter.lastScan?.peer,peer))return true;

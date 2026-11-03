@@ -7,10 +7,10 @@
   </header>
   <nav class="app-nav" aria-label="控制台导航"><a href="#workbench" class="nav-link" data-view="workbench" aria-current="page">工作台</a><a href="#chats" class="nav-link" data-view="chats">会话</a><a href="#library" class="nav-link" data-view="library">学习资料 <span id="libraryNavCount" class="nav-count">0</span></a><a href="#dispatch" class="nav-link" data-view="dispatch">项目派发</a><a href="#settings" class="nav-link" data-view="settings">系统</a><span class="sync-status" id="syncStatus" role="status">正在同步</span></nav>
   <div id="previewNotice" class="preview-notice" hidden>验收预览 · 演示资料独立保存，不连接真实账号或派发项目任务</div>
-  <div id="notice" role="status" aria-live="polite"></div>
+  <div id="notice" role="status" aria-live="polite"></div><aside id="setupPrompt" class="panel" aria-labelledby="setupPromptTitle" hidden><h2 id="setupPromptTitle"></h2><p id="setupPromptText" aria-live="polite"></p><div class="button-row" id="setupPromptActions"></div></aside>
   <section id="workbenchView" class="view" data-view-panel="workbench" aria-label="工作台">
     <div class="view-heading"><div><p class="eyebrow">WORKSPACE</p><h2>工作台</h2><p>让每一项工作，都有清晰的进展。</p></div></div>
-  <section class="status-grid"><article><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录抖音，再绑定主号</small><a id="setupAccountLink" class="panel-link status-setup" href="#chats/agent/self/settings" data-setup-jump hidden>连接抖音账号 ↗</a></article><article><span id="agentBackendLabel">个人 Agent</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small><a id="setupAgentLink" class="panel-link status-setup" href="#settings/runtime" data-setup-jump hidden>准备个人 Agent ↗</a></article><article><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small><a id="setupAsrLink" class="panel-link status-setup" href="#settings/transcription" data-setup-jump hidden>安装转写模型 ↗</a></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
+  <section class="status-grid"><article id="accountCard"><span>抖音账号</span><strong id="browserStatus">未连接</strong><small id="ownerStatus">登录抖音，再绑定主号</small><button id="setupAccountLink" class="status-setup" hidden>连接抖音账号</button><button id="openBrowser" class="status-setup" hidden>打开抖音窗口</button><p id="safariSetupHint" class="hint" hidden>首次使用 Safari 时，在「设置 → 高级」显示开发者功能，再在「开发者 → 自动化」启用「允许来自 Apple 事件的 JavaScript」。如有系统提示，允许启动助手的应用控制 Safari。</p></article><article id="agentStatusCard"><span id="agentBackendLabel">个人 Agent</span><strong id="codexStatus">检查中</strong><small id="coordinatorStatus">本机已登录的 Codex</small><a id="setupAgentLink" class="panel-link status-setup" href="#settings/runtime" data-setup-jump hidden>准备个人 Agent ↗</a></article><article id="asrStatusCard"><span>口播转写</span><strong id="asrStatus">检查中</strong><small>本机处理中文、粤语等口播</small><a id="setupAsrLink" class="panel-link status-setup" href="#settings/transcription" data-setup-jump hidden>安装转写模型 ↗</a></article><article><span>学习资料</span><strong id="knowledgeCount">0</strong><small id="taskCount">任务等待中</small></article></section>
 
     <div class="listening-strip"><span class="status-dot" aria-hidden="true"></span><span id="listenTitle">正在读取运行状态</span><span class="live-note">进度来自程序记录</span></div>
     <div class="work-grid"><div class="work-main">
@@ -36,7 +36,17 @@
       <div class="conversation-detail" id="conversationDetail">
         <section class="panel conversation-heading" aria-labelledby="conversationTitle"><div class="section-title"><h2 id="conversationTitle" tabindex="-1">选择会话</h2><a class="panel-link" href="#chats" id="chatBack">会话目录</a></div><p id="conversationDescription" class="hint"></p><nav id="conversationTabs" class="conversation-tabs" aria-label="会话详情" hidden><a id="conversationHistoryTab" class="nav-link">最近记录</a><a id="conversationSettingsTab" class="nav-link">会话设置</a></nav></section>
         <section class="panel" data-chat-pane="empty"><p class="empty">从目录选择个人 Agent、单聊或群聊。</p></section>
-        <div data-chat-pane="add" hidden><section class="panel"><h3>选择单聊或群聊</h3>    <div class="button-row panel-tools"><button id="selectAiChat">配置一个单聊或群聊</button><button id="finishAiSelection" class="secondary" hidden>完成选择，恢复轮询</button></div>
+        <div data-chat-pane="add" hidden><section class="panel"><h3>绑定个人 Agent</h3><p id="agentBindingLogin" class="hint" hidden>请先在<a href="#workbench">工作台</a>登录抖音。</p><div id="agentBindingForm">
+                <p class="hint">开始后会暂停自动切换。打开目标私信，再回到面板核验并确认绑定。</p>
+                <button id="startSelfBinding">开始选择私信</button>
+                <div id="selfBindingControls" hidden>
+                  <p id="bindingSelectionHint" class="hint"></p>
+                  <p id="agentBindingResult" class="hint" role="status"></p>
+                  <div class="button-row"><button id="bindOwner" class="secondary">核验当前会话</button><button id="bindSelf" disabled>确认绑定</button><button id="cancelSelfBinding" class="secondary">取消</button></div>
+                </div>
+                <small id="scanInfo"></small>
+              </div>
+</section><section class="panel"><h3>选择单聊或群聊</h3>    <div class="button-row panel-tools"><button id="selectAiChat">配置一个单聊或群聊</button><button id="finishAiSelection" class="secondary" hidden>完成选择，恢复轮询</button></div>
     <div id="aiChatSelection" class="chat-selection" hidden>
       <p class="hint">轮询与发送暂时暂停，最长 5 分钟。在助手的抖音窗口打开目标单聊或群聊，再读取。如果尚未核验助手身份，请从助手账号手动发一条普通消息。</p>
       <button id="observeAiChat" class="secondary">读取当前抖音聊天</button>
@@ -46,28 +56,7 @@
 </section></div>
         <div data-chat-pane="detail" hidden>
           <div id="activeChatSettings">
-            <section id="agentConnection" class="panel" hidden>
-              <div id="mainConnection" class="connection-grid">
-                <div><h3>主号登录</h3><p class="hint">先打开抖音窗口并登录。用主号登录时，打开自己和自己的私信，保留一条自己手动发出的消息。若用代收账号登录，打开与主号的私信，并从主号发来一条消息。</p><p id="safariSetupHint" class="hint" hidden>首次使用 Safari 时，在「设置 → 高级」显示开发者功能，再在「开发者 → 自动化」启用「允许来自 Apple 事件的 JavaScript」。如有系统提示，允许启动助手的应用控制 Safari。</p><button id="openMainBrowser">打开抖音窗口</button><p id="accountSetupStatus" class="hint" role="status"></p></div>
-                <div id="mainBindingHost"></div>
-              </div>
-              <div id="assistantConnection" class="connection-grid" hidden>
-                <div><h3>连接代收助手</h3><p id="browserInstructions" class="hint"></p><button id="openBrowser">打开抖音窗口</button></div>
-                <div id="assistantBindingHost"><p class="hint" id="assistantNeedsMain" hidden>代收助手需要先核验主号。<a href="#chats/agent/self/settings">前往绑定主号 ↗</a></p></div>
-              </div>
-              <div id="agentBindingForm">
-                <h3 id="bindingHeading">绑定主号</h3><p id="setupSummary" class="hint"></p><p id="bindingInstructions" class="hint"></p>
-                <button id="startSelfBinding">开始绑定主号</button>
-                <div id="selfBindingControls" hidden>
-                  <p id="bindingSelectionHint" class="hint"></p>
-                  <p id="agentBindingResult" class="hint" role="status"></p>
-                  <div class="button-row"><button id="bindOwner" class="secondary">核验当前会话</button><button id="bindSelf" disabled>确认绑定</button><button id="cancelSelfBinding" class="secondary">取消</button></div>
-                </div>
-                <small id="scanInfo"></small>
-              </div>
-              <a href="#workbench" class="panel-link setup-return" data-setup-return="#chats/agent/self/settings" hidden>返回工作台 ↗</a>
-              <a href="#workbench" class="panel-link setup-return" data-setup-return="#chats/agent/assistant/settings" hidden>返回工作台 ↗</a>
-            </section><section id="activeChatReplyOptions" class="panel"><h3>回复设置</h3><div id="aiChatList" class="ai-chat-list"></div><p id="activeChatModelSummary" class="hint"></p><div class="button-row"><a href="#settings/chat-defaults" class="panel-link" id="activeChatModelLink">普通聊天默认配置 ↗</a></div></section>
+<section id="activeChatReplyOptions" class="panel"><h3>回复设置</h3><div id="aiChatList" class="ai-chat-list"></div><p id="activeChatModelSummary" class="hint"></p><div class="button-row"><a href="#settings/chat-defaults" class="panel-link" id="activeChatModelLink">普通聊天默认配置 ↗</a></div></section>
           <section class="panel" id="instancePreferences" aria-labelledby="instanceSettingsHeading">
               <h3 id="instanceSettingsHeading">此会话的覆盖设置</h3><p id="instancePreferenceHelp" class="hint">留空继承系统默认值。已设置的覆盖值仅应用于此会话。</p>
               <div class="model-settings">
@@ -81,7 +70,7 @@
               </div>
               <div class="button-row"><button id="saveInstancePreferences">保存会话覆盖</button><a href="#settings/agent-defaults" id="instanceSystemDefaults" class="panel-link">查看系统默认值 ↗</a></div>
             </section>
-            <p class="hint" id="unboundAgentNotice" hidden>完成上方的账号连接后，可保存此会话的覆盖设置。</p>
+            <p class="hint" id="unboundAgentNotice" hidden><a href="#chats/add">绑定个人 Agent</a>后，可保存此会话的覆盖设置。</p>
           </div>
           <section id="activeChatRecords" class="panel conversation-records" aria-labelledby="conversationRecordsHeading"><div class="section-title"><h2 id="conversationRecordsHeading">最近消息与送达</h2><a href="#workbench" id="conversationWorkLink" class="panel-link" hidden>查看完整任务 ↗</a></div><p class="hint">显示桥接器保存的记录。</p><div class="button-row" id="conversationRecordActions"></div><div id="botHistory"></div><div id="agentChatHistory" hidden></div></section>
         </div>
@@ -101,6 +90,7 @@
   <section id="settingsView" class="view settings-view" data-view-panel="settings" aria-label="系统" hidden>
     <div class="view-heading"><div><p class="eyebrow">SYSTEM</p><h2>系统</h2><p>配置个人 Agent 和普通聊天默认值，管理外观、备份与诊断。</p></div></div>
     <div class="config-stack">
+<section class="panel"><h2>抖音使用模式</h2><p id="douyinModeStatus" class="hint"></p><div class="button-row"><label>使用模式 <select id="douyinMode"><option value="">请选择</option><option value="self">主号自聊</option><option value="assistant">助手代收</option></select></label><button id="saveDouyinMode">保存使用模式</button></div></section>
 <section class="panel system-defaults" aria-labelledby="defaultsHeading"><h2 id="defaultsHeading">默认模型配置</h2><p class="hint">为两类 AI 设置默认值。单独会话可在其设置中覆盖。</p>        <details class="config-panel defaults-subsection" id="modelPanel" data-panel="model" open>
     <summary><span>个人 Agent</span><small id="modelSummary">设置模型、推理强度与上下文预算</small></summary>
     <div class="button-row panel-tools"><label>个人 Agent 后端 <select id="agentHarness"><option value="codex">Codex</option><option value="dsh">DeepSeek Harness</option></select></label><button id="saveHarness" class="secondary">保存后端</button><button id="reloadModels" class="secondary">刷新模型名单</button></div>

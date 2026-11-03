@@ -1,4 +1,5 @@
 import { chromium } from 'playwright-core';
+import {execFile} from 'node:child_process';
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { toPlainChatText,comparableChatText,matchesOutgoingText } from './chat-text.mjs';
@@ -312,6 +313,7 @@ export class DouyinAdapter {
     const cookies=await this.context.cookies('https://www.douyin.com/'),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
     const marker=identityCookies.length?createHash('sha256').update(identityCookies.join(';')).digest('hex'):'';
     const value=bindScanIdentity(this,raw,marker);
+    value.loggedIn=!raw.loginRequired&&cookies.some(c=>/^(sessionid|sessionid_ss)$/.test(c.name)&&c.value);
     if(!observeOnly){if(best){this.page=best.page;this.chatFrame=best.frame;}this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
   }
   async uiDiagnostics(){
@@ -502,6 +504,27 @@ export class DouyinAdapter {
       if(!head.includes(Buffer.from('ftyp')))throw new Error('下载结果不是有效 MP4，未进行视频学习');
       await file.close();await rename(destination+'.part',destination);return size;
     } catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
+  }
+  async focus(){
+    if(!this.page||this.page.isClosed())return;
+    await this.page.bringToFront();
+    if(process.platform!=='win32')return;
+    const command=String.raw`
+$profile=[regex]::Escape($env:BRIDGE_FOCUS_PROFILE)
+$pattern='(?:^|\s)--user-data-dir=(?:"'+$profile+'"|'+$profile+')(?=\s|$)'
+$edge=Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -match $pattern -and $_.CommandLine -notmatch '\s--type=' } | Select-Object -First 1
+if($edge){$shell=New-Object -ComObject WScript.Shell; [void]$shell.AppActivate([int]$edge.ProcessId)}
+`;
+    const powershell=join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+    await new Promise(resolve=>execFile(powershell,['-NoProfile','-NonInteractive','-Command',command],{
+      env:{...process.env,BRIDGE_FOCUS_PROFILE:join(this.root,'browser-profile')},windowsHide:true,timeout:5000
+    },()=>resolve()));
+  }
+  async logout(){
+    await this.open();
+    await this.context.clearCookies({domain:/(?:^|\.)douyin\.com$/i});
+    this.lastScan=null;this.status='waiting_login';
+    await this.page.reload({waitUntil:'domcontentloaded'});
   }
   async close(){await this.context?.close();}
 }

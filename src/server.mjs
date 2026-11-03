@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {spawn} from 'node:child_process';
 import {attachVisualProgress} from './visual-progress-view.mjs';
 import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
@@ -62,6 +63,21 @@ const token=randomBytes(32).toString('hex');let asrInstalling=false,asrProgress=
 const port=Number(args.port||process.env.BRIDGE_PORT||store.config.port);
 if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口必须为 1024–65535 的整数');
 store.saveConfig({port});const origin='http://127.0.0.1:'+port;
+let waitingForDouyinLogin=false,loginCompletedAt=0,changingDouyinMode=false;
+const douyinMode=()=>store.config.douyinMode||(store.config.owner?(store.config.owner.selfChat?'self':'assistant'):'');
+function requireIdleBinding(owner){
+  if(!owner)return;
+  if(store.db.prepare("SELECT 1 FROM outbox WHERE peer=? AND status IN ('pending','sending') LIMIT 1").get(owner.chatKey))throw new Error('旧账号仍有待发送消息，请先处理发件箱');
+  if(store.db.prepare("SELECT 1 FROM messages WHERE peer=? AND status IN ('new','classifying','processing','waiting_auth') LIMIT 1").get(owner.chatKey)||
+    store.db.prepare("SELECT 1 FROM tasks t LEFT JOIN operations o ON o.id=json_extract(t.context,'$.operationId') WHERE (o.peer=? OR o.id IS NULL) AND t.status IN ('queued','running') LIMIT 1").get(owner.chatKey)){
+    throw new Error('原绑定还有待处理的个人 Agent 工作，请先完成或中断，再切换绑定');
+  }
+}
+function returnToWorkbench(){
+  const url=origin+'/?ui=modern#workbench';
+  const child=process.platform==='darwin'?spawn('/usr/bin/open',['-a','Safari',url],{stdio:'ignore'}):spawn('explorer.exe',[url],{stdio:'ignore',windowsHide:true});
+  child.on('error',()=>log('抖音已登录，请手动返回工作台','attention'));
+}
 async function jsonBody(req){let text='';for await(const b of req){text+=b;if(text.length>100000)throw new Error('请求过大');}return text?JSON.parse(text):{};}
 const json=(res,value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
 const server=http.createServer(async(req,res)=>{
@@ -83,7 +99,7 @@ const server=http.createServer(async(req,res)=>{
         snapshot.retention=retention.state();snapshot.deliveryReviewBatch=deliveryReview.batchState();const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
         const chat=url.searchParams.get('chat')||'',historyPeer=chat&&(chats.get(chat)||Object.values(agentBindings(store.config)).some(p=>p?.chatKey===chat))?chat:'';
         const chatWork=historyPeer&&Object.values(agentBindings(store.config)).some(p=>p?.chatKey===historyPeer)?engine.progress.cards({scope:'all',peer:historyPeer,limit:25}):undefined;
-        return json(res,{...snapshot,chatWork,aiChats:chats.state(historyPeer),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(engine.progress.cards({scope:workScope,status}),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,asrProgress,asrError,browser:adapter.status,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,selfBinding:adapter.selectionKind==='self',scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        return json(res,{...snapshot,chatWork,aiChats:chats.state(historyPeer),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(engine.progress.cards({scope:workScope,status}),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,asrProgress,asrError,browser:adapter.status,browserLoggedIn:adapter.page&&adapter.lastScan?.loggedIn===true,loginCompletedAt,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,selfBinding:adapter.selectionKind==='self',scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models'){const chat=url.searchParams.get('mode')==='chat',harness=chat?store.config.chatHarness||'codex':active,data=await (chat?preferences.chatCatalog(harness):preferences.catalog(harness));return json(res,{...data,harness});}
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
@@ -173,7 +189,29 @@ const server=http.createServer(async(req,res)=>{
         if((engine.busy||engine.taskBusy||chats.running.size)&&body.force!==true)throw new Error('仍有任务或聊天执行中，请先等待结束；强制停止会把执行结果标为需要核实');
         json(res,{ok:true});setTimeout(shutdown,100);return;
       }
-      if(path==='/api/browser/open'){await adapter.open(store.config.owner);return json(res,{ok:true});}
+      if(path==='/api/browser/open'){
+        if(changingDouyinMode)throw new Error('正在切换使用模式，请稍后再打开抖音窗口');
+        await adapter.open(body.guided?undefined:store.config.owner);
+        if(body.guided){await adapter.focus();waitingForDouyinLogin=true;loginCompletedAt=0;}
+        return json(res,{ok:true});
+      }
+      if(path==='/api/douyin/mode'){
+        if(!['self','assistant'].includes(body.mode))throw new Error('无效的抖音使用模式');
+        if(changingDouyinMode)throw new Error('正在切换使用模式');
+        const previous=douyinMode();
+        if(previous===body.mode)return json(res,{mode:previous});
+        if(previous){
+          if(body.confirmed!==true)throw new Error('请确认退出当前抖音账号');
+          if(store.config.enabled||engine.busy||engine.taskBusy||engine.picking||engine.scanBusy||engine.outboxBusy||chats.running.size||adapter.selecting)throw new Error('请先暂停监听，结束当前任务和聊天选择，再切换模式');
+          requireIdleBinding(store.config.owner);
+          changingDouyinMode=true;
+          try{await adapter.logout();}
+          finally{changingDouyinMode=false;}
+        }
+        waitingForDouyinLogin=false;loginCompletedAt=0;
+        store.saveConfig({douyinMode:body.mode,douyinRebindRequired:!!previous,resumeOnStartup:false});
+        return json(res,{mode:body.mode});
+      }
       if(path==='/api/browser/scan')return json(res,await adapter.scan());
       if(path==='/api/browser/editor-state')return json(res,(await adapter.composerState()).map(({text,...c})=>({...c,draftLength:text.length,preview:text.slice(0,60)})));
       if(path==='/api/browser/reaction-probe'){
@@ -202,8 +240,11 @@ const server=http.createServer(async(req,res)=>{
         }catch(e){store.mergeOutboxPayload(item.id,{reactionRecheck:{status:e.uncertain?'uncertain':'blocked',error:e.message}});throw e;}
       }
       if(path==='/api/bind/select'){
+        if(changingDouyinMode)throw new Error('正在切换使用模式');
         if(store.config.enabled)throw new Error('请先暂停监听，再选择主号会话');
-        await adapter.selection(true,'self');return json(res,{ok:true});
+        await adapter.selection(true,'self');
+        if(body.guided)await adapter.focus().catch(()=>{});
+        return json(res,{ok:true});
       }
       if(path==='/api/bind/cancel'){adapter.selection(false,'self');return json(res,{ok:true});}
       if(path==='/api/bind/inspect'){
@@ -214,6 +255,7 @@ const server=http.createServer(async(req,res)=>{
         return json(res,{mode,chatKey:peer.chatKey,selfUid:peer.selfUid,mainUid:peer.peerUid,displayName:peer.displayName,replaceMain:!!main&&main!==peer.peerUid});
       }
       if(path==='/api/bind'){
+        if(changingDouyinMode)throw new Error('正在切换使用模式');
         const auto=body.mode==='auto';
         if(auto&&adapter.selectionKind!=='self')throw new Error('请先进入主号绑定选择');
         if(body.selfChat===true&&adapter.selectionKind!=='self')throw new Error('请先点「选择自聊」，暂停自动切换');
@@ -223,7 +265,8 @@ const server=http.createServer(async(req,res)=>{
         if(auto){
           const {peer,mode}=verifiedAgentBinding(scan),main=store.config.agentMainUid||store.config.owner?.peerUid;
           if(adapter.selectionKind!=='self'||peer.chatKey!==body.chatKey||peer.selfUid!==body.selfUid||peer.peerUid!==body.mainUid||mode!==body.detectedMode)throw new Error('会话或登录账号已经变化，请重新核验');
-          if(body.bindingRole==='assistant'&&(!main||mode!=='assistant'||main!==peer.peerUid))throw new Error('连接代收助手需登录与已绑定主号不同的账号，并打开主号私信');
+          if(body.expectedMode!==undefined&&body.expectedMode!==douyinMode())throw new Error('使用模式已经变化，请重新核验');
+          if(douyinMode()&&mode!==douyinMode()&&body.acceptModeMismatch!==true)throw new Error('核验出的模式与当前设置不一致，请确认切换后再绑定');
           if(main&&main!==peer.peerUid&&body.replaceMain!==true)throw new Error('此会话不是已绑定主号，须明确确认更换');
         }else if(body.selfChat===true){
           if(adapter.selectionKind!=='self')throw new Error('自聊选择已结束，请重新选择');
@@ -234,18 +277,17 @@ const server=http.createServer(async(req,res)=>{
         }
         if(store.config.enabled||engine.busy||engine.taskBusy||engine.picking||engine.outboxBusy)throw new Error('请先暂停监听并等待当前任务结束，再更换绑定');
         const old=store.config.owner,bindingChanged=!!old&&(old.chatKey!==scan.peer.chatKey||old.peerUid!==scan.peer.peerUid||!!old.selfUid&&old.selfUid!==scan.peer.selfUid);
-        if(bindingChanged&&store.db.prepare("SELECT 1 FROM outbox WHERE peer=? AND status IN ('pending','sending') LIMIT 1").get(old.chatKey))throw new Error('旧账号仍有待发送消息，请先处理发件箱');
-        if(bindingChanged&&(
-          store.db.prepare("SELECT 1 FROM messages WHERE peer=? AND status IN ('new','classifying','processing','waiting_auth') LIMIT 1").get(old.chatKey)||
-          store.db.prepare("SELECT 1 FROM tasks t LEFT JOIN operations o ON o.id=json_extract(t.context,'$.operationId') WHERE (o.peer=? OR o.id IS NULL) AND t.status IN ('queued','running') LIMIT 1").get(old.chatKey)
-        ))throw new Error('原绑定还有待处理的个人 Agent 工作，请先完成或中断，再切换绑定');
+        if(bindingChanged)requireIdleBinding(old);
         const mode=scan.peer.selfChat?'self':'assistant',existingMain=store.config.agentMainUid||old?.peerUid;
-        store.saveConfig({owner:scan.peer,agentMainUid:scan.peer.peerUid,agentBindings:{...(existingMain===scan.peer.peerUid?agentBindings(store.config):{}),[mode]:scan.peer}});
+        store.saveConfig({owner:scan.peer,douyinMode:mode,douyinRebindRequired:false,agentMainUid:scan.peer.peerUid,agentBindings:{...(existingMain===scan.peer.peerUid?agentBindings(store.config):{}),[mode]:scan.peer}});
         if(auto||body.selfChat===true)adapter.selection(false,'self');
         store.event((mode==='self'?'已绑定主号自聊：':'已绑定助手代收：')+scan.peer.displayName);return json(res,{owner:scan.peer,mode});
       }
       if(path==='/api/coordinator'){const id=await engine.createCoordinator();return json(res,{id});}
-      if(path==='/api/listen'){await engine.arm(body.enabled===true,{resumeSince:body.resumeSince});return json(res,{enabled:store.config.enabled});}
+      if(path==='/api/listen'){
+        if(body.enabled===true&&(changingDouyinMode||store.config.douyinRebindRequired))throw new Error('请先完成抖音账号切换并重新绑定个人 Agent 会话');
+        await engine.arm(body.enabled===true,{resumeSince:body.resumeSince});return json(res,{enabled:store.config.enabled});
+      }
       if(path==='/api/video-preferences'||path==='/api/config'||path==='/api/targets'){
         if(path!=='/api/video-preferences'&&(!Array.isArray(body.targets)||body.targets.length>20))throw new Error('目标聊天列表格式错误');
         const targets=path==='/api/video-preferences'?store.config.targets:body.targets.map(t=>({id:String(t.id||''),alias:String(t.alias||'').trim(),name:String(t.name||'').slice(0,150)}));
@@ -304,11 +346,17 @@ server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已被
 engine.start();codex.startAuthWatcher();
 let retentionWork=Promise.resolve();const retentionTimer=setInterval(()=>{retentionWork=Promise.allSettled([retention.run().catch(()=>log('归档保留策略检查失败，记录已保留','attention')),chatSessions.reconcileUncertain()]);},60000);
 const codexReady=codex.connect().then(async()=>{await conversations.ensureLegacy();log('本机 '+(active==='dsh'?'DeepSeek Harness':'Codex')+' 已连接');}).catch(e=>log('助手连接失败：'+e.message,'error'));
-if((store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
+if(!store.config.douyinRebindRequired&&(store.config.owner||chats.bots().length)&&existsSync(join(store.root,'browser-profile')))adapter.open(store.config.owner).then(async()=>{
   await codexReady;if(closing||!store.config.resumeOnStartup)return;
   try{await engine.arm(true,{resumeSince:startupSince});log('已恢复保存的会话与监听，补收本次启动期间的消息；已有记录不会重复执行');}catch(e){log('绑定和资料已保留，等待恢复抖音会话：'+e.message,'attention');}
 }).catch(()=>log('抖音登录态和资料已保留，请打开抖音窗口检查平台登录状态','attention'));
-const statusTimer=setInterval(()=>{if(adapter.page&&!adapter.sending)adapter.scan().catch(()=>{});},5000);
+const statusTimer=setInterval(()=>{
+  if(!adapter.page||adapter.sending)return;
+  adapter.scan().then(scan=>{
+    if(!waitingForDouyinLogin||!scan.loggedIn||changingDouyinMode)return;
+    waitingForDouyinLogin=false;loginCompletedAt=Date.now();returnToWorkbench();
+  }).catch(()=>{});
+},2000);
 const backupTimer=setInterval(()=>store.backup().catch(()=>log('自动状态快照暂未完成','attention')),30*60000);backupTimer.unref();
 async function shutdown(){if(closing)return;closing=true;clearInterval(statusTimer);clearInterval(backupTimer);clearInterval(retentionTimer);retention.closing=true;deliveryReview.closing=true;chatSessions.closing=true;await Promise.allSettled([retentionWork,deliveryReview.batchWork]);engine.stop();chats.stop();await Promise.allSettled([codex.close(),taskCodex.close(),chatSandbox.close()]);await codeSandbox.close();await Promise.allSettled([...engine.interrupts.requests.values(),...chats.running.values(),...engine.memoryUpdates]);await adapter.close();if(store.backingUp)await store.backingUp.catch(()=>{});await store.backup().catch(()=>{});server.close(()=>{store.close();process.exit(0);});}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

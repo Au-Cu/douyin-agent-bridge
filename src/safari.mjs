@@ -87,7 +87,9 @@ export class SafariDouyinAdapter {
   async scan({observeOnly=false}={}){
     if(!this.page)return {peer:null,messages:[],diagnostics:{},loginRequired:true};
     try{const result=await this.inTab(`const scan=(${scanConversation.toString()}),all=[];function walk(w,path){try{if(!/^https:\\/\\/(www\\.)?douyin\\.com\\//.test(w.location.href))return;all.push({path,value:scan.call(w)});const frames=[...w.document.querySelectorAll('iframe')];for(let i=0;i<frames.length;i++){const f=frames[i],r=f.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,top=w.document.elementFromPoint(x,y);if(r.width&&r.height&&(top===f||f.contains(top)))try{walk(f.contentWindow,path.concat(i))}catch{}}}catch{}}walk(window,[]);all.sort((a,b)=>Number(b.value.diagnostics.interactiveRows>0)-Number(a.value.diagnostics.interactiveRows>0)||b.value.messages.length-a.value.messages.length);return all[0]||null;`);
-      const value=bindScanIdentity(this,result?.value||{peer:null,messages:[],diagnostics:{pages:1},loginRequired:true});if(!observeOnly){this.framePath=result?.path||[];this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
+      const raw=result?.value||{peer:null,messages:[],diagnostics:{pages:1},loginRequired:true},value=bindScanIdentity(this,raw);
+      value.loggedIn=!raw.loginRequired&&!!(raw.accountMarker||raw.peer?.selfUid);
+      if(!observeOnly){this.framePath=result?.path||[];this.lastScan=value;this.status=value.loginRequired?'waiting_login':value.peer?(value.diagnostics.interactiveRows===0?'blocked':'ready'):'select_chat';}return value;
     }catch(e){if(!observeOnly)this.status='blocked';throw e;}
   }
   async restoreOwner(owner){
@@ -139,6 +141,20 @@ export class SafariDouyinAdapter {
     checkWork();if(!safeMediaUrl(url))throw new Error('拒绝非抖音媒体地址');const ua=await this.inTab('return navigator.userAgent;'),signal=workSignal(),response=await fetch(url,{headers:{Referer:allowed,'User-Agent':ua},signal:AbortSignal.any([AbortSignal.timeout(180000),...(signal?[signal]:[])])});
     if(!response.ok)throw new Error('Safari 视频下载失败 HTTP '+response.status+'，请检查平台登录或访问权限');if(!safeMediaUrl(response.url))throw new Error('视频下载跳转到了不支持的域名');if(Number(response.headers.get('content-length'))>maxBytes)throw new Error('视频超过本机处理上限 300 MB');
     const file=await open(destination+'.part','w');let size=0,head=Buffer.alloc(0);try{for await(const chunk of response.body){checkWork();size+=chunk.length;if(size>maxBytes)throw new Error('视频超过本机处理上限 300 MB');if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}if(!head.includes(Buffer.from('ftyp')))throw new Error('下载结果不是有效 MP4，未进行视频学习');await file.close();await rename(destination+'.part',destination);return size;}catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
+  }
+  async focus(){
+    if(!this.page)return;
+    const index=await this.locateOwned();
+    await this.apple(`tell application "Safari"\nset w to window id ${this.windowId}\nset current tab of w to tab ${index} of w\nset index of w to 1\nactivate\nend tell`);
+  }
+  async logout(){
+    await this.open();
+    const signedOut=async()=>{const scan=await this.scan();return scan.loginRequired&&!scan.loggedIn;};
+    if(await signedOut())return;
+    const clicked=await this.inTab(`const controls=[...document.querySelectorAll('button,a,[role="button"],[role="menuitem"]')].filter(el=>el.getClientRects().length&&getComputedStyle(el).visibility==='visible'&&(el.innerText||el.getAttribute('aria-label')||'').trim()==='退出登录');if(controls.length!==1)return false;controls[0].click();return true;`).catch(()=>false);
+    if(clicked)for(let i=0;i<4;i++){await sleep(600);if(await signedOut())return;}
+    await this.focus().catch(()=>{});
+    throw new Error('请先在 Safari 的抖音窗口退出当前账号，再回控制台确认切换。');
   }
   async close(){this.page=null;this.status='closed';}
 }

@@ -1,6 +1,11 @@
 import {updateHTML,updateOptions} from './dom.js';
 import {initViews,openSettingsSection,renderVisuals,renderLearning} from './views.js';
 import {initGroupSettings} from './group-settings.js';
+function normalizeAgentRoute(){
+  const hash=location.hash.replace(/^#chats\/agent\/(self|assistant)(?=\/|$)/,'#chats/agent');
+  if(hash!==location.hash)history.replaceState(history.state,'',hash);
+}
+normalizeAgentRoute();
 initViews();
 const classic=document.documentElement.dataset.layout==='classic';
 const $=id=>document.getElementById(id);let state=null,targets=[],threads=[],dirty=false,busy=false;
@@ -24,16 +29,11 @@ function chatDestination(){
   if(path[1]==='peer'&&path[2])try{return decodeURIComponent(path[2]);}catch{}
   return ['add','agent'].includes(path[1])?path[1]:'';
 }
-function agentSlot(){
-  const path=location.hash.split('/');
-  if(path[1]!=='agent')return '';
-  return ['self','assistant'].includes(path[2])?path[2]:state?.config.owner?.selfChat?'self':'assistant';
-}
-function savedAgent(mode,owner=state?.config.owner){
-  return state?.config.agentBindings?.[mode]||((owner?.selfChat?'self':'assistant')===mode?owner:null);
-}
+const activeAgent=()=>state?.config.douyinRebindRequired?null:state?.config.owner;
+const selectedMode=()=>state?.config.douyinMode||(state?.config.owner?(state.config.owner.selfChat?'self':'assistant'):'');
+const modeName=mode=>mode==='assistant'?'助手代收模式':'主号自聊模式';
 const instanceFields=['instanceModel','instanceEffort','instanceFast','instanceBudget','instanceVideoMinutes','instanceVisualFps','instanceAutoRoute'];
-const instanceDrafts=new Map();let instanceForm=null,verifiedBinding=null,bindingRole='';
+const instanceDrafts=new Map();let instanceForm=null,verifiedBinding=null;
 function renderInstance(peer,mode){
   $('instancePreferences').hidden=!peer;
   $('unboundAgentNotice').hidden=!!peer||mode==='chat';
@@ -61,45 +61,29 @@ function renderInstance(peer,mode){
 function renderChatDirectory(data,owner){
   const destination=chatDestination(),view=$('chatsView');
   view.dataset.detail=String(!!destination);
-  const mode=agentSlot(),ownerIsAgent=destination==='agent',binding=ownerIsAgent?savedAgent(mode,owner):null;
-  const active=!!binding&&owner?.chatKey===binding.chatKey&&owner?.selfUid===binding.selfUid;
-  const selected=ownerIsAgent?(active?data.chats.find(c=>c.chatKey===binding.chatKey)||binding:binding):data.chats.find(c=>c.chatKey===destination);
+  const mode=owner?.selfChat?'self':'assistant',ownerIsAgent=destination==='agent',binding=activeAgent();
+  const selected=ownerIsAgent?(binding?data.chats.find(c=>c.chatKey===binding.chatKey)||binding:null):data.chats.find(c=>c.chatKey===destination);
   const ordinary=data.chats.filter(c=>!(c.chatKey===owner?.chatKey&&c.mode==='agent'));
   const search=$('chatSearch').value.trim().toLocaleLowerCase();
-  const row=(route,title,description)=>'<a class="conversation-row" data-ui-key="chat-nav:'+escape(route)+'" href="#chats/'+escape(route)+'" '+((route.startsWith('agent/')?route==='agent/'+mode:route===destination||route.startsWith('peer/')&&selected?.chatKey===decodeURIComponent(route.slice(5))&&destination!=='agent')?'aria-current="true"':'')+'><strong>'+escape(title)+'</strong><small>'+escape(description)+'</small></a>';
+  const row=(route,title,description)=>'<a class="conversation-row" data-ui-key="chat-nav:'+escape(route)+'" href="#chats/'+escape(route)+'" '+((route===destination||route.startsWith('peer/')&&selected?.chatKey===decodeURIComponent(route.slice(5))&&destination!=='agent')?'aria-current="true"':'')+'><strong>'+escape(title)+'</strong><small>'+escape(description)+'</small></a>';
   const visible=ordinary.filter(c=>c.displayName.toLocaleLowerCase().includes(search));
   const matchesAgent=!search||owner?.displayName?.toLocaleLowerCase().includes(search)||'个人 agent 自聊'.includes(search);
-  updateHTML($('chatDirectory'),'<p class="section-caption">个人 Agent</p>'+(matchesAgent?['self','assistant'].map(slot=>{const p=savedAgent(slot,owner),isActive=p?.chatKey===owner?.chatKey&&p?.selfUid===owner?.selfUid;return row('agent/'+slot,slot==='self'?'主号自聊':'助手代收',p?(isActive?'当前使用 · ':'已绑定 · ')+p.displayName:'尚未绑定');}).join(''):'')+
+  updateHTML($('chatDirectory'),(matchesAgent?row('agent','个人 Agent',binding?modeName(mode)+' · '+binding.displayName:'尚未绑定'):'')+
     '<p class="section-caption">普通聊天</p>'+visible.map(c=>row('peer/'+encodeURIComponent(c.chatKey),c.displayName,(c.type==='group'?'群聊':'单聊')+' · '+(c.enabled?(c.deliveryPaused?'回复已暂停':'已启用'):'已停用'))).join('')+
     (visible.length?'':'<p class="empty">'+(search?'没有匹配的聊天':'尚未配置普通聊天')+'</p>'));
   const pane=selected||ownerIsAgent?'detail':destination==='add'?'add':'empty';
   for(const el of view.querySelectorAll('[data-chat-pane]'))el.hidden=el.dataset.chatPane!==pane;
-  $('conversationTitle').textContent=(ownerIsAgent?(mode==='self'?'主号自聊':'助手代收'):selected?.displayName)||({add:'添加聊天',empty:'选择会话'})[pane];
-  $('conversationDescription').textContent=ownerIsAgent&&!selected?'先绑定主号，再核验使用哪种接收方式。':selected?(ownerIsAgent?(active?'当前使用':'已绑定 · 未使用')+' · '+selected.displayName:(selected.type==='group'?'群聊':'单聊')+' · 普通聊天 AI · 仅回复'):({empty:'左侧目录包含个人 Agent、单聊和群聊。',add:'从抖音窗口核验身份后启用。'})[pane];
+  $('conversationTitle').textContent=(ownerIsAgent?'个人 Agent':selected?.displayName)||({add:'添加聊天',empty:'选择会话'})[pane];
+  $('conversationDescription').textContent=ownerIsAgent?(selected?modeName(mode)+' · '+binding.displayName:'前往「添加聊天」绑定个人 Agent。'):selected?(selected.type==='group'?'群聊':'单聊')+' · 普通聊天 AI · 仅回复':({empty:'左侧目录包含个人 Agent、单聊和群聊。',add:'从抖音窗口核验身份后启用。'})[pane];
   const showSettings=location.hash.endsWith('/settings')||ownerIsAgent&&!selected;
-  $('agentConnection').hidden=!ownerIsAgent;
-  if(ownerIsAgent){
-    const assistant=mode==='assistant',form=$('agentBindingForm');
-    $('mainConnection').hidden=assistant;$('assistantConnection').hidden=!assistant;
-    $('assistantNeedsMain').hidden=!!owner;
-    form.hidden=assistant&&!owner;
-    const host=$(assistant?'assistantBindingHost':'mainBindingHost');
-    if(form.parentNode!==host)host.append(form);
-    if(bindingRole!==mode){bindingRole=mode;verifiedBinding=null;$('bindSelf').disabled=true;$('agentBindingResult').textContent='';}
-    $('bindingHeading').textContent=assistant?'核验并绑定助手账号':'绑定主号';
-    $('setupSummary').textContent=!selected?'尚未绑定':!active?'已绑定 · 当前未使用':state.config.enabled?'当前使用 · 正在监听':'当前使用 · 监听已暂停';
-    $('startSelfBinding').textContent=assistant?'开始核验助手账号':'开始绑定主号';
-    $('bindingInstructions').textContent=assistant?'在抖音窗口登录代收账号，再打开与已绑定主号的私信。':'主号是你发指令、接收结果的账号。网页登录身份核验后会自动区分自聊与代收。';
-    $('bindingSelectionHint').textContent='自动切换已暂停。'+(assistant?'请打开与已绑定主号的私信。':'请打开主号私信；如果网页已登录主号，打开自己的私信。');
-  }
-  const destinationPath=ownerIsAgent?'agent/'+mode:'peer/'+encodeURIComponent(selected?.chatKey||'');
+  const destinationPath=ownerIsAgent?'agent':'peer/'+encodeURIComponent(selected?.chatKey||'');
   $('conversationTabs').hidden=!selected;
   $('conversationHistoryTab').href='#chats/'+destinationPath;
   $('conversationSettingsTab').href='#chats/'+destinationPath+'/settings';
   $('conversationHistoryTab').setAttribute('aria-current',String(!showSettings));
   $('conversationSettingsTab').setAttribute('aria-current',String(showSettings));
   $('activeChatSettings').hidden=!showSettings;
-  $('activeChatReplyOptions').hidden=!selected||ownerIsAgent&&!active;
+  $('activeChatReplyOptions').hidden=!selected;
   $('activeChatRecords').hidden=showSettings;
   renderInstance(selected,ownerIsAgent?mode:'chat');
   $('activeChatModelLink').hidden=ownerIsAgent;
@@ -120,6 +104,7 @@ if(!classic){
     if(button)location.hash='chats/'+button.dataset.chatDestination;
   });
   window.addEventListener('hashchange',event=>{
+    normalizeAgentRoute();
     if(state)renderAiChats();
     if(matchMedia('(max-width: 720px)').matches){
       const previous=new URL(event.oldURL).hash;
@@ -172,6 +157,60 @@ function expireNotice(){clearTimeout(noticeTimer);noticeTimer=setTimeout(hideNot
 noticeBox.addEventListener('pointerenter',()=>clearTimeout(noticeTimer));noticeBox.addEventListener('pointerleave',expireNotice);noticeBox.addEventListener('focusin',()=>clearTimeout(noticeTimer));noticeBox.addEventListener('focusout',expireNotice);
 $('closeNotice').addEventListener('click',()=>{hideNotice();lastNotice='';});
 function notice(text,error=false){const key=String(error)+':'+text;if(key===lastNotice&&noticeBox.style.display!=='none')return;lastNotice=key;$('noticeText').textContent=text;noticeBox.className=error?'error':'';noticeBox.setAttribute('role',error?'alert':'status');noticeBox.setAttribute('aria-live',error?'assertive':'polite');noticeBox.style.display='flex';if(noticeBox.showPopover&&!noticeBox.matches(':popover-open'))noticeBox.showPopover();expireNotice();}
+let lastDouyinLogin=0,offeredChatSetup=false,douyinModeDirty=false;
+function hideSetupPrompt(){$('setupPrompt').hidden=true;}
+function showSetupPrompt(title,message,actions=[],error=false){
+  const panel=$('setupPrompt'),text=$('setupPromptText'),controls=$('setupPromptActions');
+  $('setupPromptTitle').textContent=title;
+  panel.classList.toggle('setup-error',error);
+  text.replaceChildren(...(Array.isArray(message)?message:[message]));
+  controls.replaceChildren();
+  for(const [label,handler] of [...actions,['关闭',hideSetupPrompt]]){
+    const control=document.createElement(typeof handler==='string'?'a':'button');
+    control.textContent=label;control.className=typeof handler==='string'?'panel-link':'secondary';
+    if(typeof handler==='string'){control.href=handler;control.addEventListener('click',hideSetupPrompt);}
+    else control.addEventListener('click',async()=>{
+      control.disabled=true;
+      try{await handler();await refresh();}catch(e){notice(e.message,true);}finally{control.disabled=false;}
+    });
+    controls.append(control);
+  }
+  panel.hidden=false;
+}
+function promptDouyinLogin(mode){
+  const account=document.createElement('strong');account.textContent='助手账号';account.className='setup-emphasis';
+  showSetupPrompt('登录抖音',mode==='assistant'?['请点击「打开抖音窗口」以登录',account,'。']:'请点击「打开抖音窗口」以登录。');
+}
+function renderOnboarding(runtime,agentReady){
+  const mode=selectedMode(),loggedIn=runtime.browserLoggedIn===true,owner=activeAgent();
+  $('setupAccountLink').hidden=!!mode;
+  $('setupAccountLink').textContent=loggedIn?'选择使用模式':'连接抖音账号';
+  $('openBrowser').hidden=loggedIn||!mode;
+  $('setupAgentLink').hidden=agentReady;
+  $('setupAsrLink').hidden=!!runtime.asrReady;
+  $('accountCard').classList.toggle('needs-setup',!loggedIn);
+  $('agentStatusCard').classList.toggle('needs-setup',!agentReady);
+  $('asrStatusCard').classList.toggle('needs-setup',!runtime.asrReady);
+  $('safariSetupHint').hidden=runtime.browserEngine!=='safari'||loggedIn||!mode;
+  $('browserStatus').textContent=loggedIn?'已登录':runtime.browser==='open_error'?'打开失败，可重试':runtime.browser==='waiting_login'?'等待登录':'未连接';
+  $('ownerStatus').textContent=loggedIn?(owner?'已绑定 · '+owner.displayName:'已登录，可前往会话添加聊天'):(mode?modeName(mode):'选择账号使用方式后登录');
+  if(!douyinModeDirty)$('douyinMode').value=mode;
+  $('douyinModeStatus').textContent=mode?'当前设置 · '+modeName(mode):'尚未选择使用模式';
+  $('agentBindingForm').hidden=!loggedIn;
+  $('agentBindingLogin').hidden=loggedIn;
+  $('bindingSelectionHint').textContent=mode==='assistant'?'在助手账号的抖音窗口打开与主号的私信，并从主号发一条消息。':'在抖音窗口打开自己和自己的私信，保留一条手动发出的消息。';
+  const justLoggedIn=runtime.loginCompletedAt&&runtime.loginCompletedAt!==lastDouyinLogin;
+  if(justLoggedIn){
+    lastDouyinLogin=runtime.loginCompletedAt;
+    showSetupPrompt('抖音登录成功',owner?'已恢复抖音连接。':'已登录抖音，可以继续准备其他组件。');
+  }
+  const noChats=!owner&&!(state.aiChats?.chats||[]).some(c=>c.mode==='chat');
+  if(!noChats)offeredChatSetup=false;
+  if(loggedIn&&agentReady&&runtime.asrReady&&noChats&&!offeredChatSetup&&(!location.hash||location.hash==='#workbench')){
+    offeredChatSetup=true;
+    showSetupPrompt(justLoggedIn?'抖音登录成功，可以添加会话了':'可以添加会话了','抖音账号、个人 Agent 和口播转写均已就绪。请选择要添加的个人 Agent 或普通聊天。',[['前往添加会话 ↗','#chats/add']]);
+  }
+}
 let deleting=null;
 const deleteDialog=document.createElement('dialog');deleteDialog.id='deleteDialog';deleteDialog.setAttribute('aria-labelledby','deleteHeading');
 deleteDialog.innerHTML='<h2 id="deleteHeading">彻底删除归档记录</h2><p id="deleteLabel"></p><p id="deleteCounts"></p><p id="deleteWarning"></p><label class="delete-check"><input id="deleteAcknowledge" type="checkbox">我理解这是永久删除，不能恢复显示</label><p id="deleteError" role="alert"></p><div class="button-row"><button id="cancelDelete" class="secondary">取消</button><button id="confirmDelete" class="delete-record" disabled>确认彻底删除</button></div>';
@@ -265,7 +304,7 @@ function renderThreadOptions(){
 }
 $('threadSelect').addEventListener('change',()=>{$('threadSelect').title=threads.find(t=>t.id===$('threadSelect').value)?.name||'';});
 window.addEventListener('resize',()=>{if(threads.length)requestAnimationFrame(renderThreadOptions);});
-function stateQuery(){const q=new URLSearchParams();const chat=chatDestination();if(chat==='agent'&&savedAgent(agentSlot())?.chatKey)q.set('chat',savedAgent(agentSlot()).chatKey);else if(chat&&!['agent','account','defaults','add'].includes(chat))q.set('chat',chat);for(const [key,id] of [['needs','needScope'],['knowledge','knowledgeScope'],['work','workScope']])if($(id).value!=='current')q.set(key,$(id).value);if($('workStatus').value!=='all')q.set('status',$('workStatus').value);return q.toString();}
+function stateQuery(){const q=new URLSearchParams();const chat=chatDestination();if(chat==='agent'&&activeAgent()?.chatKey)q.set('chat',activeAgent().chatKey);else if(chat&&!['agent','account','defaults','add'].includes(chat))q.set('chat',chat);for(const [key,id] of [['needs','needScope'],['knowledge','knowledgeScope'],['work','workScope']])if($(id).value!=='current')q.set(key,$(id).value);if($('workStatus').value!=='all')q.set('status',$('workStatus').value);return q.toString();}
 async function refresh(){
   if(busy){refreshAgain=true;return;}busy=true;try{
     const query=stateQuery();
@@ -280,7 +319,7 @@ async function refresh(){
     if(oldChat!==chatBackend){chatCatalog=null;chatPreferencesDirty=false;loadModeModels(true).catch(e=>notice('普通聊天模型名单暂未读取：'+e.message,true));}
     for(const el of document.querySelectorAll('[data-fold-key]'))if(el.open)openedDetails.add(el.dataset.foldKey);else openedDetails.delete(el.dataset.foldKey);
     if(state.storage){$('storagePath').textContent='固定数据目录：'+state.storage.dataRoot;$('backupInfo').textContent=(state.storage.recovery?state.storage.recovery+'。':'')+(state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。':'尚未生成状态快照。')+(r.browserEngine==='safari'?' 原视频和连续画面保存在上述目录；Safari 登录态由 Safari 管理。':' 原视频、连续画面和登录态保留在上述目录；')+'自动备份配置、需求与任务记录，退出程序时也会生成快照。';}
-    $('browserInstructions').textContent=r.browserEngine==='safari'?'使用 Safari 登录助手账号；需要时先切换到助手专用的 Safari 个人资料，再与主号互关并发送私信。':'首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。';
+    if(classic)$('browserInstructions').textContent=r.browserEngine==='safari'?'使用 Safari 登录助手账号；需要时先切换到助手专用的 Safari 个人资料，再与主号互关并发送私信。':'首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。';
     $('liveBadge').textContent=state.config.enabled?'正在监听':'尚未监听';$('liveBadge').className='badge'+(state.config.enabled?' active':'');
     if(state.config.ignoreMessages)$('liveBadge').textContent='忽略新消息 · /结束忽略 恢复';
     $('browserStatus').textContent=({closed:'未打开',waiting_login:'等待登录',select_chat:'请选择会话',ready:'已连接',blocked:'被弹层遮挡',open_error:'打开失败，可重试'})[r.browser]||r.browser;
@@ -288,12 +327,7 @@ async function refresh(){
     const authReady=r.codex&&r.auth?.status==='ready'&&!r.auth.reconnectPending;
     const hasCoordinator=!!(state.config.coordinator||state.conversations?.current);
     if(!classic){
-      const accountLink=$('setupAccountLink'),assistant=state.config.owner&&!state.config.owner.selfChat;
-      accountLink.href=assistant?'#chats/agent/assistant/settings':'#chats/agent/self/settings';
-      accountLink.textContent=assistant?'连接代收助手 ↗':'登录抖音并绑定主号 ↗';
-      accountLink.hidden=!!state.config.owner&&r.browser==='ready';
-      $('setupAgentLink').hidden=authReady&&hasCoordinator;
-      $('setupAsrLink').hidden=!!r.asrReady;
+      renderOnboarding(r,authReady&&hasCoordinator);
       const needsLogin=agentBackend==='codex'&&r.auth?.status==='login';
       $('beginCodexLogin').hidden=!needsLogin;
       const loginLink=$('codexLoginLink');
@@ -302,10 +336,7 @@ async function refresh(){
       $('agentSetupStatus').textContent=authReady?(hasCoordinator?'个人 Agent 已就绪。返回工作台继续。':'已连接本机助手。点击「创建调度聊天」完成个人 Agent 设置。'):needsLogin?(loginLink.hidden?'点击「准备 ChatGPT 登录」，再打开登录页。':'在登录页完成登录后回到这里，连接状态会自动更新。也可以点「检查连接」。'):r.auth?.message||'正在检查本机助手。若持续等待，点击「检查连接」。';
       $('asrSetupStatus').textContent=r.asrReady?'口播转写已就绪。返回工作台继续。':r.asrInstalling?r.asrProgress||'正在准备安装…':r.asrError?'安装未完成。'+r.asrError+'。处理后点「重试安装」。':'点击「安装转写模型」，在此查看下载、校验和解压进度。';
       $('setupAsr').textContent=r.asrError&&!r.asrInstalling?'重试安装':'安装转写模型';
-      $('safariSetupHint').hidden=r.browserEngine!=='safari'||r.browser==='ready';
-      $('accountSetupStatus').textContent=state.config.owner&&r.browser==='ready'?'抖音账号已连接。返回工作台继续。':r.browser==='waiting_login'?'请在打开的抖音窗口扫码登录，再按下方步骤选择并核验会话。':r.browser==='open_error'?'抖音窗口未打开。请检查浏览器是否可用，然后重试。':'登录后，点「开始绑定主号」，按提示打开私信并核验。';
-    }
-    $('ownerStatus').textContent=state.config.owner?'已绑定：'+state.config.owner.displayName+(state.config.owner.selfChat?'（自聊）':''):'尚未绑定用户会话';
+    }else $('ownerStatus').textContent=state.config.owner?'已绑定：'+state.config.owner.displayName+(state.config.owner.selfChat?'（自聊）':''):'尚未绑定用户会话';
     $('codexStatus').textContent=r.auth?.reconnectPending?'等待切换连接':r.auth?.status==='login'?'请重新登录':r.auth?.status==='quota'?'额度暂不可用':r.codex?'已连接':'等待连接';$('coordinatorStatus').textContent=state.config.coordinator?'当前需求对话已就绪':state.config.uiConfigured?.setup?'收到新需求时创建对话':'尚未建立调度聊天';
     if(r.taskCodex){$('coordinatorStatus').textContent+=' · Codex 项目派发'+(r.taskCodex.ready?'已连接':'等待共享连接');}
     $('asrStatus').textContent=r.asrReady?'已就绪':r.asrInstalling?'正在安装':'尚未安装';$('setupAsr').disabled=r.asrInstalling||r.asrReady;
@@ -337,7 +368,37 @@ action('prepareDesktopShared',async()=>{const r=await api('desktop/prepare',{});
 action('recoverDesktopTasks',async()=>{const r=await api('desktop/recover',{});notice('已恢复 '+r.recovered+' 项可证明未提交的写入受阻任务；结果不明、归档及中断的任务保持原状态。');});
 action('checkDesktopShared',async()=>{const r=await api('desktop/check',{});$('desktopSharedState').textContent=r.message;notice(r.message,!r.ready);});
 const openDouyin=async()=>{notice('正在恢复已保存的抖音登录态和绑定会话。只有平台要求重新验证时才需登录。');await api('browser/open',{});};
-action('openBrowser',openDouyin);if(!classic)action('openMainBrowser',openDouyin);
+if(!classic){
+  action('setupAccountLink',async()=>{
+    showSetupPrompt('是否使用助手账号？','请选择你要使用的账号模式。',[
+      ['是，我有小号作为助手账号',()=>chooseDouyinMode('assistant')],
+      ['否，我只有一个账号',()=>chooseDouyinMode('self')]
+    ]);
+  });
+  $('douyinMode').addEventListener('change',()=>{douyinModeDirty=true;});
+  action('saveDouyinMode',async()=>{
+    const mode=$('douyinMode').value,old=selectedMode();
+    if(!mode)throw new Error('请选择抖音使用模式');
+    if(mode===old){douyinModeDirty=false;return;}
+    if(!old){await chooseDouyinMode(mode);return;}
+    showSetupPrompt('确认切换抖音使用模式','切换会退出当前抖音账号，需要重新登录另一个账号并绑定会话。',[
+      ['确认切换',()=>chooseDouyinMode(mode,true)],
+      ['取消',()=>{douyinModeDirty=false;hideSetupPrompt();}]
+    ],true);
+  });
+}
+async function chooseDouyinMode(mode,confirmed=false){
+  await api('douyin/mode',{mode,confirmed});
+  douyinModeDirty=false;
+  if(location.hash!=='#workbench')location.hash='workbench';
+  if(!confirmed&&state.runtime.browserLoggedIn)showSetupPrompt('抖音已登录','可前往会话核验个人 Agent 的目标私信。',[['前往添加会话 ↗','#chats/add']]);
+  else promptDouyinLogin(mode);
+}
+action('openBrowser',async()=>{
+  if(classic)return openDouyin();
+  await api('browser/open',{guided:true});
+  if(!state.runtime.browserLoggedIn)showSetupPrompt('登录抖音','请在打开的抖音窗口完成登录，成功后会打开工作台。');
+});
 action('selectAiChat',async()=>{await api('ai-chats/select',{});observedAiChat=null;$('enableAiChat').disabled=true;$('observedChat').textContent='在抖音窗口打开目标聊天后，点击读取。';notice('轮询与发送已暂时暂停，请在抖音窗口选择需要配置的单聊或群聊。');});
 action('finishAiSelection',async()=>{await api('ai-chats/cancel',{});observedAiChat=null;notice('已恢复聊天轮询。');});
 action('observeAiChat',async()=>{const c=observedAiChat=await api('ai-chats/current',{});$('observedChat').textContent=`已核验：${c.displayName} · ${c.type==='group'?'群聊':'单聊'}`;const option=$('observedChatMode').querySelector('[value="agent"]');option.disabled=c.type!=='single'||c.chatKey!==state.config.owner?.chatKey||c.peerUid!==state.config.owner?.peerUid;$('observedChatMode').value=option.disabled?'chat':state.aiChats?.chats.find(v=>v.chatKey===c.chatKey)?.mode||'chat';$('observedGroupReplyLabel').hidden=c.type!=='group';$('observedGroupReply').value=state.aiChats?.chats.find(v=>v.chatKey===c.chatKey)?.groupReplyMode||'mentions';$('enableAiChat').disabled=false;});
@@ -347,25 +408,33 @@ action('backupNow',async()=>{await api('storage/backup',{});notice(state?.runtim
 action('bindOwner',async()=>{
   if(classic){const r=await api('bind',{});notice('已绑定：'+r.owner.displayName);return;}
   verifiedBinding=null;$('bindSelf').disabled=true;
-  const role=bindingRole,binding=await api('bind/inspect',{});
-  if(role!==bindingRole)return;
-  if(role==='assistant'&&(binding.mode!=='assistant'||binding.replaceMain)){
-    $('agentBindingResult').textContent=binding.replaceMain?'这条私信与已绑定主号不符，请打开正确的主号私信。':'当前登录的就是主号，请登录代收助手账号后再核验。';return;
+  const expected=selectedMode(),binding={...await api('bind/inspect',{}),expectedMode:expected};
+  if(expected&&binding.mode!==expected){
+    const self=binding.mode==='self';
+    showSetupPrompt('绑定模式不一致',self?'检测到绑定了自己账号作为个人 Agent，是否切换为主号自聊模式？':'检测到绑定了其他账号作为个人 Agent，是否切换为助手代收模式？',[
+      ['是，切换模式',()=>commitAgentBinding(binding,true)],
+      ['否，重新绑定',()=>showSetupPrompt('重新绑定',self?'请在抖音窗口打开助手账号与主号的私信，重新核验。':'请在抖音窗口打开自己和自己的私信重新绑定。')]
+    ],true);
+    return;
   }
   verifiedBinding=binding;
-  $('agentBindingResult').textContent='主号 '+verifiedBinding.displayName+' · '+(verifiedBinding.mode==='self'?'当前登录就是主号，启用主号自聊。':'当前登录与主号不同，将绑定当前账号为代收助手。')+(verifiedBinding.replaceMain?' 此操作会更换已绑定的主号。':'');
+  $('agentBindingResult').textContent='主号 '+binding.displayName+' · '+modeName(binding.mode)+(binding.replaceMain?'。此操作会更换已绑定的主号。':'');
   $('bindSelf').disabled=false;
 });
-action('startSelfBinding',async()=>{await api('bind/select',{});if(!classic){verifiedBinding=null;$('agentBindingResult').textContent='';$('bindSelf').disabled=true;}$('startSelfBinding').hidden=true;$('selfBindingControls').hidden=false;notice(classic?'已暂停自动切换。请在抖音窗口打开自聊，再点「确认绑定自己」。':'已暂停自动切换。请打开主号私信，再点「核验当前会话」。');});
+action('startSelfBinding',async()=>{await api('bind/select',{guided:!classic});if(!classic){hideSetupPrompt();verifiedBinding=null;$('agentBindingResult').textContent='';$('bindSelf').disabled=true;}$('startSelfBinding').hidden=true;$('selfBindingControls').hidden=false;notice(classic?'已暂停自动切换。请在抖音窗口打开自聊，再点「确认绑定自己」。':'已暂停自动切换。请按会话绑定说明打开私信，再点「核验当前会话」。');});
 action('cancelSelfBinding',async()=>{await api('bind/cancel',{});$('startSelfBinding').hidden=false;$('selfBindingControls').hidden=true;notice('已取消自聊选择。');});
 action('bindSelf',async()=>{
   if(classic){const r=await api('bind',{selfChat:true});notice('已绑定自聊：'+r.owner.displayName+'。');return;}
-  const b=verifiedBinding;if(!b)throw new Error('请先核验当前会话');
-  if(b.replaceMain&&!confirm('将主号更换为「'+b.displayName+'」？旧的任务和聊天记录仍会保留。'))return;
-  const r=await api('bind',{mode:'auto',chatKey:b.chatKey,selfUid:b.selfUid,mainUid:b.mainUid,detectedMode:b.mode,replaceMain:b.replaceMain,bindingRole});
-  verifiedBinding=null;
-  notice(r.mode==='self'?'主号自聊已绑定。开始监听后，文字以「/助手」开头。':'主号与代收助手已绑定。开始监听后，用主号给助手发消息。');
+  if(!verifiedBinding)throw new Error('请先核验当前会话');
+  await commitAgentBinding(verifiedBinding,false);
 });
+async function commitAgentBinding(binding,acceptModeMismatch){
+  if(binding.replaceMain&&!confirm('将主号更换为「'+binding.displayName+'」？旧的任务和聊天记录仍会保留。'))return;
+  const r=await api('bind',{mode:'auto',chatKey:binding.chatKey,selfUid:binding.selfUid,mainUid:binding.mainUid,detectedMode:binding.mode,expectedMode:binding.expectedMode,replaceMain:binding.replaceMain,acceptModeMismatch});
+  verifiedBinding=null;$('bindSelf').disabled=true;
+  hideSetupPrompt();
+  notice(acceptModeMismatch?'已切换到'+modeName(r.mode)+'。':r.mode==='self'?'主号自聊已绑定。开始监听后，文字以「/助手」开头。':'主号与代收助手已绑定。开始监听后，用主号给助手发消息。');
+}
 if(!classic)action('saveInstancePreferences',async()=>{
   const form=instanceForm;if(!form)return;
   const [model,effort,fast,budget,minutes,fps,autoRoute]=instanceFields.map(id=>$(id).value);

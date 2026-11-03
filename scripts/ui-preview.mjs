@@ -26,7 +26,7 @@ export function demoState() {
   return {
     preview: true,
     config: { enabled: true, owner: { displayName: '演示用户', chatKey: 'demo-owner', peerUid: '111111', selfUid:'999999' },agentBindings:{self:{displayName:'演示用户',chatKey:'demo-self',peerUid:'111111',selfUid:'111111',selfChat:true},assistant:{displayName:'演示用户',chatKey:'demo-owner',peerUid:'111111',selfUid:'999999'}}, coordinator: 'demo-coordinator', targets: [{ alias: '界面项目', name: '控制台界面优化', thread: 'demo-target' }], maxVideoSeconds: 1800, visualFps: 4, model: 'gpt-6.1-sol', reasoningEffort: 'high', fastMode: false, autoRoute: true, contextBudget: 48000, chatModel: 'gpt-6-luna', chatReasoningEffort: 'medium', chatWebSearch: true, chatCodeSandbox: false, uiPanels: { setup: true, model: true, targets: true, storage: true, chats: true }, uiConfigured: { setup: true } },
-    runtime: { harness: { active: 'codex', configured: 'codex', chat: 'codex' }, taskCodex: { ready: true }, codex: true, auth: { status: 'ready' }, asrReady: true, browser: 'ready', browserEngine: process.platform === 'darwin' ? 'safari' : 'edge', processing: true, visualProgress: { id: knowledge[0].id, operationId: 'demo-task-27', completed: 4, total: 17, fps: 4 } },
+    runtime: { harness: { active: 'codex', configured: 'codex', chat: 'codex' }, taskCodex: { ready: true }, codex: true, auth: { status: 'ready' }, asrReady: true, browser: 'ready', browserLoggedIn:true, browserEngine: process.platform === 'darwin' ? 'safari' : 'edge', processing: true, visualProgress: { id: knowledge[0].id, operationId: 'demo-task-27', completed: 4, total: 17, fps: 4 } },
     storage: { dataRoot: '独立演示数据（仅在内存中）', backup: { created: now - 600000 } },
     conversations: { current: needs[0], activeNeed: needs[0].id, needs, budget: 48000 }, knowledge,
     aiChats: { chats: [{chatKey:'demo-owner',displayName:'演示用户',type:'single',mode:'agent',peerUid:'demo-user',enabled:true},{ chatKey: 'demo-group', displayName: '设计讨论 · 演示群聊', type: 'group', mode: 'chat', enabled: true, groupReplyMode: 'mentions',videoOverview:true,sessions:{budget:16000,current:{id:'demo-session',harness:'codex',seq:2,tokens:3200,state:'ready'}} },{chatKey:'demo-single',displayName:'读书搭子 · 演示单聊',type:'single',mode:'chat',enabled:false}], messages: [
@@ -100,6 +100,17 @@ export function createPreviewServer() {
       else if (path === '/api/preferences') Object.assign(state.config,body);
       else if (path === '/api/chat-preferences') Object.assign(state.config,{chatModel:body.model,chatReasoningEffort:body.reasoningEffort,chatFastMode:body.fastMode,chatWebSearch:body.webSearch,chatCodeSandbox:body.codeSandbox});
       else if (path === '/api/codex/login') return json({url:'https://auth.openai.com/',preview:true});
+      else if (path === '/api/douyin/mode') {
+        const previous=state.config.douyinMode||(state.config.owner?(state.config.owner.selfChat?'self':'assistant'):'');
+        if(!['self','assistant'].includes(body.mode)||previous&&previous!==body.mode&&body.confirmed!==true)return json({error:'请确认切换模式'},400);
+        state.config.douyinMode=body.mode;
+        if(previous&&previous!==body.mode){state.config.douyinRebindRequired=true;state.runtime.browserLoggedIn=false;state.runtime.browser='waiting_login';state.runtime.loginCompletedAt=0;}
+        return json({mode:body.mode});
+      }
+      else if (path === '/api/browser/open'&&body.guided) {
+        state.runtime.browser='waiting_login';
+        return json({ok:true,preview:true});
+      }
       else if (path === '/api/coordinator') {
         if(state.runtime.auth.status!=='ready')return json({error:'请先完成登录'},400);
         state.config.coordinator='demo-coordinator';
@@ -118,7 +129,8 @@ export function createPreviewServer() {
       else if (path === '/api/bind'&&body.mode==='auto') {
         const mode=state.demoBindMode||'assistant',owner=state.config.agentBindings[mode];
         if(!state.runtime.selfBinding||body.chatKey!==owner.chatKey||body.selfUid!==owner.selfUid)return json({error:'请选择并核验会话'},400);
-        state.config.owner=owner;state.runtime.selfBinding=false;
+        if(state.config.douyinMode&&state.config.douyinMode!==mode&&body.acceptModeMismatch!==true)return json({error:'请确认切换模式'},400);
+        Object.assign(state.config,{owner,douyinMode:mode,douyinRebindRequired:false});state.runtime.selfBinding=false;
         state.aiChats.chats=state.aiChats.chats.filter(c=>c.mode!=='agent');
         state.aiChats.chats.unshift({...owner,type:'single',mode:'agent',enabled:true});
         return json({mode,owner});
