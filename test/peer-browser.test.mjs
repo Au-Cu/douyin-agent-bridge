@@ -16,4 +16,15 @@ test('repeated polling of the chat currently settling shares its complete snapsh
 
 test('identity changes during stable collection abort the read and never return mixed conversations',async()=>{const h=fixture();h.native.scan=async()=>({peer:h.current.chatKey===B.chatKey&&h.now>=300?C:h.current,messages:[]});await assert.rejects(h.browser.scanPeer(B),e=>e.code==='CHAT_CHANGED'&&e.notSubmitted);assert.deepEqual(h.order,['select:chat-b']);});
 
+test('a zero unread badge cannot hide a personal Agent message for the full group reconciliation interval',async()=>{
+  const h=fixture();
+  h.native.inbox=async()=>({entries:[{ids:[B.chatKey],unread:0}]});
+  h.browser.visited.set(B.chatKey,0);
+  h.browser.now=()=>4999;
+  assert.equal(await h.browser.scanPeer(B,{background:true,agent:true}),null);
+  h.browser.now=()=>5000;
+  assert.equal(await h.browser.scanPeer(B,{background:true}),null);
+  assert.equal(await h.browser.wantsRead(B,{agent:true}),true);
+});
+
 test('queued browser work retains the originating cancellation guard after prioritization',async()=>{const h=fixture(),sending=h.browser.send(A,'fixture');await tick();const c=new AbortController();const job=operationContext.run({signal:c.signal,guard:()=>{if(c.signal.aborted)throw new Error('origin-cancelled');}},()=>h.browser.react(B,'90000000000001'));const failure=assert.rejects(job,/origin-cancelled|用户已强制中断/);c.abort();h.release();await Promise.all([sending,failure]);assert.deepEqual(h.order,['send:chat-a','confirmed:chat-a']);checkWork();});

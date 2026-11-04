@@ -490,7 +490,12 @@ document.addEventListener('click',async e=>{try{
   if(d.archiveKind){const button=control;button.disabled=true;try{const archived=d.archiveValue==='true',r=await api('archive',{kind:d.archiveKind,id:d.archiveId,archived});notice(archived?(d.archiveKind==='need'?r.localOnlyThreads?'需求已本地归档，可恢复；DSH 未提供原生归档。':'需求和对应的 Codex 需求对话已归档。':'已归档，记录和原始资料仍保留。'):'已恢复显示；暂停任务需要明确重试后才执行。');await refresh();}finally{button.disabled=false;}}
   if(d.switchNeed){const n=await api('needs/switch',{id:d.switchNeed});notice('已切换到：'+n.title);await refresh();}
   if(d.note){const k=await api('knowledge/'+encodeURIComponent(d.note));$('noteText').textContent=k.note;$('noteDialog').showModal();}
-  if(d.visual){const v=await api('knowledge/'+encodeURIComponent(d.visual)+'/visual');$('visualInfo').textContent=`${v.fps} 帧/秒 · 已分析 ${v.completedSegments}/${v.totalSegments} 段 · 覆盖至 ${v.coveredUntil.toFixed(1)}/${v.duration.toFixed(1)} 秒。每组按左上、右上、左下、右下阅读。`;$('visualSheets').innerHTML=Array.from({length:v.sheetCount},(_,i)=>`<img loading="lazy" src="/api/knowledge/${encodeURIComponent(d.visual)}/sheet/${i}" alt="第 ${i+1} 组连续画面">`).join('');$('visualNotes').textContent=v.segments.map(s=>`${s.start.toFixed(1)}–${s.end.toFixed(1)} 秒\n${s.text}`).join('\n\n');$('visualDialog').showModal();}
+  if(d.visual){const v=await api('knowledge/'+encodeURIComponent(d.visual)+'/visual');if(v.kind==='album'){
+    const frames=v.slides.flatMap(slide=>slide.frames.map(frame=>({alt:'第 '+slide.index+' 张'+(slide.animated?' · '+frame.seconds.toFixed(2)+' 秒':'')})));
+    visualInfo.textContent='图文共 '+v.slides.length+' 张，依原顺序显示。';
+    visualSheets.innerHTML=frames.map(({alt},i)=>'<img loading="lazy" src="/api/knowledge/'+encodeURIComponent(d.visual)+'/sheet/'+i+'" alt="'+alt+'">').join('');
+    visualNotes.textContent=frames.map(f=>f.alt).join('\n');visualDialog.showModal();return;
+  }$('visualInfo').textContent=`${v.fps} 帧/秒 · 已分析 ${v.completedSegments}/${v.totalSegments} 段 · 覆盖至 ${v.coveredUntil.toFixed(1)}/${v.duration.toFixed(1)} 秒。每组按左上、右上、左下、右下阅读。`;$('visualSheets').innerHTML=Array.from({length:v.sheetCount},(_,i)=>`<img loading="lazy" src="/api/knowledge/${encodeURIComponent(d.visual)}/sheet/${i}" alt="第 ${i+1} 组连续画面">`).join('');$('visualNotes').textContent=v.segments.map(s=>`${s.start.toFixed(1)}–${s.end.toFixed(1)} 秒\n${s.text}`).join('\n\n');$('visualDialog').showModal();}
   if(d.reanalyze){await api('knowledge/reanalyze',{id:d.reanalyze});notice('开始按完整时间轴重分析视觉内容，已完成的片段会复用。');}
   if(d.delivered||d.resend){if(confirm(d.delivered?'请确认已在抖音收到这一段文字。':'请确认这一段没有收到，并授权重新发送。')){await api('outbox/resolve',{id:d.delivered||d.resend,status:d.delivered?'sent':'pending',confirmed:true});await refresh();}}
   if(d.retry)await api('retry/video',{id:d.retry});

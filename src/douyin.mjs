@@ -1,3 +1,4 @@
+import {inspectWorkPage,workMedia,workUnavailable,validWorkDownload} from './douyin-work.mjs';
 import { chromium } from 'playwright-core';
 import {execFile} from 'node:child_process';
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
@@ -66,7 +67,15 @@ export function scanConversation() {
     const side=direction(row,m);if(side==='unknown')unknownDirection++;
     const rawTime=m.createTime??m.createdAt??m.create_time??m.timestamp??m.createdTime;
     let created=Number(rawTime);if(created>0&&created<1e12)created*=1000;if(!Number.isFinite(created))created=0;
-    const awemeId=id(p.itemId||p.item_id||p.awemeId||p.aweme_id);
+    const nativeType=Number(m.messageType||m.message_type||m.type);
+    const assets=p.resource_url;
+    const nativeLive=nativeType===27&&!!p.live_photo_video?.vid;
+    const nativeImageUrls=nativeType===27&&assets?[assets.origin_url_list,assets.large_url_list,assets.medium_url_list]
+      .flatMap(list=>Array.isArray(list)?list:[]).filter(url=>{
+        try{const u=new URL(url);return u.protocol==='https:'&&/(?:^|\.)(?:douyinpic\.com|byteimg\.com|douyin\.com|bytecdn\.cn|douyinliving\.com|byteimg\.cn)$/i.test(u.hostname);}
+        catch{return false;}
+      }).slice(0,12):[];
+    const awemeId=nativeImageUrls.length||nativeLive?messageId:id(p.itemId||p.item_id||p.awemeId||p.aweme_id);
     const rawText=String(p.text||p.content||p.textContent||(typeof m.content==='string'&&!m.content.startsWith('{')?m.content:''));
     const text=clean(rawText),lineBreaks=(rawText.match(/\n/g)||[]).length;
     // Only structured mention identities count. A literal @name, a quoted
@@ -93,7 +102,7 @@ export function scanConversation() {
     // ranges identify that prefix; never strip an arbitrary @name by regex.
     const mentionPrefix=replyTo?.messageId&&Array.isArray(p.richTextInfos)?p.richTextInfos.find(r=>Number(r.location)===0&&Number.isSafeInteger(Number(r.length))&&Number(r.length)>0&&Number(r.length)<rawText.length&&/^\d{5,32}$/.test(id(r.info?.uid))&&rawText.startsWith('@')):null;
     const nativeReplyBody=mentionPrefix?{uid:id(mentionPrefix.info.uid),text:clean(rawText.slice(Number(mentionPrefix.length)))}:null;
-    messages.push({id:messageId,conversation,selfPair,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,mentionedUids,...(replyTo?{replyTo}:{}),...(nativeReplyBody?{nativeReplyBody}:{})});
+    messages.push({id:messageId,conversation,selfPair,sender,direction:side,created,kind,text,lineBreaks,awemeId,title:clean(p.content_title||p.title||p.desc),mediaUrl,...(nativeImageUrls.length?{nativeImageUrls}:{}),...(nativeLive?{nativeLive:true}:{}),mentionedUids,...(replyTo?{replyTo}:{}),...(nativeReplyBody?{nativeReplyBody}:{})});
   }
   messages.sort((a,b)=>a.created-b.created);
   const interactiveRows=rows.filter(row=>{const e=row.querySelector('[class*="MessageBoxContentactiveClickArea"]')||row,r=e.getBoundingClientRect(),x=r.x+Math.min(24,r.width/4),y=r.y+Math.min(24,r.height/4);if(x<0||y<0||x>=innerWidth||y>=innerHeight)return false;const hit=document.elementFromPoint(x,y);return !!hit&&(e===hit||e.contains(hit));}).length;
@@ -130,7 +139,7 @@ export function isOwnerMessage(message,owner,armedAt) {
   // Do not interpret newly rendered old history as fresh user commands.
   return message.created>0&&message.created>=armedAt-1500&&['text','video'].includes(message.kind);
 }
-export function selfChatInput(message,owner,armedAt) {
+export function selfChatInput(message,owner,armedAt,{attachmentCaption=false}={}) {
   if(message.sender!==owner.selfUid||message.conversation!==owner.chatKey||
     !Number.isFinite(message.created)||message.created<armedAt||message.created<=0||
     !/^\d{5,32}$/.test(message.id))return null;
@@ -138,7 +147,9 @@ export function selfChatInput(message,owner,armedAt) {
   // forwarded as-is. Text requires an explicit trigger on the first line.
   if(message.kind==='video'&&/^\d{5,32}$/.test(message.awemeId))return message;
   const command=message.kind==='text'&&message.text.match(/^\/助手\s+(\S[\s\S]*)$/);
-  return command?{...message,text:command[1].trim()}:null;
+  if(command)return {...message,text:command[1].trim()};
+  if(attachmentCaption&&message.kind==='text'&&message.direction==='out'&&message.text?.trim()&&!/^\s*(?:[/／]|AI\s*回复)/i.test(message.text))return {...message,attachmentCaptionOnly:true};
+  return null;
 }
 export const selfReplyPrefix='AI 回复\n\n';
 export function matchesPeer(observed,expected){return !!(observed&&expected&&observed.chatKey===expected.chatKey&&observed.peerUid===expected.peerUid&&(!expected.type||expected.type==='unknown'||observed.type===expected.type||expected.legacy&&observed.type==='unknown')&&(!expected.selfChat||observed.selfChat===true)&&(!expected.selfUid||observed.selfUid===expected.selfUid));}
@@ -146,7 +157,7 @@ export function matchesPeer(observed,expected){return !!(observed&&expected&&obs
 export function safeMediaUrl(value) {
   try {
     const u=new URL(value);
-    const allowed=['douyin.com','iesdouyin.com','amemv.com','douyinvod.com','douyincdn.com','bytecdn.cn','byteimg.com','ibytedtos.com','bytecdn.com','douyinpic.com'];
+    const allowed=['douyin.com','iesdouyin.com','amemv.com','douyinvod.com','douyincdn.com','bytecdn.cn','byteimg.com','ibytedtos.com','bytecdn.com','douyinpic.com','douyinliving.com','byteimg.cn'];
     return u.protocol==='https:'&&allowed.some(h=>u.hostname===h||u.hostname.endsWith('.'+h));
   } catch{return false;}
 }
@@ -495,14 +506,34 @@ export class DouyinAdapter {
       if(probeOnly)return {supported:!!choice,probeOnly:true};
       if(verifyOnly){const verified=!!choice?.selected&&choice.fresh;return {supported:!!choice,verified,readOnly:true,emoji:choice?.emoji,reason:verified?'已核验原消息新菜单中的本账号选中状态':'未取得本账号已选择该表情的证据；未点击表情。'};}
       if(!choice)return {supported:false,reason:'此消息菜单没有可核验的贴表情选项'};
+      if(!choice.fresh)return {supported:false,notSubmitted:true,retryable:true,code:'REACTION_MENU_STALE',reason:'未核验到本次右键打开的表情菜单，尚未点击表情。'};
       if(choice.selected)return {supported:true,verified:true,emoji:choice.emoji};
       const before=await surface.evaluate(inspectMessageReactions,{messageId,emoji:choice.emoji});
       // Do not toggle an existing reaction when self ownership is not exposed.
       if(before.count)return {supported:false,reason:'原消息已有同款表情，避免反复点击撤销'};
       const current=await this.scan();
       if(!matchesPeer(current.peer,owner))throw new Error('会话已切换，已取消表情回应');
-      checkWork();submitted=true;
-      await selected.menu.surface.locator('[data-bridge-reaction-choice="'+selected.menu.token+'-'+choice.index+'"]').click({timeout:3500});
+      const frame=selected.menu.surface,option=await frame.locator('[data-bridge-reaction-choice="'+selected.menu.token+'-'+choice.index+'"]').elementHandle({timeout:800});
+      try{
+        const ready=await foregroundFrame(frame)&&await option.evaluate(element=>{
+          const rect=element.getBoundingClientRect(),hit=document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2);
+          if(!element.isConnected||!hit||!element.contains(hit))return false;
+          // A moving image can fail Playwright's stability check even while
+          // its native menu is usable. Block a misdirected pointer if it moves
+          // between the hit test and Chromium's trusted click.
+          const guard=event=>{if(!element.contains(event.target)){event.preventDefault();event.stopImmediatePropagation();}};
+          const types=['pointerdown','mousedown','pointerup','mouseup','click'];
+          for(const type of types)window.addEventListener(type,guard,true);
+          globalThis.__douyinBridgeReleaseReactionClick=()=>{for(const type of types)window.removeEventListener(type,guard,true);};
+          return true;
+        });
+        if(!ready)return {supported:false,notSubmitted:true,retryable:true,code:'REACTION_CHOICE_BLOCKED',reason:'目标表情尚不可点击，未提交。'};
+        checkWork();submitted=true;
+        await option.click({force:true,timeout:800});
+      }finally{
+        await frame.evaluate(()=>{globalThis.__douyinBridgeReleaseReactionClick?.();delete globalThis.__douyinBridgeReleaseReactionClick;}).catch(()=>{});
+        await option.dispose().catch(()=>{});
+      }
       for(let i=0;i<10;i++){
         await new Promise(r=>setTimeout(r,300));const after=await this.scan();
         if(!matchesPeer(after.peer,owner))throw new UncertainDelivery('表情回应后会话已切换');
@@ -510,7 +541,7 @@ export class DouyinAdapter {
         if(evidence.count>before.count)return {supported:true,verified:true,emoji:choice.emoji};
       }
       throw new UncertainDelivery('已点击消息表情，但未能核验贴到原消息，不重复点击');
-    }catch(e){if(submitted)e.uncertain=true;else if(/intercepts pointer events/.test(e.message)){e.notSubmitted=true;e.retryable=true;e.code='OVERLAY_BLOCKED';}throw e;}
+    }catch(e){if(submitted)e.uncertain=true;else if(e.name==='TimeoutError'||/intercepts pointer events/.test(e.message)){e.notSubmitted=true;e.retryable=true;e.code='REACTION_UI_NOT_READY';e.message='抖音消息菜单暂未就绪，尚未点击表情。';}throw e;}
     finally{if(surface){await this.page.keyboard.press('Escape').catch(()=>{});await Promise.all(menuSurfaces.map(f=>f.evaluate(()=>{
       document.removeEventListener('contextmenu',globalThis.__douyinBridgeContextListener,true);
       const scroll=globalThis.__douyinBridgeReactionScroller;if(scroll?.isConnected)scroll.scrollTop=scroll.scrollHeight;
@@ -546,32 +577,28 @@ export class DouyinAdapter {
     tab.on('response',capture);
     try {
       await raceWork(tab.goto('https://www.douyin.com/video/'+message.awemeId,{waitUntil:'domcontentloaded',timeout:60000}));
-      let src='';
-      for(let i=0;i<30;i++) {
+      let page;
+      for(let i=0;i<30;i++){
         checkWork();
-        if(found?.video?.play_addr?.url_list?.length)break;
-        src=await tab.evaluate(()=>document.querySelector('video')?.currentSrc||'');
-        if(safeMediaUrl(src))break;
-        await new Promise(r=>setTimeout(r,500));
+        page=await tab.evaluate(inspectWorkPage,message.awemeId).catch(()=>null);
+        const media=workMedia(message,page,found,safeMediaUrl);
+        if(media)return media;
+        await new Promise(resolve=>setTimeout(resolve,500));
       }
-      const urls=found?.video?.bit_rate?.map(b=>b.play_addr?.url_list?.[0]).filter(Boolean)||[];
-      const url=[found?.video?.play_addr?.url_list?.[0],...urls,src,message.mediaUrl].find(safeMediaUrl);
-      if(!url)throw new Error('视频正文获取失败：可能需要重新登录、处理验证，或该视频已不可访问');
-      return {url,title:found?.desc||message.title||'抖音视频 '+message.awemeId,author:found?.author?.nickname||'',seconds:(found?.video?.duration||0)/1000,source:'https://www.douyin.com/video/'+message.awemeId};
+      throw workUnavailable(page);
     } finally {signal?.removeEventListener('abort',abort);await tab.close();}
   }
-  async download(url,destination,maxBytes=300*1024*1024) {
+  async download(url,destination,{image=false}={}) {
     checkWork();const signal=workSignal();
     if(!safeMediaUrl(url))throw new Error('拒绝非抖音媒体地址');
     const cookies=await this.context.cookies(url);
-    const response=await fetch(url,{headers:{Referer:'https://www.douyin.com/', 'User-Agent':await this.page.evaluate(()=>navigator.userAgent),Cookie:cookies.map(c=>c.name+'='+c.value).join('; ')},signal:AbortSignal.any([AbortSignal.timeout(180000),...(signal?[signal]:[])])});
+    const response=await fetch(url,{headers:{Referer:'https://www.douyin.com/', 'User-Agent':await this.page.evaluate(()=>navigator.userAgent),Cookie:cookies.map(c=>c.name+'='+c.value).join('; ')},signal:AbortSignal.any([AbortSignal.timeout(image?20000:180000),...(signal?[signal]:[])])});
     if(!response.ok)throw new Error('视频下载失败 HTTP '+response.status);
     if(!safeMediaUrl(response.url))throw new Error('视频下载跳转到了不支持的域名');
-    if(Number(response.headers.get('content-length'))>maxBytes)throw new Error('视频超过本次处理上限 '+Math.round(maxBytes/1024/1024)+' MB');
     const {open}=await import('node:fs/promises');const file=await open(destination+'.part','w');let size=0,head=Buffer.alloc(0);
     try {
-      for await(const chunk of response.body){checkWork();size+=chunk.length;if(size>maxBytes)throw new Error('视频超过本次处理上限 '+Math.round(maxBytes/1024/1024)+' MB');if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}
-      if(!head.includes(Buffer.from('ftyp')))throw new Error('下载结果不是有效 MP4，未进行视频学习');
+      for await(const chunk of response.body){checkWork();size+=chunk.length;if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}
+      if(!validWorkDownload(head,image))throw new Error(image?'下载结果不是有效图片':'下载结果不是有效 MP4，未进行视频学习');
       await file.close();await rename(destination+'.part',destination);return size;
     } catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
   }

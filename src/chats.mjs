@@ -1,3 +1,4 @@
+import {attachmentBatch,addAttachmentCaption,bufferAttachmentCaption} from './attachment-batch.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import {toPlainChatText} from './chat-text.mjs';
 import {splitReply} from './engine.mjs';
@@ -44,7 +45,7 @@ export class Chats {
   refreshBrowserMode(){this.adapter.multiple=this.all().some(c=>c.mode==='chat'&&c.enabled);}
   state(historyPeer=''){
     const chats=this.list(),inactive=new Set(this.inactiveKeys()),keys=JSON.stringify(chats.filter(c=>!inactive.has(c.chatKey)).map(c=>c.chatKey));
-    return {chats:chats.map(c=>({...c,...(c.type==='group'&&this.sessions?{sessions:this.sessions.state(c.chatKey)}:{})})),accountVerified:!this.account||!!this.account(),selecting:!!this.adapter.selecting&&this.adapter.selectionKind!=='self',messages:this.store.db.prepare("SELECT id,peer,status,result,thread,turn,created,updated,body FROM bot_messages WHERE (?='' OR peer=?) AND (?=0 OR peer IN (SELECT value FROM json_each(?))) ORDER BY created DESC LIMIT 25").all(historyPeer,historyPeer,Number(!!this.account),keys).map(({body,...r})=>({...r,...(historyPeer?{input:JSON.parse(body).text||JSON.parse(body).title||''}:{}),sessionId:this.sessions?.forMessage(r.id)?.id,recipientVisibility:this.recipientVisibility(r.id),canRetry:r.status==='failed'&&!r.thread&&!r.turn,name:this.get(r.peer)?.displayName||'已停用聊天',deliveryIssue:r.status==='replying'?this.store.db.prepare("SELECT error FROM outbox WHERE status='pending' AND kind='text' AND error<>'' AND json_extract(payload,'$.botId')=? ORDER BY rowid LIMIT 1").get(r.id)?.error?.split('\n')[0]:undefined,uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};
+    return {chats:chats.map(c=>({...c,...(c.type==='group'&&this.sessions?{sessions:this.sessions.state(c.chatKey)}:{})})),accountVerified:!this.account||!!this.account(),selecting:!!this.adapter.selecting&&this.adapter.selectionKind!=='self',messages:this.store.db.prepare("SELECT id,peer,status,result,thread,turn,created,updated,body FROM bot_messages WHERE status<>'merged_attachment' AND (?='' OR peer=?) AND (?=0 OR peer IN (SELECT value FROM json_each(?))) ORDER BY created DESC LIMIT 25").all(historyPeer,historyPeer,Number(!!this.account),keys).map(({body,...r})=>({...r,...(historyPeer?{input:JSON.parse(body).text||JSON.parse(body).title||''}:{}),sessionId:this.sessions?.forMessage(r.id)?.id,recipientVisibility:this.recipientVisibility(r.id),canRetry:r.status==='failed'&&!r.thread&&!r.turn,name:this.get(r.peer)?.displayName||'已停用聊天',deliveryIssue:r.status==='replying'?this.store.db.prepare("SELECT error FROM outbox WHERE status='pending' AND kind='text' AND error<>'' AND json_extract(payload,'$.botId')=? ORDER BY rowid LIMIT 1").get(r.id)?.error?.split('\n')[0]:undefined,uncertainReplies:this.store.db.prepare("SELECT id FROM outbox WHERE kind='text' AND status='uncertain' AND json_extract(payload,'$.botId')=?").all(r.id).map(o=>o.id)}))};
   }
   beginSelection(){return this.adapter.selection?.(true);}
   endSelection(){this.adapter.selection?.(false);}
@@ -117,16 +118,62 @@ export class Chats {
     if(paused){this.store.db.prepare("UPDATE outbox SET status='held',error='本群自动回复已暂停，原文保留' WHERE peer=? AND status='pending' AND json_extract(payload,'$.chatbot')=1").run(peer);this.store.db.prepare("UPDATE bot_messages SET status='held',updated=? WHERE peer=? AND status IN ('new','replying')").run(Date.now(),peer);}return next;
   }
   async delivery(payload,peer,fn){const guard=()=>{this.guard(payload,peer);if(this.get(peer)?.deliveryPaused)throw Object.assign(new Error('本群自动回复已暂停，保留发送现场'),{code:'CHAT_DELIVERY_PAUSED',notSubmitted:true});};guard();const target=this.deliveryTarget(payload,peer);return operationContext.run({signal:this.controller(target).signal,guard,delivery:{submitted:false}},fn);}
-  receipt(row,stage){const chat=this.get(row.peer);if(!chat||chat.revision!==row.revision)return;const message=JSON.parse(row.body);this.store.enqueueReply(row.peer,'',{kind:'progress_reaction',priority:100,payload:{chatbot:true,botId:row.id,chatRevision:row.revision,messageId:message.id,stage,emojis:progressEmoji[stage]},dedupe:'bot-reaction:'+row.id+':'+stage});}
+  receipt(row,stage){
+    const chat=this.get(row.peer);if(!chat||chat.revision!==row.revision)return;
+    const message=JSON.parse(row.body);
+    for(const [i,part] of [message,...(message.attachmentCaptions||[])].entries()){
+      if(stage==='roger'&&part.rogerQueued)continue;
+      this.store.enqueueReply(row.peer,'',{kind:'progress_reaction',priority:100,payload:{chatbot:true,botId:row.id,chatRevision:row.revision,messageId:part.id,stage,emojis:progressEmoji[stage]},dedupe:'bot-reaction:'+row.id+':'+stage+(i?':'+part.id:'')});
+    }
+  }
+  mergeAttachmentCaption(chat,id,body){
+    if(body.kind!=='text'||!body.sender)return false;
+    const db=this.store.db,root=db.prepare("SELECT * FROM bot_messages WHERE peer=? AND revision=? AND status<>'merged_attachment' AND json_extract(body,'$.sender')=? ORDER BY created DESC,rowid DESC LIMIT 1").get(chat.chatKey,chat.revision,body.sender);
+    if(!root||root.status!=='new')return false;
+    const merged=addAttachmentCaption(JSON.parse(root.body),body);
+    if(!merged)return false;
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      root.body=JSON.stringify(merged);
+      db.prepare('UPDATE bot_messages SET body=? WHERE id=?').run(root.body,root.id);
+      db.prepare("INSERT OR IGNORE INTO bot_messages VALUES(?,?,?,?,'merged_attachment',?,'','',?,?)").run(id,chat.chatKey,chat.revision,JSON.stringify(body),root.id,Date.now(),Date.now());
+      this.receipt(root,'roger');
+      db.exec('COMMIT');
+    }catch(e){db.exec('ROLLBACK');throw e;}
+    return true;
+  }
   ingest(chat,m,{since=this.armedAt,recover=false}={}){
     if(!acceptsChatMessage(m,chat,since)||this.get(chat.chatKey)?.revision!==chat.revision)return false;
     if(chat.deliveryPaused){this.seen(chat.chatKey,m.id);return false;}
     const id=chat.chatKey+':'+m.id;if(this.store.wasDeletedMessage(id)||this.store.db.prepare('SELECT 1 FROM bot_messages WHERE id=?').get(id))return false;
     const fresh=this.seen(chat.chatKey,m.id);if(!fresh&&!recover)return false;
     const queue=this.store.db.prepare("SELECT count(*) n FROM bot_messages WHERE peer=? AND status IN ('new','preparing','submitted','replying')").get(chat.chatKey).n;
-    const status=queue>=30?'blocked':'new',body={id:m.id,kind:m.kind,text:String(m.text||'').slice(0,6000),title:String(m.title||'').slice(0,800),sender:m.sender,replyTo:m.replyTo||null,...(m.kind==='video'&&/^\d{12,24}$/.test(m.awemeId||'')?{awemeId:m.awemeId}:{})};
+    const status=queue>=30?'blocked':'new',attachment=attachmentBatch({id:m.id,kind:m.kind,created:m.created,text:String(m.text||'').slice(0,6000),title:String(m.title||'').slice(0,800),sender:m.sender,replyTo:m.replyTo||null,...(m.kind==='video'&&/^\d{12,24}$/.test(m.awemeId||'')?{awemeId:m.awemeId,...(m.nativeImageUrls?.length?{nativeImageUrls:m.nativeImageUrls}:{}),...(m.nativeLive?{nativeLive:true}:{})}:{})});
+    const body=chat.videoOverview?bufferAttachmentCaption(attachment):attachment;
+    if(this.mergeAttachmentCaption(chat,id,body))return true;
     const added=this.store.db.prepare('INSERT OR IGNORE INTO bot_messages VALUES(?,?,?,?,?,?,\'\',\'\',?,?)').run(id,chat.chatKey,chat.revision,JSON.stringify(body),status,status==='blocked'?'本聊天待处理消息过多，已停止追加模型调用':'',Date.now(),Date.now()).changes;
-    if(added)this.receipt({id,peer:chat.chatKey,revision:chat.revision,body:JSON.stringify(body)},'roger');return !!added;
+    if(added){
+      const root={id,peer:chat.chatKey,revision:chat.revision,body:JSON.stringify(body)};
+      if(body.kind==='video'&&status==='new')this.mergeEarlierAttachmentCaption(root,body);
+      this.receipt(root,'roger');
+    }
+    return !!added;
+  }
+  mergeEarlierAttachmentCaption(root,body){
+    const db=this.store.db,prior=db.prepare("SELECT * FROM bot_messages WHERE peer=? AND revision=? AND id<>? AND status<>'merged_attachment' AND json_extract(body,'$.sender')=? ORDER BY created DESC,rowid DESC LIMIT 1").get(root.peer,root.revision,root.id,body.sender);
+    if(prior?.status!=='new')return;
+    const caption=JSON.parse(prior.body);
+    if(!(caption.attachmentTextWaitUntil>=Date.now()))return;
+    const merged=addAttachmentCaption(body,caption,Date.now(),{early:true,rogerQueued:true});
+    if(!merged)return;
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      root.body=JSON.stringify(merged);
+      db.prepare('UPDATE bot_messages SET body=? WHERE id=?').run(root.body,root.id);
+      this.set(prior.id,'merged_attachment',root.id);
+      db.prepare("UPDATE outbox SET payload=json_set(payload,'$.botId',?) WHERE kind='progress_reaction' AND json_extract(payload,'$.botId')=?").run(root.id,prior.id);
+      db.exec('COMMIT');
+    }catch(e){db.exec('ROLLBACK');throw e;}
   }
   async recover(key){
     const chat=this.get(String(key));if(!this.store.config.enabled||!chat?.enabled||chat.mode!=='chat')throw new Error('请先开启该普通聊天的监听');
@@ -145,12 +192,13 @@ export class Chats {
   async process(){
     this.reconcile();if(!this.store.config.enabled||this.running.size>=2)return;
     const rows=this.store.db.prepare("SELECT * FROM bot_messages WHERE status='new' AND peer IN (SELECT value FROM json_each(?)) ORDER BY created LIMIT 30").all(JSON.stringify(this.list().map(c=>c.chatKey)));
-    for(const row of rows){if(this.running.size>=2)break;if(this.running.has(row.peer)||this.resetting.has(row.peer))continue;const chat=this.get(row.peer);if(!chat?.enabled||chat.mode!=='chat'||chat.revision!==row.revision){this.set(row.id,'cancelled','聊天配置已变更');continue;}if(chat.deliveryPaused)continue;const work=this.run(row,chat);this.running.set(row.peer,work);work.catch(e=>this.warn(chat,'普通聊天未完成：'+e.message)).finally(()=>{if(this.running.get(row.peer)===work)this.running.delete(row.peer);});}
+    for(const row of rows){if(this.running.size>=2)break;const body=JSON.parse(row.body);if(this.running.has(row.peer)||this.resetting.has(row.peer)||(body.attachmentWaitUntil||body.attachmentTextWaitUntil)>Date.now())continue;const chat=this.get(row.peer);if(!chat?.enabled||chat.mode!=='chat'||chat.revision!==row.revision){this.set(row.id,'cancelled','聊天配置已变更');continue;}if(chat.deliveryPaused)continue;const work=this.run(row,chat);this.running.set(row.peer,work);work.catch(e=>this.warn(chat,'普通聊天未完成：'+e.message)).finally(()=>{if(this.running.get(row.peer)===work)this.running.delete(row.peer);});}
   }
   set(id,status,result){if(result===undefined)this.store.db.prepare('UPDATE bot_messages SET status=?,updated=? WHERE id=?').run(status,Date.now(),id);else this.store.db.prepare('UPDATE bot_messages SET status=?,result=?,updated=? WHERE id=?').run(status,String(result).slice(0,12000),Date.now(),id);}
   context(row){const history=this.store.db.prepare("SELECT body,result FROM bot_messages WHERE peer=? AND revision=? AND status='done' AND id<>? ORDER BY created DESC LIMIT 6").all(row.peer,row.revision,row.id).reverse().map(r=>({user:JSON.parse(r.body),reply:r.result.slice(0,2000)}));while(JSON.stringify(history).length>10000)history.shift();const body=JSON.parse(row.body);let quoted;
     if(body.replyTo?.messageId){const link=this.store.db.prepare("SELECT o.payload FROM outgoing_message_links l JOIN outbox o ON o.id=l.outbox_id WHERE l.peer=? AND l.platform_id=?").get(row.peer,body.replyTo.messageId);if(link){const p=JSON.parse(link.payload);if(p.chatbot&&p.chatRevision===row.revision){const origin=this.store.db.prepare("SELECT body,result FROM bot_messages WHERE id=? AND peer=? AND status='done'").get(p.botId,row.peer);if(origin)quoted={user:JSON.parse(origin.body),reply:origin.result.slice(0,8000)};}}}
-    const chat=this.get(row.peer);return {conversation:chat?.type==='group'?(chat.groupReplyMode==='all'?'群聊中的新消息，已由本机用户配置为回复所有新消息':'群聊中直接 @ 助手的交流'):'普通单聊',recent:history,...(quoted?{quotedFeedback:quoted}:{}),message:body,...(body.kind==='video'?{attachmentNote:'只收到视频分享卡片的标题，没有观看画面或口播。不得冒充已看过视频。此模式无下载或视频分析工具。'}:{})};
+    const hideUrls=({nativeImageUrls,...visible})=>visible;
+    const chat=this.get(row.peer);return {conversation:chat?.type==='group'?(chat.groupReplyMode==='all'?'群聊中的新消息，已由本机用户配置为回复所有新消息':'群聊中直接 @ 助手的交流'):'普通单聊',recent:history.map(item=>({...item,user:hideUrls(item.user)})),...(quoted?{quotedFeedback:{...quoted,user:hideUrls(quoted.user)}}:{}),message:hideUrls(body),...(body.kind==='video'?{attachmentNote:'只收到视频分享卡片的标题，没有观看画面或口播。不得冒充已看过视频。此模式无下载或视频分析工具。'}:{})};
   }
   async run(row,chat){
     this.set(row.id,'preparing');let submitted=false,config,session,resultText='';
