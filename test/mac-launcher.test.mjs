@@ -19,10 +19,31 @@ test('Mac 版 Safari AppleScript 可以由系统编译，不依赖读取其他�
   const folder=mkdtempSync(join(project,'data','mac-osa-'));for(let i=0;i<sources.length;i++){const file=join(folder,`test-${i}.scpt`),result=spawnSync('/usr/bin/osacompile',['-o',file,'-'],{input:sources[i],encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);}
 });
 
-test('Mac 版 Safari 的新建窗口、视频页和清理脚本可由系统编译',{skip:process.platform!=='darwin'},async()=>{
+test('Safari 新建作品标签、处理图文跳转并清理自有标签，Mac 可编译脚本',async()=>{
   const {SafariDouyinAdapter}=await import('../src/safari.mjs'),sources=[],root=mkdtempSync(join(project,'data','mac-safari-'));
   const tabs=[];
-  const adapter=new SafariDouyinAdapter({root,executeAppleScript:async script=>{sources.push(script);if(script.includes('make new document')){tabs.push('https://www.douyin.com/chat?isPopup=1');return '246';}if(script.includes('URL of every tab of window id'))return tabs.map((url,i)=>(i+1)+'\t'+url).join('\n')+'\n';if(script.includes('make new tab with properties')){tabs.push('https://www.douyin.com/video/1234567890123');return '';}if(script.includes('then close t'))return '';if(script.includes('const id='))return JSON.stringify({ok:true,value:{url:'https://v.douyinvod.com/example.mp4',title:'样例',seconds:2}});return JSON.stringify({ok:true,value:true});}});
-  await adapter.open();const video=await adapter.resolveVideo({awemeId:'1234567890123'});assert.equal(video.seconds,2);assert.ok(sources.length>=5,'新建窗口、视频页和清理脚本都要经过系统编译');
-  const folder=mkdtempSync(join(project,'data','mac-osa-all-'));for(let i=0;i<sources.length;i++){const result=spawnSync('/usr/bin/osacompile',['-o',join(folder,`test-${i}.scpt`),'-'],{input:sources[i],encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);}
+  const adapter=new SafariDouyinAdapter({root,executeAppleScript:async script=>{
+    sources.push(script);
+    if(script.includes('make new document')){tabs.push('https://www.douyin.com/chat?isPopup=1');return '246';}
+    if(script.includes('URL of every tab of window id'))return tabs.map((url,i)=>(i+1)+'\t'+url).join('\n')+'\n';
+    if(script.includes('make new tab with properties')){
+      tabs.push(script.includes('1234567890124')?'https://www.douyin.com/note/1234567890124':'https://www.douyin.com/video/1234567890123');return '';
+    }
+    if(script.includes('then close t'))return '';
+    if(script.includes('const id=')){
+      const value=script.includes('1234567890124')?{note:true,detail:{aweme_id:'1234567890124',images:[{url_list:['https://p3.douyinpic.com/example.jpg']}]}}:{src:'https://v.douyinvod.com/example.mp4',title:'样例',seconds:2};
+      return JSON.stringify({ok:true,value});
+    }
+    return JSON.stringify({ok:true,value:true});
+  }});
+  await adapter.open();
+  const video=await adapter.resolveVideo({awemeId:'1234567890123'});assert.equal(video.seconds,2);
+  const album=await adapter.resolveVideo({awemeId:'1234567890124'});assert.equal(album.kind,'album');assert.equal(album.slides.length,1);
+  assert.equal(sources.filter(script=>script.includes('then close t')).length,2);
+  if(process.platform==='darwin'){
+    const folder=mkdtempSync(join(project,'data','mac-osa-all-'));
+    for(let i=0;i<sources.length;i++){
+      const result=spawnSync('/usr/bin/osacompile',['-o',join(folder,`test-${i}.scpt`),'-'],{input:sources[i],encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);
+    }
+  }
 });
