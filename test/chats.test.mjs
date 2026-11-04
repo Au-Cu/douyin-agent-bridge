@@ -100,3 +100,17 @@ test('dashboard history returns only the selected peer and keeps request text ou
     assert.ok(h.chats.state().messages.every(m=>!Object.hasOwn(m,'input')));
   }finally{h.s.close();}
 });
+
+test('same-sender text follows a group attachment into one native quoted answer',async()=>{
+  const h=setup();try{
+    const chat=await configure(h),at=Date.now(),video=message('88000000000001',{kind:'video',awemeId:'1234567890123456',created:at}),caption=message('88000000000002',{text:'主要看第二张图',created:at+100});
+    assert.equal(h.chats.ingest(chat,video),true);
+    assert.equal(h.chats.ingest(chat,caption),true);
+    await settle(h);assert.equal(h.sandbox.inputs.length,0);
+    h.s.db.prepare("UPDATE bot_messages SET body=json_set(body,'$.attachmentWaitUntil',0) WHERE status='new'").run();
+    await settle(h);await drain(h);
+    assert.equal(h.sandbox.inputs.length,1);
+    assert.equal(h.sandbox.inputs[0].message.attachmentCaptions[0].text,caption.text);
+    assert.ok(h.sent.every(part=>part.options.replyToMessageId===video.id));
+  }finally{h.s.close();}
+});

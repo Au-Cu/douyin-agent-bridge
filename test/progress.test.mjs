@@ -139,3 +139,20 @@ test('升级遗留的排队任务如已有执行回合，隔离核实而不重�
   const h=harness(),root=h.s.root;const id=h.s.createTask('网站','project','原任务');h.s.taskStatus(id,'queued','','existing-turn');h.s.close();
   const restored=harness(root);try{await restored.engine.runTask();assert.equal(restored.calls.length,0);assert.equal(restored.s.db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status,'uncertain');}finally{restored.s.close();}
 });
+
+test('媒体后的同一用户说明合并到原操作，不启动第二轮模型',async()=>{
+  const h=harness();try{
+    const time=Date.now(),native=(id,extra)=>({id,conversation:owner.chatKey,sender:owner.peerUid,direction:'in',created:time,...extra});
+    h.engine.armedAt=time-100;
+    h.engine.adapter.scan=async()=>({peer:owner,messages:[native('8100000000001',{kind:'video',awemeId:'1234567890123456'}),native('8100000000002',{kind:'text',text:'只解释第 2 张图',created:time+500})]});
+    const note=join(h.s.root,'note.md');
+    await import('node:fs/promises').then(fs=>fs.writeFile(note,'fixture'));
+    h.engine.media.process=async()=>({id:'1234567890123456',kind:'album',title:'fixture',path:note,images:[],slides:[]});
+    await h.engine.scan();await h.engine.processNext();assert.equal(h.calls.length,0,'attachment waits briefly for its caption');
+    h.s.db.prepare("UPDATE messages SET body=json_set(body,'$.attachmentWaitUntil',0) WHERE kind='video'").run();
+    await h.engine.processNext();await h.engine.processNext();
+    assert.equal(h.calls.length,1);assert.match(h.calls[0].input[0].text,/只解释第 2 张图/);
+    assert.equal(h.s.db.prepare("SELECT count(*) n FROM operations").get().n,1);
+    assert.equal(h.s.db.prepare("SELECT status FROM messages WHERE kind='text'").get().status,'merged_attachment');
+  }finally{h.s.close();}
+});

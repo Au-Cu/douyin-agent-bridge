@@ -102,6 +102,9 @@ function returnToWorkbench(){
 }
 async function jsonBody(req){let text='';for await(const b of req){text+=b;if(text.length>100000)throw new Error('请求过大');}return text?JSON.parse(text):{};}
 const json=(res,value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
+async function readAlbum(item){
+  try{const metadata=JSON.parse(await readFile(join(dirname(item.path),'metadata.json'),'utf8'));return metadata.kind==='album'?metadata:null;}catch{return null;}
+}
 const server=http.createServer(async(req,res)=>{
   try {
     if(!['127.0.0.1:'+port,'localhost:'+port].includes(req.headers.host))return json(res,{error:'无效 Host'},403);
@@ -115,7 +118,7 @@ const server=http.createServer(async(req,res)=>{
         const needScope=archiveScope(url.searchParams.get('needs')),knowledgeScope=archiveScope(url.searchParams.get('knowledge')),workScope=archiveScope(url.searchParams.get('work')),status=url.searchParams.get('status')||'all';if(!taskStatuses.has(status))throw new Error('未知任务状态');
         if(store.config.enabled&&store.config.owner&&adapter.status==='ready'&&codex.ready&&codex.authState?.status==='ready'&&asrReady)configurePanel(store,'setup');
         const visualReports=new Map(),readVisualReport=item=>{if(!visualReports.has(item.id))visualReports.set(item.id,readFile(join(dirname(item.path),'visual-report.json'),'utf8').then(JSON.parse));return visualReports.get(item.id);};
-        const knowledgeView=async k=>{try{const v=await readVisualReport(k);return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{return {...k,visualStatus:'legacy'};}};
+        const knowledgeView=async k=>{try{const v=await readVisualReport(k);return {...k,visualStatus:v.status,visualCompleted:v.completedSegments,visualTotal:v.totalSegments};}catch{const album=await readAlbum(k);return {...k,visualStatus:album?'album':'legacy'};}};
         const snapshot=store.snapshot();snapshot.config={...visibleSettings(store.config,active),agentBindings:agentBindings(store.config)};snapshot.tasks=snapshot.tasks.map(t=>{const op=engine.progress.get(JSON.parse(t.context||'{}').operationId);return {...t,number:op?.number,title:op?.title};});snapshot.knowledge=await Promise.all(store.knowledgeList({scope:knowledgeScope}).map(knowledgeView));
         const inactive=new Set(chats.inactiveKeys());
         snapshot.config.aiChats=snapshot.config.aiChats.filter(c=>!inactive.has(c.chatKey));
@@ -150,6 +153,14 @@ const server=http.createServer(async(req,res)=>{
       const sheetMatch=path.match(/^\/api\/knowledge\/([^/]+)\/sheet\/(\d+)$/);
       if(req.method==='GET'&&(visualMatch||sheetMatch)){
         const item=store.knowledge(decodeURIComponent((visualMatch||sheetMatch)[1]));if(!item)return json(res,{error:'资料不存在'},404);
+        const album=await readAlbum(item);
+        if(album){
+          if(!sheetMatch)return json(res,{kind:'album',slides:album.slides,sheetCount:album.images.length});
+          const name=album.images[Number(sheetMatch[2])];
+          if(!/^overview-slide-\d{3}-\d{2}\.jpg$/.test(name||''))return json(res,{error:'画面不存在'},404);
+          const jpeg=await readFile(join(dirname(item.path),name));
+          res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'private, max-age=60','X-Content-Type-Options':'nosniff'});res.end(jpeg);return;
+        }
         let report;try{report=JSON.parse(await readFile(join(dirname(item.path),'visual-report.json'),'utf8'));}catch{return json(res,{error:'此视频还没有连续视觉记录，请点击重新分析'},404);}
         if(!sheetMatch)return json(res,report);
         if(!/^visual-continuous-v[12]-(2|4|8)fps-[a-f0-9]{12}$/.test(report.cacheKey))throw new Error('视觉缓存目录无效');
@@ -357,7 +368,8 @@ const server=http.createServer(async(req,res)=>{
       }
       if(path==='/api/knowledge/reanalyze'){
         if(engine.busy)throw new Error('正在处理其他视频或指令，请稍后重分析');
-        if(!store.knowledge(String(body.id)))throw new Error('视频资料不存在');
+        const item=store.knowledge(String(body.id));if(!item)throw new Error('视频资料不存在');
+        if(await readAlbum(item))throw new Error('此资料是图文，可直接查看原图与动态画面。');
         // Keep outdated draft replies as audit records; they no longer represent
         // the user's requested full-visual analysis and must not be sent later.
         store.db.prepare("UPDATE outbox SET status='superseded',error='已由连续视觉重分析替代，原草稿保留' WHERE status='pending' AND kind='text' AND json_extract(payload,'$.videoId')=?").run(String(body.id));

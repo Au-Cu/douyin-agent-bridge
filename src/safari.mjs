@@ -1,3 +1,4 @@
+import {inspectWorkPage,workMedia,workUnavailable,validWorkDownload} from './douyin-work.mjs';
 import {spawn} from 'node:child_process';
 import {mkdir,readFile,open,rename,unlink} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -133,15 +134,25 @@ export class SafariDouyinAdapter {
   }
   async resolveVideo(message){
     checkWork();if(!/^\d{12,24}$/.test(message.awemeId||''))throw new Error('分享卡片没有有效的视频 ID');if(!this.page)throw new Error('请先登录抖音助手账号');
-    const url=allowed+'video/'+message.awemeId,marker=randomUUID();await this.apple(`tell application "Safari"\ntell window id ${this.windowId}\nmake new tab with properties {URL:${quote(url)}}\nend tell\nend tell`);let index=0;for(let i=0;i<40;i++){index=await this.findTabByUrl(url);if(index)break;await sleep(500);}if(!index)throw new Error('无法打开视频标签页');let marked=false;
-    try{for(let i=0;i<35;i++){checkWork();let value;try{value=await this.inTab(`const id=${JSON.stringify(message.awemeId)};if(location.pathname!=='/video/'+id)throw new Error('视频标签页已变化');${marked?`if(sessionStorage.getItem('douyin-codex-bridge-video')!==${JSON.stringify(marker)})throw new Error('视频标签页已变化');`:`sessionStorage.setItem('douyin-codex-bridge-video',${JSON.stringify(marker)});`}const video=document.querySelector('video');let found=null;const roots=[window._ROUTER_DATA,window.__NEXT_DATA__,window.SIGI_STATE];for(const s of document.querySelectorAll('script[type="application/json"],script#RENDER_DATA'))try{roots.push(JSON.parse(decodeURIComponent(s.textContent)))}catch{}const seen=new WeakSet(),stack=roots.filter(x=>x&&typeof x==='object');let left=30000;while(stack.length&&left--){const x=stack.pop();if(!x||typeof x!=='object'||seen.has(x))continue;seen.add(x);if(String(x.aweme_id||x.awemeId||x.itemId||'')===id&&x.video){found=x;break;}for(const v of Object.values(x))if(v&&typeof v==='object')stack.push(v);}return {id:String(found?.aweme_id||found?.awemeId||found?.itemId||''),url:found?.video?.play_addr?.url_list?.[0]||found?.video?.playAddr?.url_list?.[0]||video?.currentSrc||'',title:found?.desc||document.title||'',author:found?.author?.nickname||'',seconds:Number(found?.video?.duration||0)/1000||(Number.isFinite(video?.duration)?video.duration:0)};`,index);marked=true;}catch{}const candidate=[value?.url,message.mediaUrl].find(safeMediaUrl);if(value&&candidate)return {url:candidate,title:value?.title||message.title||'抖音视频 '+message.awemeId,author:value?.author||'',seconds:value?.seconds||0,source:url};await sleep(500);}
-      throw new Error('Safari 未能取得原视频地址；请检查该视频的访问权限或重新登录。');
-    }finally{if(marked)await this.apple(`tell application "Safari"\nif exists window id ${this.windowId} then\nset t to tab ${index} of window id ${this.windowId}\nif URL of t starts with ${quote(url)} then\nif (do JavaScript ${quote("sessionStorage.getItem('douyin-codex-bridge-video')")} in t) is ${quote(marker)} then close t\nend if\nend if\nend tell`).catch(()=>{});}
+    const url=allowed+'video/'+message.awemeId,marker=randomUUID();await this.apple(`tell application "Safari"\ntell window id ${this.windowId}\nmake new tab with properties {URL:${quote(url)}}\nend tell\nend tell`);let index=0;for(let i=0;i<40;i++){index=await this.findTabByUrl(url)||await this.findTabByUrl(allowed+'note/'+message.awemeId);if(index)break;await sleep(500);}if(!index)throw new Error('无法打开视频标签页');let marked=false,page;
+    try{
+      for(let i=0;i<35;i++){
+        checkWork();
+        try{
+          page=await this.inTab(`const id=${JSON.stringify(message.awemeId)},marker=${JSON.stringify(marker)};if(!['/video/'+id,'/note/'+id].includes(location.pathname))throw new Error('作品标签页已变化');if(${marked}&&sessionStorage.getItem('douyin-codex-bridge-video')!==marker)throw new Error('作品标签页已变化');sessionStorage.setItem('douyin-codex-bridge-video',marker);return (${inspectWorkPage.toString()})(id);`,index);
+          marked=true;
+        }catch{page=null;}
+        const media=workMedia(message,page,null,safeMediaUrl);
+        if(page&&media)return media;
+        await sleep(500);
+      }
+      throw workUnavailable(page);
+    }finally{if(marked)await this.apple(`tell application "Safari"\ntell window id ${this.windowId}\nif exists tab ${index} then\nset t to tab ${index}\nif URL of t starts with ${quote(url)} or URL of t starts with ${quote(allowed+'note/'+message.awemeId)} then\nif (do JavaScript ${quote("sessionStorage.getItem('douyin-codex-bridge-video')")} in t) is ${quote(marker)} then close t\nend if\nend if\nend tell\nend tell`).catch(()=>{});}
   }
-  async download(url,destination,maxBytes=300*1024*1024){
-    checkWork();if(!safeMediaUrl(url))throw new Error('拒绝非抖音媒体地址');const ua=await this.inTab('return navigator.userAgent;'),signal=workSignal(),response=await fetch(url,{headers:{Referer:allowed,'User-Agent':ua},signal:AbortSignal.any([AbortSignal.timeout(180000),...(signal?[signal]:[])])});
-    if(!response.ok)throw new Error('Safari 视频下载失败 HTTP '+response.status+'，请检查平台登录或访问权限');if(!safeMediaUrl(response.url))throw new Error('视频下载跳转到了不支持的域名');if(Number(response.headers.get('content-length'))>maxBytes)throw new Error('视频超过本机处理上限 300 MB');
-    const file=await open(destination+'.part','w');let size=0,head=Buffer.alloc(0);try{for await(const chunk of response.body){checkWork();size+=chunk.length;if(size>maxBytes)throw new Error('视频超过本机处理上限 300 MB');if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}if(!head.includes(Buffer.from('ftyp')))throw new Error('下载结果不是有效 MP4，未进行视频学习');await file.close();await rename(destination+'.part',destination);return size;}catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
+  async download(url,destination,{image=false}={}){
+    checkWork();if(!safeMediaUrl(url))throw new Error('拒绝非抖音媒体地址');const ua=await this.inTab('return navigator.userAgent;'),signal=workSignal(),response=await fetch(url,{headers:{Referer:allowed,'User-Agent':ua},signal:AbortSignal.any([AbortSignal.timeout(image?20000:180000),...(signal?[signal]:[])])});
+    if(!response.ok)throw new Error('Safari 视频下载失败 HTTP '+response.status+'，请检查平台登录或访问权限');if(!safeMediaUrl(response.url))throw new Error('视频下载跳转到了不支持的域名');
+    const file=await open(destination+'.part','w');let size=0,head=Buffer.alloc(0);try{for await(const chunk of response.body){checkWork();size+=chunk.length;if(head.length<32)head=Buffer.concat([head,Buffer.from(chunk)]).subarray(0,32);await file.write(chunk);}if(!validWorkDownload(head,image))throw new Error(image?'下载结果不是有效图片':'下载结果不是有效 MP4，未进行视频学习');await file.close();await rename(destination+'.part',destination);return size;}catch(e){await file.close().catch(()=>{});await unlink(destination+'.part').catch(()=>{});throw e;}
   }
   async focus(){
     if(!this.page)return;

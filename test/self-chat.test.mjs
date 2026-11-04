@@ -68,6 +68,21 @@ test('self chat accepts explicit human text or native video, never its own text 
     engine.seen.clear();await engine.scan();
     assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM messages').get().n,1);
     assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM tasks').get().n,0);
+    const at=Date.now();
+    messages=[video,raw(90000000000005,'只看第一张图',{created:at+100}),raw(90000000000006,'AI 回复\n\n这是助手生成的文字',{created:at+200})];
+    messages[0]={...video,created:at};
+    await engine.scan();
+    const stored=JSON.parse(store.db.prepare("SELECT body FROM messages WHERE kind='video'").get().body);
+    assert.deepEqual(stored.attachmentCaptions.map(c=>c.text),['只看第一张图']);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE status='merged_attachment'").get().n,1);
+    messages=[raw(90000000000007,'/助手 只看第二张图',{created:at+400})];
+    store.db.prepare("UPDATE messages SET body=json_set(body,'$.attachmentWaitUntil',0) WHERE kind='video'").run();
+    await engine.scan();
+    messages.push({...video,id:'90000000000008',awemeId:'90000000000109',created:at+410});
+    await engine.scan();
+    const reversed=JSON.parse(store.db.prepare("SELECT body FROM messages WHERE json_extract(body,'$.awemeId')='90000000000109'").get().body);
+    assert.deepEqual(reversed.attachmentCaptions.map(c=>c.text),['只看第二张图']);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE status='merged_attachment'").get().n,2);
   }finally{store.close();}
 });
 
