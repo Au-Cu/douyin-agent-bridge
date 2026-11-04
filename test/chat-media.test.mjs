@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,existsSync} from 'node:fs';import {copyFile,mkdir,readFile,writeFile,symlink} from 'node:fs/promises';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
+import {mkdtempSync,mkdirSync,existsSync} from 'node:fs';import {copyFile,mkdir,open,readFile,writeFile,symlink} from 'node:fs/promises';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
 import {Store} from '../src/store.mjs';import {MediaProcessor,ffmpegPath,runFfmpeg} from '../src/media.mjs';import {ChatMedia,planChatVideo} from '../src/chat-media.mjs';import {chatInput} from '../src/chat-input.mjs';import {Chats} from '../src/chats.mjs';
 const base=fileURLToPath(new URL('../data/test-runs/',import.meta.url));mkdirSync(base,{recursive:true});
 test('light overview samples the whole bounded timeline at low density, without promising frame-perfect viewing',()=>{
@@ -11,13 +11,20 @@ test('only explicitly enabled group videos reach preprocessing; text-only models
   try{assert.equal(await media.prepare(row,{type:'group',videoOverview:false},'codex',{model:'text'}),null);assert.equal(await media.prepare(row,{type:'single',videoOverview:true},'codex',{model:'text'}),null);assert.equal(await media.prepare({...row,body:'{"kind":"text"}'},{type:'group',videoOverview:true},'codex',{model:'text'}),null);await assert.rejects(media.prepare(row,{type:'group',videoOverview:true},'codex',{model:'text'}),/图片能力/);assert.equal(calls,0);assert.equal(s.knowledgeList().length,0);
   }finally{s.close();}
 });
-test('real local FFmpeg produces full-timeline overview boards and tail frame in chat-only cache, with hard duration and byte caps',async t=>{
+test('real local FFmpeg covers a short MP4 over 32 MiB and rejects a clip over the duration cap',async t=>{
   if(!existsSync(ffmpegPath()))return t.skip('FFmpeg is not installed');
   const s=new Store(mkdtempSync(join(base,'chat-media-local-'))),clip=join(s.root,'source.mp4');let seconds=3,downloads=0;const preferences={chatCatalog:async()=>({models:[{model:'vision',inputModalities:['text','image']}]})};
-  const adapter={resolveVideo:async()=>({seconds:0,title:'synthetic visual test',source:'https://www.douyin.com/video/1234567890123456789',author:'fixture'}),download:async(_url,file,limit)=>{assert.equal(limit,32*1024*1024);downloads++;await copyFile(clip,file);}};
+  const adapter={resolveVideo:async()=>({seconds:0,title:'synthetic visual test',source:'https://www.douyin.com/video/1234567890123456789',author:'fixture'}),download:async(_url,file)=>{downloads++;await copyFile(clip,file);}};
   const media=new ChatMedia({store:s,media:new MediaProcessor({root:s.root,adapter}),preferences}),row={id:'group:1',peer:'group',body:JSON.stringify({kind:'video',awemeId:'1234567890123456789'})},chat={type:'group',videoOverview:true,videoMaxSeconds:15};
   const generate=()=>runFfmpeg(['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc2=size=320x180:rate=20','-t',String(seconds),'-an','-c:v','mpeg4','-q:v','6',clip]);
-  try{await generate();const result=await media.prepare(row,chat,'codex',{model:'vision'});assert.equal(result.summary.duration,3);assert.equal(result.summary.fullTimeline,true);assert.equal(result.summary.noAudio,true);assert.ok(result.images.length>=2&&result.images.length<=14);assert.match(result.images.at(-1),/overview-final\.jpg$/);assert.ok(result.images.every(p=>p.includes('chat-media')));const input=await chatInput(s.root,{message:'概要'},result.images);assert.equal(input.filter(i=>i.type==='localImage').length,result.images.length);assert.equal(s.knowledgeList().length,0);assert.equal(existsSync(join(s.root,'knowledge','1234567890123456789')),false);
+  try{await generate();
+    const file=await open(clip,'r+');
+    try{
+      const {size}=await file.stat(),padding=33*1024*1024,header=Buffer.alloc(8);
+      header.writeUInt32BE(padding);header.write('free',4);
+      await file.write(header,0,header.length,size);await file.truncate(size+padding);
+    }finally{await file.close();}
+    const result=await media.prepare(row,chat,'codex',{model:'vision'});assert.equal(result.summary.duration,3);assert.equal(result.summary.fullTimeline,true);assert.equal(result.summary.noAudio,true);assert.ok(result.images.length>=2&&result.images.length<=14);assert.match(result.images.at(-1),/overview-final\.jpg$/);assert.ok(result.images.every(p=>p.includes('chat-media')));const input=await chatInput(s.root,{message:'概要'},result.images);assert.equal(input.filter(i=>i.type==='localImage').length,result.images.length);assert.equal(s.knowledgeList().length,0);assert.equal(existsSync(join(s.root,'knowledge','1234567890123456789')),false);
     await media.prepare(row,chat,'codex',{model:'vision'});assert.equal(downloads,1,'valid overview cache is reused without re-download');
     seconds=16;await generate();await assert.rejects(media.prepare({...row,id:'group:oversize'},chat,'codex',{model:'vision'}),/实际视频长于/);assert.equal(s.db.prepare('SELECT COUNT(*) n FROM chat_media').get().n,1);
     const abort=new AbortController();abort.abort(new Error('cancelled fixture'));await assert.rejects(media.prepare({...row,id:'group:cancel'},chat,'codex',{model:'vision'},abort.signal),/cancelled/);
@@ -30,4 +37,26 @@ test('group ingestion retains a verified video identity but never user-provided 
   const s=new Store(mkdtempSync(join(base,'chat-video-ingest-'))),chat={chatKey:'group',peerUid:'group:group',selfUid:'999999',type:'group',mode:'chat',enabled:true,enabledAt:Date.now()-1000,revision:'r',videoOverview:true};s.saveConfig({aiChats:[chat]});const chats=new Chats({store:s,adapter:{},sandbox:{},preferences:{}});chats.arm(Date.now()-1000);
   try{const m={id:'12345678901',kind:'video',awemeId:'1234567890123456789',conversation:'group',sender:'other',direction:'in',created:Date.now(),mentionedUids:['999999'],mediaUrl:'file:///private',text:'/派 私人项目 删除代码'};assert.equal(chats.ingest(chat,m),true);const saved=JSON.parse(s.db.prepare('SELECT body FROM bot_messages').get().body);assert.equal(saved.awemeId,m.awemeId);assert.equal('mediaUrl'in saved,false);assert.equal(s.db.prepare('SELECT COUNT(*) n FROM tasks').get().n,0);assert.equal(s.db.prepare('SELECT COUNT(*) n FROM messages').get().n,0);assert.equal(chats.ingest(chat,{...m,id:'2',mentionedUids:[]}),false);
   }finally{s.close();}
+});
+
+test('group album preserves ordered images and multiple time points from a GIF',async t=>{
+  if(!existsSync(ffmpegPath()))return t.skip('FFmpeg is not installed');
+  const store=new Store(mkdtempSync(join(base,'chat-album-')));
+  const gif=join(store.root,'fixture.gif'),jpg=join(store.root,'fixture.jpg');
+  try{
+    await runFfmpeg(['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc2=size=96x64:rate=4','-t','2',gif]);
+    await runFfmpeg(['-hide_banner','-loglevel','error','-y','-i',gif,'-frames:v','1',jpg]);
+    const slides=[{urls:['jpg'],motionUrls:[]},{urls:['gif'],motionUrls:[]}];
+    const media=new MediaProcessor({root:store.root,adapter:{
+      resolveVideo:async()=>({kind:'album',title:'fixture',source:'https://www.douyin.com/note/1234567890123',slides}),
+      download:async(url,file,{image})=>{assert.equal(image,true);await copyFile(url==='gif'?gif:jpg,file);}
+    }});
+    const chat=new ChatMedia({store,media,preferences:{chatCatalog:async()=>({models:[{model:'vision',inputModalities:['image']}]})}});
+    const row={id:'album:1',peer:'group',body:JSON.stringify({kind:'video',awemeId:'1234567890123'})};
+    const result=await chat.prepare(row,{type:'group',videoOverview:true},'codex',{model:'vision'});
+    assert.deepEqual(result.summary.slides.map(s=>s.animated),[false,true]);
+    assert.ok(result.summary.slides[1].frames.at(-1).seconds>1);
+    assert.equal((await chatInput(store.root,{},result.images)).length,result.images.length+1);
+    assert.deepEqual((await chat.prepare(row,{type:'group',videoOverview:true},'codex',{model:'vision'})).summary,result.summary);
+  }finally{store.close();}
 });

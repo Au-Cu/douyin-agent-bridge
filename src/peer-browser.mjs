@@ -65,7 +65,7 @@ export class PeerBrowser {
   focus(){return this.serial(()=>this.adapter.focus?.(),{kind:'focus',priority:10});}
   logout(){return this.serial(()=>this.adapter.logout(),{kind:'logout',priority:30});}
   scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect'});}
-  async wantsRead(peer){
+  async wantsRead(peer,{agent=false}={}){
     const native=platformPeer(peer);
     if(peer.selfChat||matchesPeer(this.adapter.lastScan?.peer,native))return true;
     if((this.pollBackoff?.get(peer.chatKey)||0)>this.now())return false;
@@ -74,17 +74,18 @@ export class PeerBrowser {
     const rows=this.inboxCache.value?.entries?.filter(e=>e.ids?.includes(native.chatKey))||[];
     if(rows.length!==1||rows[0].unread===null||rows[0].unread===undefined)return true;
     if(rows[0].unread>0)return true;
-    if(!this.visited.has(peer.chatKey)||this.now()-this.visited.get(peer.chatKey)>=this.reconcileMs)return true;
+    const interval=agent?Math.min(this.reconcileMs,5000):this.reconcileMs;
+    if(!this.visited.has(peer.chatKey)||this.now()-this.visited.get(peer.chatKey)>=interval)return true;
     this.stats.skippedIdle++;return false;
   }
-  scanPeer(peer,{background=false}={}){
+  scanPeer(peer,{background=false,agent=false}={}){
     if(this.closing)return Promise.reject(new Error('浏览器连接正在关闭'));
     if(this.selecting)return Promise.reject(new Error('正在面板中选择抖音聊天，轮询暂时暂停'));
-    const key=JSON.stringify([peer,background]),shared=this.polls.get(key);if(shared){this.stats.coalesced++;return shared;}
+    const key=JSON.stringify([peer,background,agent]),shared=this.polls.get(key);if(shared){this.stats.coalesced++;return shared;}
     // Reading the already selected owner must remain available to /中断 while
     // a reply awaits confirmation. observeOnly never changes cached UI handles.
     if((!this.multiple&&!peer.selfChat)||['send','reaction','acknowledge'].includes(this.active?.kind)&&matchesPeer(this.active.peer,peer)&&matchesPeer(this.adapter.lastScan?.peer,platformPeer(peer)))return this.adapter.scan({observeOnly:true}).then(scan=>localScan(scan,peer));
-    const pending=this.serial(async()=>{if(this.selecting)throw new Error('正在面板中选择抖音聊天，轮询暂时暂停');if(background&&!await this.wantsRead(peer))return null;try{const scan=await this.select(peer);this.visited.set(peer.chatKey,this.now());this.pollBackoff?.delete(peer.chatKey);return scan;}catch(error){if(background&&!peer.selfChat){this.pollBackoff??=new Map();this.pollBackoff.set(peer.chatKey,this.now()+30000);}throw error;}},{kind:'poll',peer});this.polls.set(key,pending);
+    const pending=this.serial(async()=>{if(this.selecting)throw new Error('正在面板中选择抖音聊天，轮询暂时暂停');if(background&&!await this.wantsRead(peer,{agent}))return null;try{const scan=await this.select(peer);this.visited.set(peer.chatKey,this.now());this.pollBackoff?.delete(peer.chatKey);return scan;}catch(error){if(background&&!peer.selfChat){this.pollBackoff??=new Map();this.pollBackoff.set(peer.chatKey,this.now()+(agent?5000:30000));}throw error;}},{kind:'poll',peer});this.polls.set(key,pending);
     pending.then(()=>this.polls.delete(key),()=>this.polls.delete(key));return pending;
   }
   mutate(kind,peer,fn){return this.serial(async()=>{checkWork();if(this.selecting)throw new Error('正在面板中选择聊天，操作暂时暂停');if(this.multiple||peer.selfChat)await this.select(peer);checkWork();return fn();},{kind,peer,priority:20});}

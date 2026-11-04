@@ -87,11 +87,11 @@ test('识别右键后新出现的原生菜单和默认 OK 表情，不依赖固�
 test('三个阶段选择不同表情；展开更多后核验庆祝表情，已有表情不会被重复点击撤销',async t=>{
   const browser=await launchTestBrowser(t);if(!browser)return;
   try{
-    const page=await browser.newPage();await page.setContent('<div data-bridge-message-id="7000000000001" style="padding:30px">用户文字消息</div>');
+    const page=await browser.newPage();await page.setContent('<style>@keyframes move { from { transform:translateY(0) } to { transform:translateY(24px) } } [role="menu"] button:not([aria-label="展开更多表情"]) { animation:move 300ms linear infinite alternate }</style><div data-bridge-message-id="7000000000001" style="padding:30px">用户文字消息</div>');
     await page.evaluate(()=>{
       window.reactionClicks=[];document.querySelector('[data-bridge-message-id]').addEventListener('contextmenu',e=>{
         e.preventDefault();document.querySelectorAll('[role="menu"]').forEach(e=>e.remove());const menu=document.createElement('div');menu.setAttribute('role','menu');menu.style.width='300px';
-        const add=emoji=>{const b=document.createElement('button');b.setAttribute('aria-label',emoji);b.textContent=emoji;b.onclick=()=>{window.reactionClicks.push(emoji);const pill=document.createElement('span');pill.className='message-reaction';pill.textContent=emoji;document.querySelector('[data-bridge-message-id]').append(pill);menu.remove();};menu.append(b);};
+        const add=emoji=>{const b=document.createElement('button');b.setAttribute('aria-label',emoji);b.textContent=emoji;b.onclick=event=>{if(!event.isTrusted)return;window.reactionClicks.push(emoji);const pill=document.createElement('span');pill.className='message-reaction';pill.textContent=emoji;document.querySelector('[data-bridge-message-id]').append(pill);menu.remove();};menu.append(b);};
         add('👌');add('👀');const more=document.createElement('button');more.setAttribute('aria-label','展开更多表情');more.textContent='更多';more.onclick=()=>{add('🎉');more.remove();};menu.append(more);document.body.append(menu);
       });
     });

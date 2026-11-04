@@ -1,3 +1,4 @@
+import {attachmentInstructions} from './attachment-batch.mjs';
 import {createHash} from 'node:crypto';
 import {parseCommand} from './commands.mjs';
 import {codexThreadUrl} from './archive.mjs';
@@ -10,7 +11,7 @@ export const explicitRedo=text=>{
   const s=String(text||'').replace(/“[^”]*”|「[^」]*」|"[^"]*"|'[^']*'/g,'').replace(/(?:不要|不必|无需|不需要|别).{0,3}(?:重新(?:做|执行|生成|分析)|重做|再做|从头(?:做|来))/g,'').trim();
   return /^(?:(?:请|麻烦你?|帮我|我要你?|我要求你?|现在|这次|给我|把.{0,20})\s*){0,3}(?:重新(?:做|执行|生成|分析)|重做|再做一遍|从头(?:做|来))/.test(s)||/(?:请|要求你|帮我|给我|麻烦你).{0,10}(?:重新(?:做|执行|生成|分析)|重做|再做一遍|从头(?:做|来))/.test(s);
 };
-export const requestKey=m=>(m.kind==='video'?'video:'+m.awemeId:'text:'+String(m.text||'').normalize('NFKC').replace(/\s+/g,' ').trim().replace(/[。！!]+$/,''))+(m.referenceKey?'|reply:'+m.referenceKey:'');
+export const requestKey=m=>(m.kind==='video'?'video:'+m.awemeId+(attachmentInstructions(m)?'|caption:'+attachmentInstructions(m):''):'text:'+String(m.text||'').normalize('NFKC').replace(/\s+/g,' ').trim().replace(/[。！!]+$/,''))+(m.referenceKey?'|reply:'+m.referenceKey:'');
 const unfinished="'queued','running','sending','waiting','blocked','uncertain','failed_delivery','stopping'";
 const opColumns='id,peer,request,fingerprint,kind,need_id,status,phase,detail,created,started,changed,last_notice,ended,outcome,parent,thread,turn,submitted';
 export function operationTitle(value){const raw=String(value||'').replace(/\s+/g,' ').trim(),specific=String(value||'').match(/(?:具体任务|用户(?:的)?(?:原话|指示|指令))[:：]\s*([^\n]+)/)?.[1];const text=(specific||raw).replace(/^\/(?:派给|派|dispatch)\s+(\S+)\s+/,'$1：').replace(/^转发视频[:：]/,'学习视频：');const chars=Array.from(text||'未命名任务');return chars.slice(0,36).join('')+(chars.length>36?'…':'');}
@@ -165,8 +166,9 @@ export class Progress{
     const previous=this.db.prepare('SELECT * FROM operation_messages WHERE message_id=?').get(message.id);
     if(previous&&['accepted','supplement','duplicate'].includes(previous.relation))return {relation:previous.relation,operationId:previous.operation_id,parent:this.get(previous.operation_id)?.parent};
     const own=this.receive(message);if(explicitRedo(message.text)){this.identify(own.id,{announce:true});return {relation:'new',operationId:own.id};}
+    if(message.kind==='video'&&attachmentInstructions(message))this.db.prepare('UPDATE operations SET fingerprint=? WHERE id=?').run(requestKey(message),own.id);
     const candidates=this.open().filter(o=>!this.stopped(o.id)&&o.kind!=='control'&&o.id!==own.id&&o.peer===own.peer&&(message.referenceOperationId?(o.id===message.referenceOperationId||o.fingerprint.endsWith('|reply:'+message.referenceKey)):(!o.need_id||!own.need_id||o.need_id===own.need_id))&&o.parent!==own.id);
-    let match=candidates.find(o=>o.fingerprint===own.fingerprint),relation=match?'duplicate':'independent';
+    let match=candidates.find(o=>o.fingerprint===requestKey(message)),relation=match?'duplicate':'independent';
     if(!match&&candidates.length===1&&/^(怎么(?:还|一直)|为什么(?:还|一直)|还没(?:好|完成|执行)|进度(?:呢|如何)|做到哪|处理完了吗|快点|继续处理|催一下)[\s\S]{0,22}[？?！!。]*$/.test(message.text||'')){match=candidates[0];relation='duplicate';}
     if(!match&&candidates.length&&this.classify&&message.kind==='text'){
       try{const result=JSON.parse((await this.classify({newMessage:message.text,activeRequests:candidates.slice(-4).map(o=>({id:o.id,request:o.request.slice(0,1500),state:this.status(o.id)}))},followupSchema)).text);match=candidates.find(o=>o.id===result.operationId);if(match&&['duplicate','supplement'].includes(result.relation))relation=result.relation;else match=null;}catch{match=null;}
