@@ -130,8 +130,9 @@ const server=http.createServer(async(req,res)=>{
         snapshot.recentKnowledge=await Promise.all(store.knowledgeList({scope:'current'}).slice(0,3).map(knowledgeView));
         snapshot.retention=retention.state();snapshot.deliveryReviewBatch=deliveryReview.batchState();const sessions=conversations.state({scope:needScope});sessions.needs=sessions.needs.map(n=>({...n,url:codex.threadUrl(n.thread)}));
         const chat=url.searchParams.get('chat')||'',historyPeer=chat&&(chats.get(chat)||Object.values(agentBindings(store.config)).some(p=>p?.chatKey===chat))?chat:'';
-        const chatWork=historyPeer&&Object.values(agentBindings(store.config)).some(p=>p?.chatKey===historyPeer)?engine.progress.cards({scope:'all',peer:historyPeer,limit:25}):undefined;
-        return json(res,{...snapshot,chatWork,aiChats:chats.state(historyPeer),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(engine.progress.cards({scope:workScope,status}),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,asrProgress,asrError,browser:adapter.status,browserLoggedIn:adapter.page&&adapter.lastScan?.loggedIn===true,loginCompletedAt,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,selfBinding:adapter.selectionKind==='self',scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
+        const deliveryCards=cards=>cards.map(card=>({...card,deliveryControls:deliveryReview.controls('task',card.id)}));
+        const chatWork=historyPeer&&Object.values(agentBindings(store.config)).some(p=>p?.chatKey===historyPeer)?deliveryCards(engine.progress.cards({scope:'all',peer:historyPeer,limit:25})):undefined;
+        return json(res,{...snapshot,chatWork,aiChats:chats.state(historyPeer),storage:store.storageState(),conversations:sessions,operations:engine.progress.state(),work:await attachVisualProgress(deliveryCards(engine.progress.cards({scope:workScope,status})),{store,live:engine.visualProgress,readReport:readVisualReport}),runtime:{harness:{active,configured:store.config.harness||'codex',chat:store.config.chatHarness||'codex',environmentOverride:!!process.env.BRIDGE_HARNESS},taskCodex:{ready:desktopCodex.ready,mode:'sharedDesktop'},codex:codex.ready,auth:codex.authState,asrReady,asrInstalling,asrProgress,asrError,browser:adapter.status,browserLoggedIn:adapter.page&&adapter.lastScan?.loggedIn===true,loginCompletedAt,browserEngine:process.platform==='darwin'?'safari':'edge',visualProgress:engine.visualProgress,selfBinding:adapter.selectionKind==='self',scan:adapter.lastScan?{title:adapter.lastScan.title,peer:adapter.lastScan.peer,diagnostics:adapter.lastScan.diagnostics,loginRequired:adapter.lastScan.loginRequired}:null,processing:engine.busy}});
       }
       if(req.method==='GET'&&path==='/api/models'){const chat=url.searchParams.get('mode')==='chat',harness=chat?store.config.chatHarness||'codex':active,data=await (chat?preferences.chatCatalog(harness):preferences.catalog(harness));return json(res,{...data,harness});}
       if(req.method==='GET'&&path==='/api/needs')return json(res,conversations.state({scope:archiveScope(url.searchParams.get('scope'))}));
@@ -353,6 +354,11 @@ const server=http.createServer(async(req,res)=>{
       }
       if(path==='/api/approval'){(taskCodex.approvals.has(String(body.id))?taskCodex:codex).approve(String(body.id),body.allow===true);return json(res,{ok:true});}
       if(path==='/api/outbox/reconcile')return json(res,await deliveryReview.reconcile(body.id));
+      if(path==='/api/outbox/cancel-replies'){
+        if(body.confirmed!==true)throw new Error('请确认取消这组回复的剩余发送');
+        return json(res,deliveryReview.cancelReplies(body.kind,String(body.id||'')));
+      }
+      if(path==='/api/outbox/resend-replies')return json(res,await deliveryReview.resendReplies(body.kind,String(body.id||''),body));
       if(path==='/api/outbox/reconcile-batch')return json(res,{batch:deliveryReview.startBatch(body)});
       if(path==='/api/outbox/resolve'){
         return json(res,deliveryReview.resolve(body.id,body.status,{confirmed:body.confirmed}));

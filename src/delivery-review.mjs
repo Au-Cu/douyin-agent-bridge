@@ -10,6 +10,111 @@ export class DeliveryReview{
   constructor({store,adapter,engine,chats}){Object.assign(this,{store,adapter,engine,chats});this.db=store.db;this.busy=new Set();const previous=this.db.prepare("SELECT value FROM app_settings WHERE key='deliveryReviewBatch'").get();this.batch=previous?JSON.parse(previous.value):null;if(this.batch?.status==='running'){this.batch.status='interrupted';this.saveBatch();}}
   saveBatch(){this.db.prepare("INSERT OR REPLACE INTO app_settings VALUES('deliveryReviewBatch',?,?)").run(JSON.stringify(this.batch),Date.now());}
   batchState(){return this.batch;}
+  replyScope(kind,id){
+    let field,key;
+    if(kind==='task'){field='operationId';key=this.engine.archives.task(id).id;}
+    else if(kind==='chat_reply'){
+      const row=this.db.prepare('SELECT peer FROM bot_messages WHERE id=?').get(String(id));
+      if(!row||!this.chats.get(row.peer))throw new Error('请登录此回复所属账号并选择原聊天');
+      field='botId';key=String(id);
+    }else throw new Error('请选择任务或普通聊天回复');
+    return {field,key,lock:JSON.stringify([field,key])};
+  }
+  replyRows(kind,id){
+    const {field,key}=this.replyScope(kind,id);
+    return this.db.prepare("SELECT * FROM outbox WHERE kind='text' AND json_extract(payload,?)=? ORDER BY created,rowid").all('$.'+field,key);
+  }
+  cancellable(row){return ['pending','held','sending','uncertain'].includes(row.status);}
+  retryable(row){return ['pending','held','sending','uncertain'].includes(row.status)||row.status==='superseded'&&data(row).deliveryReview?.resolution==='abandoned';}
+  controls(kind,id){
+    let rows;try{rows=this.replyRows(kind,id);}catch{return {canCancel:false,canResend:false,waiting:0,cancelled:0};}
+    return {canCancel:rows.some(row=>this.cancellable(row)),canResend:rows.some(row=>this.retryable(row)),waiting:rows.filter(row=>this.cancellable(row)).length,cancelled:rows.filter(row=>row.status==='superseded'&&data(row).deliveryReview?.resolution==='abandoned').length};
+  }
+  cancelReplies(kind,id){
+    const {lock}=this.replyScope(kind,id);this.controlRevisions??=new Map();this.controlRevisions.set(lock,(this.controlRevisions.get(lock)||0)+1);
+    const rows=this.replyRows(kind,id).filter(row=>this.cancellable(row));
+    if(!rows.length)return {ok:true,cancelled:0};
+    if(rows.some(row=>this.isInactive(row)))throw new Error('请登录此回复所属的抖音账号');
+    const ids=rows.map(row=>row.id),now=Date.now(),active=this.engine.activeDelivery;
+    this.db.exec('BEGIN IMMEDIATE');
+    try{
+      for(const row of rows){
+        this.store.mergeOutboxPayload(row.id,{
+          deliveryReview:{at:now,method:'manual_cancel',resolution:'abandoned',previousStatus:row.status},
+          deliveryControl:{action:'cancel',at:now,uncertain:row.status==='uncertain'||row.status==='sending'&&(!active||active.id!==row.id||active.submitted)}
+        });
+        this.store.delivery(row.id,'superseded','用户已取消发送，原回复和送达现场已保留');
+      }
+      const p=data(rows[0]),field=p.chatbot?'botId':'operationId',key=p.chatbot?p.botId:p.operationId;
+      if(key)for(const receipt of this.db.prepare("SELECT * FROM outbox WHERE kind='progress_reaction' AND json_extract(payload,?)=? AND json_extract(payload,'$.stage')='done' AND status IN ('pending','held','uncertain')").all('$.'+field,key)){
+        this.store.mergeOutboxPayload(receipt.id,{deliveryReview:{at:now,method:'manual_cancel',resolution:'abandoned',previousStatus:receipt.status}});
+        this.store.delivery(receipt.id,'unavailable','用户已取消后续文字，完成表情已停止');
+      }
+      this.db.exec('COMMIT');
+    }catch(e){this.db.exec('ROLLBACK');throw e;}
+    this.engine.stopReplyDelivery(ids);
+    this.sync(rows[0]);
+    return {ok:true,cancelled:rows.length};
+  }
+  async resendReplies(kind,id,{confirmed=false,confirmUnreceived=false}={}){
+    if(confirmed!==true)throw new Error('请确认重新发送剩余回复');
+    const {lock}=this.replyScope(kind,id);this.controlRevisions??=new Map();let revision=this.controlRevisions.get(lock)||0;
+    const guard=()=>{if((this.controlRevisions.get(lock)||0)!==revision)throw new Error('重新发送期间已收到取消操作，保留取消状态');};
+    this.resending||=new Set();
+    if(this.resending.has(lock))throw new Error('这组回复正在恢复发送，请稍候');
+    this.resending.add(lock);
+    try{
+      let rows=this.replyRows(kind,id).filter(row=>this.retryable(row));
+      if(!rows.length)return {ok:true,requeued:0};
+      for(const row of rows){
+        const p=data(row),target=this.target(row);
+        if(!target||this.isInactive(row)||target.deliveryPaused||p.contextReset||p.recipientVisibility?.state==='reported_invisible'||this.store.isArchived('task',p.operationId)||this.engine.interrupts.record(p.operationId))throw new Error('原聊天已暂停、账号变化，或该回复已归档、中断、清空；请先处理对应状态');
+      }
+      const active=this.engine.activeDelivery,activeInGroup=active&&rows.some(row=>row.id===active.id);
+      if(rows.some(row=>row.status==='sending')||activeInGroup){
+        this.cancelReplies(kind,id);
+        revision=this.controlRevisions.get(lock);
+        if(activeInGroup){
+          let timer;
+          const stopped=await Promise.race([active.done.then(()=>true),new Promise(resolve=>timer=setTimeout(()=>resolve(false),8000))]).finally(()=>clearTimeout(timer));
+          guard();
+          if(!stopped)return {ok:true,waiting:true,message:'已请求停止当前发送，等待浏览器释放；原回复已保留，请稍后重发。'};
+        }
+        rows=this.replyRows(kind,id).filter(row=>this.retryable(row));
+      }
+      const uncertain=rows.filter(row=>row.status==='uncertain'||data(row).deliveryControl?.uncertain||data(row).cancelledDeliveryEvidence?.uncertain);
+      if(uncertain.length&&confirmUnreceived!==true){
+        for(const row of uncertain)if(row.status==='uncertain'&&this.target(row))await this.reconcile(row.id).catch(()=>{});
+        guard();
+        rows=this.replyRows(kind,id).filter(row=>this.retryable(row));
+        if(rows.some(row=>row.status==='uncertain'||data(row).deliveryControl?.uncertain||data(row).cancelledDeliveryEvidence?.uncertain))return {ok:true,needsConfirmation:true,message:'部分回复可能已发出，但无法核实。请确认接收方未收到后再重新发送。'};
+      }
+      guard();
+      for(const row of rows){
+        const p=data(row),target=this.target(row);
+        if(!target||this.isInactive(row)||target.deliveryPaused||p.contextReset||p.recipientVisibility?.state==='reported_invisible'||this.store.isArchived('task',p.operationId)||this.engine.interrupts.record(p.operationId))throw new Error('等待期间聊天状态已变化，请刷新后重试');
+      }
+      this.db.exec('BEGIN IMMEDIATE');
+      try{
+        for(const row of rows){
+          const p=data(row);
+          this.store.mergeOutboxPayload(row.id,{
+            deliveryReview:{at:Date.now(),method:'manual_resend',resolution:'pending',previousStatus:row.status},
+            deliveryControl:null,cancelledDeliveryEvidence:null,deliveryRetry:{failures:0},
+            resendHistory:[...(p.resendHistory||[]),{at:Date.now(),previousStatus:row.status,deliveryAttempt:p.deliveryAttempt||null,confirmedUnreceived:confirmUnreceived}].slice(-10)
+          });
+          this.store.delivery(row.id,'pending');
+        }
+        this.db.exec('COMMIT');
+      }catch(e){this.db.exec('ROLLBACK');throw e;}
+      if(rows[0]){
+        const p=data(rows[0]);
+        if(p.chatbot)this.chats.set(p.botId,'replying');
+        this.sync(rows[0]);
+      }
+      return {ok:true,requeued:rows.length};
+    }finally{this.resending.delete(lock);}
+  }
   startBatch({kind,id}={}){
     if(this.batch?.status==='running')return this.batch;
     if((kind&&!id)||(!kind&&id))throw new Error('请完整指定核实范围');

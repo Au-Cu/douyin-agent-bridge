@@ -64,7 +64,7 @@ export class PeerBrowser {
   open(owner,options){return this.serial(()=>this.adapter.open(this.selecting?undefined:owner,options),{kind:'open',priority:10});}
   focus(){return this.serial(()=>this.adapter.focus?.(),{kind:'focus',priority:10});}
   logout(){return this.serial(()=>this.adapter.logout(),{kind:'logout',priority:30});}
-  scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect'});}
+  scan(){return this.serial(()=>this.adapter.scan(),{kind:'inspect',priority:this.selecting?30:0});}
   async wantsRead(peer,{agent=false}={}){
     const native=platformPeer(peer);
     if(peer.selfChat||matchesPeer(this.adapter.lastScan?.peer,native))return true;
