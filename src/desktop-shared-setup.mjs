@@ -25,12 +25,13 @@ export async function prepareDesktopShared(root,{original=process.env.CODEX_APP_
   const key=createHash('sha256').update(resolve(root)).digest('hex').slice(0,18),socketFolder=process.platform==='win32'?null:join('/tmp','douyin-codex-'+(process.getuid?.()??0)+'-'+key);
   if(socketFolder){await mkdir(socketFolder,{recursive:true,mode:0o700});const s=await lstat(socketFolder);if(s.uid!==process.getuid()||!s.isDirectory()||s.isSymbolicLink())throw new Error('本机共享通信目录不属于当前用户');await chmod(socketFolder,0o700);}
   const endpoint=process.platform==='win32'?'\\\\.\\pipe\\douyin-codex-'+key:join(socketFolder,'rpc.sock');
-  config={version:1,endpoint,token:config?.token||randomBytes(32).toString('hex'),original,node:process.execPath,project,app:app||config?.app||''};durableJson(sharedConfigFile(root),config);
+  config={version:1,endpoint,token:config?.token||randomBytes(32).toString('hex'),original,node:process.execPath,project,app:app||config?.app||''};
   const proxy=join(project,'scripts','shared-codex-proxy.mjs');let wrapper;
   if(process.platform==='win32'){
-    const source=join(project,'scripts','SharedCodexLauncher.cs'),hash=createHash('sha256').update(await readFile(source)).digest('hex').slice(0,12);wrapper=join(folder,'codex-shared-'+hash+'.exe');await writeFile(join(folder,'launcher-paths.txt'),[process.execPath,proxy,sharedConfigFile(root)].join('\r\n')+'\r\n',{mode:0o600});
+    const source=join(project,'scripts','SharedCodexLauncher.cs'),hash=createHash('sha256').update(await readFile(source)).digest('hex').slice(0,12);wrapper=join(folder,'codex-shared-'+hash+'.exe');
     const compiler=join(process.env.WINDIR||'C:\\Windows','Microsoft.NET','Framework64','v4.0.30319','csc.exe');
     if(!existsSync(wrapper))try{await exec(compiler,['/nologo','/codepage:65001','/target:exe','/platform:anycpu','/out:'+wrapper,source],{windowsHide:true,timeout:20000});}catch{throw new Error('无法生成本机 Codex 连接入口，请检查 Windows .NET Framework。');}
+    await writeFile(join(folder,'launcher-paths.txt'),[process.execPath,proxy,sharedConfigFile(root)].join('\r\n')+'\r\n',{mode:0o600});
   }else{
     wrapper=join(folder,'codex-shared');await writeFile(wrapper,'#!/bin/sh\nexec '+sh(process.execPath)+' '+sh(proxy)+' '+sh(sharedConfigFile(root))+' "$@"\n',{mode:0o700});await chmod(wrapper,0o700);
   }

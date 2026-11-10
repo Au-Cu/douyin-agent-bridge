@@ -17,24 +17,32 @@ async function fixture(){
   return {project,root,config};
 }
 
-async function windowsLaunch({running=false,fail='',noOpen=false,initial='original-cli'}={}){
+async function windowsLaunch({running=false,fail='',noOpen=false,initial='original-cli',stale=false,missingCore=false}={}){
   const f=await fixture();await copyFile(fileURLToPath(new URL('../scripts/StartSharedCodex.ps1',import.meta.url)),join(f.project,'scripts','StartSharedCodex.ps1'));
-  await writeFile(join(f.project,'scripts','Launcher.ps1'),'function Get-BridgeDataRoot { param($ProjectRoot, [switch]$Prepare) return $env:BRIDGE_DATA_DIR }');
+  await writeFile(join(f.project,'scripts','Launcher.ps1'),'function Get-BridgeDataRoot { param($ProjectRoot, [switch]$Prepare) return $env:BRIDGE_DATA_DIR }\nfunction Get-BridgeNode { return $env:BRIDGE_TEST_NODE }');
+  const packageRoot=join(f.project,'Current Package'),officialApp=join(packageRoot,'app','ChatGPT.exe'),officialCore=join(packageRoot,'app','resources','codex.exe');
+  if(stale){
+    await mkdir(join(packageRoot,'app','resources'),{recursive:true});await writeFile(officialApp,'current app');if(!missingCore)await writeFile(officialCore,'current core');
+    f.config.original=join(f.project,'removed old core');f.config.app=join(f.project,'removed old app');f.config.token='fixture-token';
+    await writeFile(join(f.root,'desktop-shared','connection.json'),JSON.stringify(f.config));
+    await writeFile(join(f.project,'scripts','setup-desktop.mjs'),`import {readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';const args=process.argv.slice(2),value=k=>args[args.indexOf(k)+1],file=join(process.env.BRIDGE_DATA_DIR,'desktop-shared','connection.json'),config=JSON.parse(readFileSync(file));config.original=value('--codex');config.app=value('--app');writeFileSync(file,JSON.stringify(config));`);
+  }
   await writeFile(join(f.project,'Start.ps1'),`$global:events += @{event='console';cli=$env:CODEX_CLI_PATH}
 if ($env:BRIDGE_TEST_FAIL -eq 'console') { throw 'fixture-console-failure' }
 `);
   const driver=join(f.project,'driver.ps1');await writeFile(driver,`\uFEFF$global:events=@()
 function Get-Process { param($Name,$ErrorAction) if($env:BRIDGE_TEST_RUNNING -eq '1'){[pscustomobject]@{Path=$env:BRIDGE_TEST_APP}} }
+function Get-AppxPackage { param($Name) if($env:BRIDGE_TEST_PACKAGE){[pscustomobject]@{InstallLocation=$env:BRIDGE_TEST_PACKAGE}} }
 function Start-Process { param($FilePath,$WindowStyle) $global:events+=@{event='desktop';path=$FilePath;style=[string]$WindowStyle;cli=$env:CODEX_CLI_PATH}; if($env:BRIDGE_TEST_FAIL -eq 'desktop'){throw 'fixture-launch-failure'} }
 function Stop-Process { throw 'must-not-stop-an-existing-chat' }
 try { & (Join-Path $PSScriptRoot 'scripts\\StartSharedCodex.ps1') -NoOpen:($env:BRIDGE_TEST_NO_OPEN -eq '1') } catch { $global:events+=@{event='error';message=$_.Exception.Message} }
 $global:events+=@{event='final';cli=$env:CODEX_CLI_PATH}
 Write-Output ('EVENTS '+(ConvertTo-Json -InputObject $global:events -Compress -Depth 4))
 `,'utf8');
-  const p=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',driver],{windowsHide:true,env:{...process.env,BRIDGE_DATA_DIR:f.root,BRIDGE_TEST_APP:f.config.app,BRIDGE_TEST_RUNNING:running?'1':'0',BRIDGE_TEST_FAIL:fail,BRIDGE_TEST_NO_OPEN:noOpen?'1':'0',CODEX_CLI_PATH:initial},stdio:['ignore','pipe','pipe']});
+  const p=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',driver],{windowsHide:true,env:{...process.env,BRIDGE_DATA_DIR:f.root,BRIDGE_TEST_NODE:process.execPath,BRIDGE_TEST_PACKAGE:stale?packageRoot:'',BRIDGE_TEST_APP:stale?officialApp:f.config.app,BRIDGE_TEST_RUNNING:running?'1':'0',BRIDGE_TEST_FAIL:fail,BRIDGE_TEST_NO_OPEN:noOpen?'1':'0',CODEX_CLI_PATH:initial},stdio:['ignore','pipe','pipe']});
   let out='',err='';p.stdout.setEncoding('utf8');p.stderr.setEncoding('utf8');p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);
   const code=await new Promise((yes,no)=>{p.once('error',no);p.once('close',yes);});assert.equal(code,0,err);const line=out.split(/\r?\n/).find(v=>v.startsWith('EVENTS '));assert.ok(line,out+err);
-  return {...f,events:JSON.parse(line.slice(7)),out};
+  return {...f,events:JSON.parse(line.slice(7)),out,officialApp,officialCore};
 }
 
 test('Windows shared entry opens a visible desktop and console with separately scoped environments',{skip:process.platform!=='win32'},async()=>{
@@ -49,6 +57,19 @@ test('Windows launch failure restores the environment and console failures remai
   const failed=await windowsLaunch({fail:'desktop'});assert.deepEqual(failed.events.map(e=>e.event),['desktop','error','final']);assert.equal(failed.events.at(-1).cli,'original-cli');assert.match(failed.events[1].message,/fixture-launch-failure/);
   const consoleFailed=await windowsLaunch({fail:'console'});assert.deepEqual(consoleFailed.events.map(e=>e.event),['desktop','console','error','final']);assert.match(consoleFailed.events[2].message,/助手控制台启动失败/);
   const noOpen=await windowsLaunch({noOpen:true});assert.deepEqual(noOpen.events.map(e=>e.event),['desktop','final']);
+});
+
+test('Windows repairs a removed core from the exact installed package before launching and preserves the saved capability',{skip:process.platform!=='win32'},async()=>{
+  const f=await windowsLaunch({stale:true}),saved=JSON.parse(await (await import('node:fs/promises')).readFile(join(f.root,'desktop-shared','connection.json'),'utf8'));
+  assert.deepEqual(f.events.map(e=>e.event),['desktop','console','final']);assert.equal(f.events[0].path,f.officialApp);assert.equal(f.events[0].cli,f.config.wrapper);
+  assert.equal(saved.original,f.officialCore);assert.equal(saved.app,f.officialApp);assert.equal(saved.token,'fixture-token');assert.equal(f.events[1].cli,'original-cli');
+});
+
+test('Windows does not change shared setup while the desktop is running or when the installed core is missing',{skip:process.platform!=='win32'},async()=>{
+  for(const options of [{stale:true,running:true},{stale:true,missingCore:true}]){
+    const f=await windowsLaunch(options),saved=JSON.parse(await (await import('node:fs/promises')).readFile(join(f.root,'desktop-shared','connection.json'),'utf8'));
+    assert.deepEqual(f.events.map(e=>e.event),['console','error','final']);assert.equal(saved.original,f.config.original);assert.equal(saved.token,'fixture-token');
+  }
 });
 
 async function macLaunch({running=false,fail='',noOpen=false}={}){
