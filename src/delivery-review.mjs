@@ -101,6 +101,7 @@ export class DeliveryReview{
           this.store.mergeOutboxPayload(row.id,{
             deliveryReview:{at:Date.now(),method:'manual_resend',resolution:'pending',previousStatus:row.status},
             deliveryControl:null,cancelledDeliveryEvidence:null,deliveryRetry:{failures:0},
+            ...(p.composerDraft?.state==='prepared'?{composerDraft:{...p.composerDraft,recoveries:0}}:{}),
             resendHistory:[...(p.resendHistory||[]),{at:Date.now(),previousStatus:row.status,deliveryAttempt:p.deliveryAttempt||null,confirmedUnreceived:confirmUnreceived}].slice(-10)
           });
           this.store.delivery(row.id,'pending');

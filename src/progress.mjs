@@ -113,14 +113,14 @@ export class Progress{
   }
   resultParts(id){
     const rows=this.db.prepare("SELECT * FROM outbox WHERE json_extract(payload,'$.operationId')=? AND COALESCE(json_extract(payload,'$.notification'),0)=0 AND kind='text' ORDER BY created,rowid").all(id);
-    return {rows,total:rows.length,sent:rows.filter(r=>r.status==='sent').length,uncertain:rows.some(r=>r.status==='uncertain'),pending:rows.some(r=>['pending','sending'].includes(r.status))};
+    return {rows,total:rows.length,sent:rows.filter(r=>r.status==='sent').length,uncertain:rows.some(r=>r.status==='uncertain'),pending:rows.some(r=>['pending','sending','held'].includes(r.status))};
   }
   tasks(id){return this.db.prepare("SELECT * FROM tasks WHERE json_extract(context,'$.operationId')=? ORDER BY created").all(id);}
   sync(id){
     if(this.stopped(id))return;
     const op=this.get(id);if(!op||['merged','done'].includes(op.status))return;
     const parts=this.resultParts(id),tasks=this.tasks(id);
-    const noticesPending=this.db.prepare("SELECT 1 FROM outbox WHERE json_extract(payload,'$.operationId')=? AND kind='text' AND status IN ('pending','sending','uncertain') LIMIT 1").get(id);
+    const noticesPending=this.db.prepare("SELECT 1 FROM outbox WHERE json_extract(payload,'$.operationId')=? AND kind='text' AND status IN ('pending','sending','held','uncertain') LIMIT 1").get(id);
     if(parts.uncertain){this.db.prepare("UPDATE operations SET status='failed_delivery',phase='回复送达情况需要核实' WHERE id=?").run(id);return;}
     if(!op.ended||tasks.some(t=>['queued','running','blocked','uncertain'].includes(t.status)))return;
     if(!parts.pending&&!parts.uncertain&&!noticesPending&&parts.rows.some(r=>JSON.parse(r.payload||'{}').deliveryReview?.resolution==='abandoned')){this.db.prepare("UPDATE operations SET status='cancelled',phase='执行结果已保留，用户已放弃部分回复',changed=? WHERE id=?").run(this.now(),id);return;}
@@ -148,7 +148,7 @@ export class Progress{
     if(op.submitted&&(!op.ended||tasks.some(t=>t.status==='running'))&&this.now()-op.changed>=this.stallAfter)return this.checks.get(id)?.state==='active'?`Codex 报告仍在运行，较长时间没有新结果。最近阶段：${op.phase}。`:'暂时无法确认运行状态；已提交的执行保留现场，不会自动重跑。';
     if(op.parent&&this.stopped(op.parent))return '原任务已中断，补充要求已保留并暂停；需明确重试此补充或发起新的独立要求。';
     if(op.parent&&this.get(op.parent)?.status!=='done')return '补充要求已保存，正在等待原要求执行及全部回复结束；原要求若需核实，补充也保持等待。';
-    if(parts.pending&&op.ended&&tasks.every(t=>t.status==='done')){const next=parts.rows.find(r=>['pending','sending'].includes(r.status)),p=JSON.parse(next?.payload||'{}');const segment=`第 ${p.segment||Math.min(parts.total,parts.sent+1)}/${p.totalSegments||parts.total} 段`;return next?.status==='pending'?(next.error?`结果已生成，${segment}发送受阻，等待重试：${next.error.split('\n')[0]}`:`结果已生成，${segment}等待发送。`):`结果已生成，正在发送${segment}。`;}
+    if(parts.pending&&op.ended&&tasks.every(t=>t.status==='done')){const next=parts.rows.find(r=>['pending','sending','held'].includes(r.status)),p=JSON.parse(next?.payload||'{}');const segment=`第 ${p.segment||Math.min(parts.total,parts.sent+1)}/${p.totalSegments||parts.total} 段`;return next?.status==='held'?'发送已暂停，'+segment+'：'+(next.error?.split('\n')[0]||'请检查后重新发送或取消发送'):next?.status==='pending'?(next.error?`结果已生成，${segment}发送受阻，等待重试：${next.error.split('\n')[0]}`:`结果已生成，${segment}等待发送。`):`结果已生成，正在发送${segment}。`;}
     if(tasks.some(t=>t.status==='running'))return op.phase+(op.detail?'，'+op.detail:'')+'；其余 '+tasks.filter(t=>t.status==='queued').length+' 项待处理。';
     if(tasks.some(t=>t.status==='queued'))return '目标任务排队等待，尚未提交执行。';
     if(op.status==='done')return '任务及全部回复已完成。';
@@ -265,7 +265,7 @@ export class Progress{
     const where=scope==='all'?'1=1':scope==='archived'?'COALESCE(a.archived,0)=1':'COALESCE(a.archived,0)=0';
     return this.db.prepare("SELECT o.*,COALESCE(a.archived,0) AS archived FROM operations o LEFT JOIN archive_records a ON a.kind='task' AND a.id=o.id WHERE o.status<>'merged' AND "+where+" AND (?='' OR o.peer=?) AND (?='all' OR o.status=?) ORDER BY CASE WHEN o.status IN ('queued','running','sending','waiting','blocked','uncertain','failed_delivery') AND o.kind<>'control' THEN 0 ELSE 1 END,o.created DESC LIMIT ?").all(peer,peer,status,status,limit).map(op=>{
       const rows=this.db.prepare("SELECT * FROM outbox WHERE json_extract(payload,'$.operationId')=? ORDER BY created,rowid").all(op.id);
-      const receipts=['roger','active','done'].map(stage=>{const group=rows.filter(r=>r.kind==='progress_reaction'&&JSON.parse(r.payload||'{}').stage===stage);return {stage,total:group.length,sent:group.filter(r=>r.status==='sent').length,pending:group.filter(r=>['pending','sending'].includes(r.status)).length,uncertain:group.filter(r=>r.status==='uncertain').length,unavailable:group.filter(r=>r.status==='unavailable').length,abandoned:group.filter(r=>JSON.parse(r.payload||'{}').deliveryReview?.resolution==='abandoned').length,errors:[...new Set(group.filter(r=>r.error&&r.status!=='sent').map(r=>r.error))]};});
+      const receipts=['roger','active','done'].map(stage=>{const group=rows.filter(r=>r.kind==='progress_reaction'&&JSON.parse(r.payload||'{}').stage===stage);return {stage,total:group.length,sent:group.filter(r=>r.status==='sent').length,pending:group.filter(r=>['pending','sending','held'].includes(r.status)).length,uncertain:group.filter(r=>r.status==='uncertain').length,unavailable:group.filter(r=>r.status==='unavailable').length,abandoned:group.filter(r=>JSON.parse(r.payload||'{}').deliveryReview?.resolution==='abandoned').length,errors:[...new Set(group.filter(r=>r.error&&r.status!=='sent').map(r=>r.error))]};});
       const tasks=this.tasks(op.id),parent=this.get(op.parent),needId=op.need_id||parent?.need_id,links=new Map(),assistant=needId&&this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='needs'").get()?this.db.prepare('SELECT thread FROM needs WHERE id=?').get(needId)?.thread:null;
       const videoIds=this.db.prepare("SELECT DISTINCT json_extract(m.body,'$.awemeId') AS id FROM operation_messages om JOIN messages m ON m.id=om.message_id WHERE om.operation_id=? AND m.kind='video' AND json_valid(m.body)").all(op.id).map(v=>v.id).filter(id=>typeof id==='string');
       for(const [id,label] of [[assistant,'需求对话'],[parent?.thread,'原任务对话'],...this.tasks(parent?.id||'').map(t=>[t.thread,'原任务目标：'+t.alias]),[op.thread,'本轮对话'],...tasks.map(t=>[t.thread,'目标：'+t.alias])]){const url=this.codex.threadUrl?this.codex.threadUrl(id):codexThreadUrl(id);if(url)links.set(id,{label,url});}

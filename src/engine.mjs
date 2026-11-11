@@ -598,6 +598,9 @@ export class BridgeEngine {
     this.deliveryTurns.set(out.peer,++this.deliveryTurn);
     this.outboxBusy=true;this.store.delivery(out.id,'sending');
     const attempt={id:out.id,controller:new AbortController(),submitted:false};
+    attempt.previousDraft=payload.composerDraft;
+    attempt.recordDraft=value=>this.store.mergeOutboxPayload(out.id,{composerDraft:{...value,created:Date.now(),state:value.state||'prepared',recoveries:attempt.draftRecoveries??payload.composerDraft?.recoveries??0}});
+    attempt.markSubmitted=()=>{const p=JSON.parse(this.store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(out.id)?.payload||'{}');if(p.composerDraft)this.store.mergeOutboxPayload(out.id,{composerDraft:{...p.composerDraft,state:'submitted'}});};
     attempt.done=new Promise(resolve=>attempt.finish=resolve);
     this.activeDelivery=attempt;
     if(out.kind==='text')this.store.mergeOutboxPayload(out.id,{deliveryAttempt:{started:Date.now(),ended:0}});
@@ -641,7 +644,7 @@ export class BridgeEngine {
         this.store.mergeOutboxPayload(out.id,{cancelledDeliveryEvidence:{at:Date.now(),uncertain:!!e.uncertain||attempt.submitted,submitted:attempt.submitted}});
         return;
       }
-      if(!e.uncertain&&e.code==='CHAT_ACCOUNT_INACTIVE'&&e.notSubmitted){this.store.delivery(out.id,'pending',e.message);return;}let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DELIVERY_PAUSED'?'held':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
+      if(!e.uncertain&&e.code==='CHAT_ACCOUNT_INACTIVE'&&e.notSubmitted){this.store.delivery(out.id,'pending',e.message);return;}let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':(e.code==='CHAT_DELIVERY_PAUSED'||e.code==='OWNED_DRAFT_EXHAUSTED')?'held':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
       let retryAfter;
       if(status==='pending'&&out.kind==='text'){
         const failures=Math.min(6,(payload.deliveryRetry?.failures||0)+1);

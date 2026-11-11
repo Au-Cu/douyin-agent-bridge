@@ -114,3 +114,7 @@ test('ordinary group reply controls preserve quote pointers, enforce account/pau
     h.s.saveConfig({aiChats:[]});assert.doesNotThrow(()=>h.r.controls('chat_reply','bot'));
   }finally{h.s.close();}
 });
+
+test('exhausted draft recovery stays visibly paused and cannot archive or mark a task complete',async()=>{
+  const h=await setup();try{const [id]=h.e.reply('保留结果',{operationId:h.m.id});h.e.progress.finish(h.m.id);h.s.delivery(id,'held','自动草稿已恢复两次');h.e.progress.sync(h.m.id);assert.notEqual(h.e.progress.get(h.m.id).status,'done');assert.equal(h.s.isArchived('task',h.m.id),false);assert.match(h.e.progress.status(h.m.id),/发送已暂停/);}finally{h.s.close();}
+});

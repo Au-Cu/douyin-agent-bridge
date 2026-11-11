@@ -413,8 +413,14 @@ export class DouyinAdapter {
       let scan=await this.scan();
       if(!matchesPeer(scan.peer,owner))throw new Error('请先在浏览器选回绑定的用户会话');
       surface=this.chatFrame||this.page;
-      const composer=(await browserRead(surface.evaluate(inspectComposers)))[0];
+      body=plainText?String(text).trim():toPlainChatText(text);
+      let composer=(await browserRead(surface.evaluate(inspectComposers)))[0];
       if(!composer)throw new Error('未找到私信输入框，抖音页面可能已改版');
+      const delivery=operationContext.getStore()?.delivery;
+      if(await recoverOwnedDraft({draft:composer,saved:delivery?.previousDraft,body,quoteId:replyToMessageId,quote:()=>browserRead(surface.evaluate(inspectQuoteDraft)),clear:async draft=>{
+        checkWork();if(!matchesPeer((await this.scan()).peer,owner))throw new Error('会话变化，未清理草稿');
+        await surface.evaluate(clearOwnedComposer,{index:draft.index,expected:draft.text});
+      }})){delivery.draftRecoveries=(delivery.previousDraft.recoveries||0)+1;composer=(await browserRead(surface.evaluate(inspectComposers)))[0];}
       initialEmpty=!composer.text;
       editor=surface.locator('[contenteditable="true"],textarea').nth(composer.index);
       const replyToSender=replyToSenderUid||scan.messages.find(m=>m.id===replyToMessageId)?.sender||'';
@@ -425,13 +431,15 @@ export class DouyinAdapter {
       if(!await allowComposerDraft(fn=>browserRead(surface.evaluate(fn)),prefix,replyToMessageId,replyToSender))throw new Error('引用后出现了其他草稿，未填写回复');
       const expectedBody=prefix?prefix+' '+body:body;
       expectedDraft=expectedBody;
+      delivery?.recordDraft?.({text:expectedBody,body,quoteId:replyToMessageId,state:'planned'});
       checkWork();await surface.evaluate(focusComposerEnd,{index:composer.index,expected:prefix});checkWork();await this.page.keyboard.insertText(prefix?' '+body:body);composed=true;
+      delivery?.recordDraft?.({text:expectedBody,body,quoteId:replyToMessageId,state:'prepared'});
       scan=await this.scan();
       if(!matchesPeer(scan.peer,owner))throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
       if(replyToMessageId){const quote=await browserRead(surface.evaluate(inspectQuoteDraft));if(quote.ids.length!==1||quote.ids[0]!==replyToMessageId)throw new Error('引用草稿已变化，已取消发送');}
       if(comparableChatText((await browserRead(surface.evaluate(inspectComposers)))[0]?.text)!==comparableChatText(expectedBody))throw new Error('回复草稿发生变化，未发送');
       const before=new Set(scan.messages.map(m=>m.id));
-      checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;
+      checkWork();delivery?.markSubmitted?.();if(delivery)delivery.submitted=true;
       submitted=true;
       await this.page.keyboard.press('Enter');
       for(let i=0;i<15;i++) {
@@ -693,3 +701,4 @@ exit 1
 }
 export class UncertainDelivery extends Error {constructor(message){super(message);this.uncertain=true;}}
 import {operationContext,checkWork,workSignal,raceWork,browserRead} from './execution.mjs';
+import {recoverOwnedDraft,clearOwnedComposer} from './owned-draft.mjs';

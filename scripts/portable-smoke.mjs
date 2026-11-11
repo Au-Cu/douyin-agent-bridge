@@ -1,4 +1,6 @@
-import {mkdir,copyFile,readFile} from 'node:fs/promises';import {existsSync} from 'node:fs';
+import {mkdir,copyFile,readFile,writeFile} from 'node:fs/promises';import {existsSync} from 'node:fs';
+import {randomBytes} from 'node:crypto';
+import {SharedCodexBroker} from '../src/shared-codex-broker.mjs';import {CodexClient} from '../src/codex.mjs';
 import {join,dirname,resolve} from 'node:path';import {spawn} from 'node:child_process';import {createServer} from 'node:net';
 import assert from 'node:assert/strict';import {once} from 'node:events';
 import {collectReleaseFiles,projectRoot} from './release-files.mjs';
@@ -9,6 +11,12 @@ for(const file of await collectReleaseFiles()){await mkdir(dirname(join(root,fil
 const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=reservation.address().port;await new Promise(r=>reservation.close(r));
 const url='http://127.0.0.1:'+port;
 const profile=join(root,'data');
+// A clean install can inspect/login without a shared desktop. Creating a
+// persistent personal need requires one; provide only a disposable RPC fixture.
+await mkdir(join(profile,'desktop-shared'),{recursive:true});const token=randomBytes(32).toString('hex'),endpoint=process.platform==='win32'?'\\\\.\\pipe\\portable-'+randomBytes(12).toString('hex'):join('/tmp','portable-'+randomBytes(12).toString('hex')+'.sock');
+await writeFile(join(profile,'desktop-shared','connection.json'),JSON.stringify({version:1,endpoint,token}));
+const broker=await new SharedCodexBroker({endpoint,token,command:process.execPath,args:[join(root,'test','fixture-rpc.mjs')],cwd:root,env:{...process.env,CODEX_HOME:join(root,'data','fixture-codex-home')}}).listen();
+const desktop=new CodexClient({cwd:root,sharedRoot:profile,sharedRole:'desktop',codexHome:join(root,'data','fixture-codex-home')});await desktop.connect();
 const proc=spawn(process.execPath,['--use-env-proxy','src/server.mjs','--port',String(port)],{cwd:root,env:{...process.env,BRIDGE_DATA_DIR:profile,CODEX_HOME:join(root,'data','fixture-codex-home'),CODEX_BIN:join(root,'test','fixture-rpc.mjs')},windowsHide:true,stdio:['ignore','ignore','pipe']});
 let stderr='';proc.stderr.on('data',b=>{stderr=(stderr+b).slice(-3000);});let cookie;
 const request=async(path,{method='GET',body,auth=true}={})=>fetch(url+'/api/'+path,{method,headers:{...(auth?{Cookie:cookie}:{}),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(5000)});
@@ -66,4 +74,4 @@ try{
   }else await request('shutdown',{method:'POST',body:{}});
   if(proc.exitCode===null){let timer;try{await Promise.race([once(proc,'exit'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Shutdown timed out')),10000);})]);}finally{clearTimeout(timer);}}
   console.log(JSON.stringify({ok:true,cleanOwnerAndHistory:true,unicodeAndSpaces:true,otherCopyStopBlocked:['win32','darwin'].includes(process.platform),modelCalls:0,sourceFiles:(await collectReleaseFiles()).length},null,2));
-}finally{if(proc.exitCode===null){try{await request('shutdown',{method:'POST',body:{force:true}});}catch{}let timer;try{if(proc.exitCode===null)await Promise.race([once(proc,'exit'),new Promise(r=>{timer=setTimeout(r,1500);})]);}finally{clearTimeout(timer);}if(proc.exitCode===null)proc.kill();}}
+}finally{if(proc.exitCode===null){try{await request('shutdown',{method:'POST',body:{force:true}});}catch{}let timer;try{if(proc.exitCode===null)await Promise.race([once(proc,'exit'),new Promise(r=>{timer=setTimeout(r,1500);})]);}finally{clearTimeout(timer);}if(proc.exitCode===null)proc.kill();}desktop.close();await broker.close();}

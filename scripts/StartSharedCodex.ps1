@@ -62,7 +62,27 @@ if ($desktopRunning) {
         # Only the desktop child inherits the wrapper; isolated clients keep
         # their original environment when the console launcher runs below.
         $env:CODEX_CLI_PATH = $config.wrapper
-        Start-Process -FilePath $appPath -WindowStyle Normal
+        if ($appPath -match '(?i)\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\ChatGPT\.exe$') {
+            $package=Get-AppxPackage -Name 'OpenAI.Codex' | Select-Object -First 1
+            if (-not $package -or (Join-Path $package.InstallLocation 'app\ChatGPT.exe') -ine $appPath) { throw '无法核验桌面程序的 Windows 应用身份' }
+            $report=Join-Path $dataRoot ('desktop-shared\activation-'+[guid]::NewGuid().ToString()+'.json')
+            $source=Join-Path $PSScriptRoot 'PackagedDesktopLauncher.cs'
+            $sha=[Security.Cryptography.SHA256]::Create();$stream=[IO.File]::OpenRead($source)
+            try { $hash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').Substring(0,12).ToLowerInvariant() }
+            finally { $stream.Dispose();$sha.Dispose() }
+            $helper=Join-Path $dataRoot ('desktop-shared\packaged-launch-'+$hash+'.exe')
+            if (-not (Test-Path -LiteralPath $helper)) {
+                $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+                & $compiler /nologo /codepage:65001 /target:winexe /platform:anycpu ('/out:'+$helper) $source
+                if ($LASTEXITCODE -ne 0) { throw '无法生成 Windows 应用身份启动入口' }
+            }
+            $arguments='"'+$appPath+'" "'+$config.wrapper+'" "'+$report+'"'
+            Invoke-CommandInDesktopPackage -PackageFamilyName $package.PackageFamilyName -AppId 'App' -Command $helper -Args $arguments -PreventBreakaway -ErrorAction Stop
+            for ($i=0;$i -lt 40 -and -not (Test-Path -LiteralPath $report);$i++) { Start-Sleep -Milliseconds 200 }
+            if (-not (Test-Path -LiteralPath $report)) { throw 'Windows 应用身份启动尚未确认；未退回另一套桌面资料。' }
+            $activation=Get-Content -Raw -Encoding UTF8 -LiteralPath $report | ConvertFrom-Json
+            if (-not $activation.ok) { throw $activation.error }
+        } else { Start-Process -FilePath $appPath -WindowStyle Normal }
     } finally {
         $env:CODEX_CLI_PATH = $previousCliPath
     }

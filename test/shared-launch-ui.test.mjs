@@ -17,10 +17,11 @@ async function fixture(){
   return {project,root,config};
 }
 
-async function windowsLaunch({running=false,fail='',noOpen=false,initial='original-cli',stale=false,missingCore=false}={}){
+async function windowsLaunch({running=false,fail='',noOpen=false,initial='original-cli',stale=false,missingCore=false,packaged=false}={}){
   const f=await fixture();await copyFile(fileURLToPath(new URL('../scripts/StartSharedCodex.ps1',import.meta.url)),join(f.project,'scripts','StartSharedCodex.ps1'));
   await writeFile(join(f.project,'scripts','Launcher.ps1'),'function Get-BridgeDataRoot { param($ProjectRoot, [switch]$Prepare) return $env:BRIDGE_DATA_DIR }\nfunction Get-BridgeNode { return $env:BRIDGE_TEST_NODE }');
-  const packageRoot=join(f.project,'Current Package'),officialApp=join(packageRoot,'app','ChatGPT.exe'),officialCore=join(packageRoot,'app','resources','codex.exe');
+  const packageRoot=packaged?join(f.project,'WindowsApps','OpenAI.Codex_fixture'):join(f.project,'Current Package'),officialApp=join(packageRoot,'app','ChatGPT.exe'),officialCore=join(packageRoot,'app','resources','codex.exe');
+  if(packaged){await mkdir(join(packageRoot,'app'),{recursive:true});await writeFile(officialApp,'fixture');f.config.app=officialApp;await writeFile(join(f.root,'desktop-shared','connection.json'),JSON.stringify(f.config));await copyFile(fileURLToPath(new URL('../scripts/PackagedDesktopLauncher.cs',import.meta.url)),join(f.project,'scripts','PackagedDesktopLauncher.cs'));}
   if(stale){
     await mkdir(join(packageRoot,'app','resources'),{recursive:true});await writeFile(officialApp,'current app');if(!missingCore)await writeFile(officialCore,'current core');
     f.config.original=join(f.project,'removed old core');f.config.app=join(f.project,'removed old app');f.config.token='fixture-token';
@@ -32,14 +33,15 @@ if ($env:BRIDGE_TEST_FAIL -eq 'console') { throw 'fixture-console-failure' }
 `);
   const driver=join(f.project,'driver.ps1');await writeFile(driver,`\uFEFF$global:events=@()
 function Get-Process { param($Name,$ErrorAction) if($env:BRIDGE_TEST_RUNNING -eq '1'){[pscustomobject]@{Path=$env:BRIDGE_TEST_APP}} }
-function Get-AppxPackage { param($Name) if($env:BRIDGE_TEST_PACKAGE){[pscustomobject]@{InstallLocation=$env:BRIDGE_TEST_PACKAGE}} }
+function Get-AppxPackage { param($Name) if($env:BRIDGE_TEST_PACKAGE){[pscustomobject]@{InstallLocation=$env:BRIDGE_TEST_PACKAGE;PackageFamilyName='official-fixture'}} }
+function Invoke-CommandInDesktopPackage { param($PackageFamilyName,$AppId,$Command,[Alias('Args')]$LaunchArgs,[switch]$PreventBreakaway,$ErrorAction) $global:events+=@{event='package';family=$PackageFamilyName;app=$AppId;prevent=[bool]$PreventBreakaway;arguments=$LaunchArgs};$report=($LaunchArgs -split '"')[-2];[IO.File]::WriteAllText($report,'{"ok":true}') }
 function Start-Process { param($FilePath,$WindowStyle) $global:events+=@{event='desktop';path=$FilePath;style=[string]$WindowStyle;cli=$env:CODEX_CLI_PATH}; if($env:BRIDGE_TEST_FAIL -eq 'desktop'){throw 'fixture-launch-failure'} }
 function Stop-Process { throw 'must-not-stop-an-existing-chat' }
 try { & (Join-Path $PSScriptRoot 'scripts\\StartSharedCodex.ps1') -NoOpen:($env:BRIDGE_TEST_NO_OPEN -eq '1') } catch { $global:events+=@{event='error';message=$_.Exception.Message} }
 $global:events+=@{event='final';cli=$env:CODEX_CLI_PATH}
 Write-Output ('EVENTS '+(ConvertTo-Json -InputObject $global:events -Compress -Depth 4))
 `,'utf8');
-  const p=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',driver],{windowsHide:true,env:{...process.env,BRIDGE_DATA_DIR:f.root,BRIDGE_TEST_NODE:process.execPath,BRIDGE_TEST_PACKAGE:stale?packageRoot:'',BRIDGE_TEST_APP:stale?officialApp:f.config.app,BRIDGE_TEST_RUNNING:running?'1':'0',BRIDGE_TEST_FAIL:fail,BRIDGE_TEST_NO_OPEN:noOpen?'1':'0',CODEX_CLI_PATH:initial},stdio:['ignore','pipe','pipe']});
+  const p=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',driver],{windowsHide:true,env:{...process.env,BRIDGE_DATA_DIR:f.root,BRIDGE_TEST_NODE:process.execPath,BRIDGE_TEST_PACKAGE:stale||packaged?packageRoot:'',BRIDGE_TEST_APP:stale?officialApp:f.config.app,BRIDGE_TEST_RUNNING:running?'1':'0',BRIDGE_TEST_FAIL:fail,BRIDGE_TEST_NO_OPEN:noOpen?'1':'0',CODEX_CLI_PATH:initial},stdio:['ignore','pipe','pipe']});
   let out='',err='';p.stdout.setEncoding('utf8');p.stderr.setEncoding('utf8');p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);
   const code=await new Promise((yes,no)=>{p.once('error',no);p.once('close',yes);});assert.equal(code,0,err);const line=out.split(/\r?\n/).find(v=>v.startsWith('EVENTS '));assert.ok(line,out+err);
   return {...f,events:JSON.parse(line.slice(7)),out,officialApp,officialCore};
@@ -52,6 +54,11 @@ test('Windows shared entry opens a visible desktop and console with separately s
 });
 test('Windows repeated launch shows an existing custom-path desktop without replacing its connection or stopping it',{skip:process.platform!=='win32'},async()=>{
   const {events,out}=await windowsLaunch({running:true});assert.deepEqual(events.map(e=>e.event),['desktop','console','final']);assert.equal(events[0].style,'Normal');assert.equal(events[0].cli,'original-cli');assert.match(out,/本次没有切换共享连接/);
+});
+
+test('Windows Store desktop is activated with its package identity and an explicit wrapper path, never a second unpackaged profile',{skip:process.platform!=='win32'},async()=>{
+  const f=await windowsLaunch({packaged:true});assert.deepEqual(f.events.map(e=>e.event),['package','console','final'],JSON.stringify(f.events));
+  assert.equal(f.events[0].family,'official-fixture');assert.equal(f.events[0].app,'App');assert.equal(f.events[0].prevent,true);assert.ok(f.events[0].arguments.includes('"'+f.config.wrapper+'"'));assert.equal(f.events[1].cli,'original-cli');
 });
 test('Windows launch failure restores the environment and console failures remain visible',{skip:process.platform!=='win32'},async()=>{
   const failed=await windowsLaunch({fail:'desktop'});assert.deepEqual(failed.events.map(e=>e.event),['desktop','error','final']);assert.equal(failed.events.at(-1).cli,'original-cli');assert.match(failed.events[1].message,/fixture-launch-failure/);

@@ -20,5 +20,11 @@ for(const platform of ['edge-adapter','safari-adapter'])test(platform+': concurr
     native.scan=async options=>{const scan=await originalScan(options);if(++scans===2)controller.abort(new Error('cancel-before-enter'));return scan;};
     await assert.rejects(operationContext.run({signal:controller.signal},()=>native.send(b,'取消尚未发送的草稿',{plainText:true})),/cancel-before-enter/);native.scan=originalScan;
     assert.equal((await page.locator('[contenteditable=true]').innerText()).trim(),'');assert.equal((await page.evaluate(()=>window.actions)).filter(a=>a.startsWith('send:')).length,1);
+    const body='恢复超时自动草稿',delivery={previousDraft:{body,text:body,quoteId:'',created:Date.now()-20000,state:'prepared',recoveries:0},recordDraft:value=>{assert.equal(value.body,body);},markSubmitted:()=>{delivery.marked=true;}};
+    await page.locator('[contenteditable=true]').fill(' '+body);
+    await operationContext.run({delivery},()=>native.send(b,body,{plainText:true}));assert.equal(delivery.draftRecoveries,1);assert.equal(delivery.marked,true);
+    assert.equal((await page.evaluate(()=>window.actions)).filter(a=>a.startsWith('send:')).length,2);
+    await page.locator('[contenteditable=true]').fill('用户自己的草稿');
+    await assert.rejects(operationContext.run({delivery},()=>native.send(b,body,{plainText:true})),/草稿/);assert.equal(await page.locator('[contenteditable=true]').innerText(),'用户自己的草稿');
   }finally{await browser.close();}
 });
