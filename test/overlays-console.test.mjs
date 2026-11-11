@@ -49,7 +49,13 @@ test('both consoles cancel decisions safely and require a second explicit consen
     await page.waitForFunction(()=>!document.querySelector('[data-reply-action="resend"]').disabled);
     assert.deepEqual(calls.at(-1),{kind:'task',id:task.id,confirmed:true,confirmUnreceived:true});assert.equal(calls.length,3);
     for(const width of [320,390]){
-      await page.setViewportSize({width,height:844});await resend.click();await page.locator('#actionDialog[open]').waitFor();
+      await page.setViewportSize({width,height:844});await cancel.click();await page.locator('#actionDialog[open]').waitFor();
+      const localBox=await page.locator('#actionDialog').boundingBox();
+      assert.equal(await page.locator('#actionDialog').getAttribute('aria-modal'),'false');
+      assert.ok(localBox.x>=0&&localBox.y>=0&&localBox.width<=width&&localBox.y+localBox.height<=844);
+      if(width===390)await page.screenshot({path:join(root,'local-mobile-'+layout+'.png')});
+      await page.keyboard.press('Escape');await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');
+      await resend.click();await page.locator('#actionDialog[open]').waitFor();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
       const box=await page.locator('#actionDialog').boundingBox();assert.ok(box.x>=0&&box.width<=width);
       await page.keyboard.press('Escape');await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');
@@ -111,4 +117,74 @@ test('permanent decisions require acknowledgement and in-flight deletion cannot 
     await page.evaluate(()=>document.querySelector('#confirmDelete').click());assert.equal(submissions,1);
     finish();await page.locator('#deleteDialog').waitFor({state:'hidden'});await page.close();
   }finally{finish();await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
+});
+
+test('local decisions use the clicked source without locking background drafts or accepting stale controls',async t=>{
+  const {server,state}=createPreviewServer();server.listen(0,'127.0.0.1');await once(server,'listening');
+  const browser=await launchTestBrowser(t);if(!browser){server.close();return;}
+  state.work.find(w=>w.id==='demo-task-26').deliveryControls={canCancel:true,canResend:true};
+  try{for(const layout of ['modern','classic']){
+    const page=await browser.newPage({viewport:{width:1280,height:900},reducedMotion:'reduce'}),calls=[],errors=[];
+    page.on('pageerror',e=>errors.push(e.message));
+    await page.route(/\/api\/outbox\/(cancel|resend)-replies$/,route=>{calls.push(route.request().postDataJSON());return route.fulfill({json:{cancelled:1}});});
+    await page.goto('http://127.0.0.1:'+server.address().port+(layout==='classic'?'/classic.html?ui=classic':'/?ui=modern#workbench'));
+    const cancel=page.locator('#taskList [data-reply-id="demo-task-26"][data-reply-action="cancel"]');await cancel.waitFor();
+    await cancel.evaluate(button=>{const input=document.createElement('input');input.id='popupBackgroundDraft';input.placeholder='输入草稿';button.after(input);});
+    const draft=page.locator('#popupBackgroundDraft');await cancel.scrollIntoViewIfNeeded();await draft.focus();
+    // Reproduce browsers where a pointer click leaves focus in the old field.
+    await cancel.evaluate(button=>button.click());await page.locator('#actionDialog[open]').waitFor();
+    assert.deepEqual(await page.locator('#actionDialog').evaluate(e=>({popover:e.matches(':popover-open'),modal:e.matches(':modal'),aria:e.getAttribute('aria-modal')})),{popover:true,modal:false,aria:'false'});
+    const source=await cancel.boundingBox(),panel=await page.locator('#actionDialog').boundingBox();
+    assert.ok(Math.min(Math.abs(panel.y-source.y-source.height),Math.abs(panel.y+panel.height-source.y))<=12,'confirmation follows the actual button');
+    await page.keyboard.press('Escape');await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');
+    assert.equal(await cancel.evaluate(e=>e===document.activeElement),true,'cancel returns to the clicked source');
+    assert.equal(await page.locator('#actionDialog').evaluate(e=>e.matches(':popover-open')),false);
+    await cancel.evaluate(button=>button.click());await page.locator('#actionDialog[open]').waitFor();
+    await draft.click();await draft.fill('保留输入草稿');
+    await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');
+    assert.equal(await draft.evaluate(e=>e===document.activeElement),true);assert.equal(await draft.inputValue(),'保留输入草稿');
+    await cancel.click();await page.locator('#actionDialog[open]').waitFor();
+    await cancel.evaluate(button=>{button.disabled=true;});
+    await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');
+    await cancel.evaluate(button=>{button.disabled=false;});
+    await cancel.click();await page.locator('#actionDialog[open]').waitFor();
+    await cancel.evaluate(button=>{button.dataset.replyId='different-task';});
+    await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');
+    const resend=page.locator('#taskList [data-reply-id="demo-task-26"][data-reply-action="resend"]');
+    await resend.click();await page.locator('#actionDialog[open]').waitFor();
+    assert.equal(await page.locator('#actionDialog').evaluate(e=>e.matches(':modal')),true);
+    assert.equal(await page.locator('#actionDialog').getAttribute('popover'),null);
+    await resend.evaluate(button=>button.remove());
+    await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');
+    assert.deepEqual(calls,[]);assert.deepEqual(errors,[]);await page.close();
+  }}finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
+});
+
+test('local decisions remain interactive inside a modal and closing the parent cancels the child',async t=>{
+  const {server}=createPreviewServer();server.listen(0,'127.0.0.1');await once(server,'listening');
+  const browser=await launchTestBrowser(t);if(!browser){server.close();return;}
+  try{for(const layout of ['modern','classic']){
+    const page=await browser.newPage({viewport:{width:390,height:844},reducedMotion:'reduce'});
+    await page.goto('http://127.0.0.1:'+server.address().port+(layout==='classic'?'/classic.html?ui=classic':'/?ui=modern#workbench'));
+    await page.locator('#taskList [data-operation]').first().waitFor();
+    await page.evaluate(async()=>{
+      const {configureDialog,confirmAction}=await import('/dom.js');
+      const parent=document.createElement('dialog');parent.id='modalProbe';parent.innerHTML='<button id="nestedSource">核实本条记录</button>';
+      document.body.append(parent);configureDialog(parent);parent.showModal();
+      window.nestedDecision=null;confirmAction({anchor:document.querySelector('#nestedSource'),title:'记录人工确认？',message:'仅用于独立界面验收。',confirmLabel:'保存确认'}).then(value=>{window.nestedDecision=value;});
+    });
+    await page.locator('#actionDialog[open]').waitFor();
+    assert.equal(await page.locator('#actionDialog').evaluate(e=>e.parentElement.id),'modalProbe');
+    await page.locator('#confirmAction').click();await page.waitForFunction(()=>window.nestedDecision===true);
+    assert.equal(await page.locator('#modalProbe').evaluate(e=>e.open),true);
+    await page.evaluate(async()=>{
+      const {confirmAction}=await import('/dom.js');window.nestedDecision=null;
+      confirmAction({anchor:document.querySelector('#nestedSource'),title:'第二次确认？',message:'关闭来源即取消。',confirmLabel:'保存确认'}).then(value=>{window.nestedDecision=value;});
+    });
+    await page.locator('#actionDialog[open]').waitFor();await page.evaluate(()=>document.querySelector('#modalProbe').close());
+    await page.waitForFunction(()=>window.nestedDecision===false);
+    assert.equal(await page.locator('#actionDialog').evaluate(e=>e.open||e.matches(':popover-open')),false);
+    assert.equal(await page.locator('#actionDialog').evaluate(e=>e.parentElement===document.body),true);
+    await page.close();
+  }}finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
 });

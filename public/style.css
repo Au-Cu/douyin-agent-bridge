@@ -118,7 +118,7 @@
 #visualSheets img{display:block;width:100%;height:auto;margin:14px 0;border-radius:8px}
 #actionDialog.console-dialog{width:calc(100% - 32px);max-width:500px;max-height:calc(100dvh - 32px);padding:26px;border-radius:14px}
 #actionDialog.console-dialog[data-overlay=local]{position:fixed;inset:auto;margin:0;width:min(380px,calc(100% - 32px));padding:20px;border-radius:12px}
-#actionDialog[data-overlay=local]::backdrop{background:transparent}
+#actionDialog[data-overlay=local]::backdrop{background:transparent;pointer-events:none}
 .dialog-category{font-size:12px;font-weight:600;color:var(--muted,#5d7065);margin:0 0 8px;letter-spacing:.04em}
 #actionHeading{font-size:21px;margin:0 0 12px;line-height:1.5}
 .dialog-context{padding:9px 12px;background:var(--soft,#f5f7f4);border-radius:8px;font-size:13px;color:var(--muted,#5d7065)}
@@ -132,7 +132,8 @@
 #actionDialog .delete-check{align-items:flex-start}
 .sync-issue{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 18px;margin:0 0 20px;border:1px solid var(--line,#dce4d9);border-left:3px solid var(--warn,#995136);background:var(--warn-bg,#fff0e8);color:var(--warn,#995136);border-radius:9px;overflow-wrap:anywhere}
 .sync-issue span{min-width:0}.sync-issue button{flex:none}
-#notice{inset:auto 20px 20px auto;transform:none;width:min(480px,calc(100% - 40px));max-height:45dvh}
+#notice{inset:18px auto auto 50%;transform:translateX(-50%);width:min(560px,calc(100% - 36px));max-height:45dvh}
+.notice-content{flex:1;min-width:0}#noticeText{display:block}#noticeActions{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}#noticeActions[hidden]{display:none}
 @media(max-width:600px){
   .console-dialog[data-overlay=reader],#visualDialog.console-dialog[data-overlay=reader]{width:100%;max-width:100%;padding:18px;border-radius:0}
   .console-dialog[data-overlay=reader] .section-title{top:-18px}
@@ -140,5 +141,57 @@
   #actionDialog.console-dialog[data-overlay=local]{inset:auto 12px 12px 12px!important;width:auto;max-width:none}
   .dialog-actions button{flex:1;min-width:0}
   .sync-issue{align-items:flex-start;padding:12px;gap:10px}
-  #notice{inset:auto 12px 12px auto;width:calc(100% - 24px)}
+  #notice{inset:12px auto auto 50%;width:calc(100% - 24px)}
 }
+
+/* Settings layout: stable label/control columns, grouped by save scope. */
+.settings-section{margin-top:22px;min-width:0}
+.settings-section+.settings-section{margin-top:30px;padding-top:24px;border-top:1px solid var(--line,#dce1dc)}
+.settings-section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px 18px;flex-wrap:wrap;margin:0 0 8px}
+.settings-section-heading h3,.settings-section-heading h4{font-size:15px;margin:0;color:var(--text,#20372d);line-height:1.6}
+.save-scope{font-size:12px;color:var(--muted,#64746c);line-height:1.6}
+.settings-list{display:grid;grid-template-columns:minmax(0,1fr);min-width:0}
+.settings-list>.setting-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(190px,40%);align-items:center;gap:10px 24px;min-height:60px;margin:0;padding:12px 0;border-bottom:1px solid var(--line,#e4e7e1);font-size:13px;min-width:0}
+.settings-list>.setting-row:last-child{border-bottom:0}
+.setting-label{min-width:0;color:var(--text,#33473b);font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+.setting-row>select,.setting-row>input:not([type=checkbox]),.setting-control{width:100%;min-width:0;margin:0;justify-self:end}
+.setting-row>input[type=checkbox]{justify-self:end;margin:0;width:18px;height:18px;accent-color:var(--accent,#184f3c);cursor:pointer}
+.setting-row>button{justify-self:end;min-width:110px}
+.setting-duration{display:grid;grid-template-columns:minmax(0,1fr) minmax(70px,.65fr);gap:8px;align-items:center}
+.setting-duration input,.setting-duration select{width:100%;min-width:0}
+.settings-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:10px 14px;margin-top:16px}
+.settings-actions>.hint,.settings-actions>.panel-link{margin:0 auto 0 0;min-width:0}
+.settings-actions>button{flex:none}
+.settings-status{margin:10px 0 0;font-size:12px;overflow-wrap:anywhere}
+.settings-explanation{margin:10px 0 16px;color:var(--muted,#64746c);font-size:12px;line-height:1.8}
+.settings-explanation>summary{cursor:pointer}
+.settings-explanation p{margin:8px 0;overflow-wrap:anywhere}
+.settings-danger{margin-top:32px;padding-top:24px;border-top:1px solid var(--line,#dce1dc)}
+.settings-danger .settings-section-heading h3,.settings-danger .settings-section-heading h4{color:var(--warn,#995136)}
+.settings-danger>.hint{margin:10px 0}
+.settings-danger .settings-actions>button{color:var(--warn,#995136);border-color:var(--line,#dce1dc)}
+.group-settings .settings-section:first-child{margin-top:8px}
+.group-settings .group-context-status{margin:10px 0;font-size:12px}
+.group-settings .settings-actions{margin-bottom:4px}
+.stacked-form.target-add{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:20px;max-width:none}
+.stacked-form>label{display:grid;gap:7px;color:var(--muted,#64746c);font-size:13px;min-width:0}
+.stacked-form #threadSelect,.stacked-form #targetAlias{width:100%;min-width:0;flex:none}
+.stacked-form .settings-actions{margin-top:0}
+.form-error{margin:0;color:var(--warn,#995136);font-size:13px;line-height:1.8;overflow-wrap:anywhere}
+.appearance-fields.settings-list{max-width:none;gap:0;margin-top:12px}
+.appearance-fields.settings-list>div.setting-row{display:grid}
+.appearance-fields .appearance-toggle{width:100%;justify-self:end}
+.ai-chat-item>.settings-section-heading{margin-top:18px}
+html[data-layout=classic] .settings-section-heading h3,html[data-layout=classic] .settings-section-heading h4{font-size:14px}
+@media(max-width:720px){
+  .settings-list>.setting-row{grid-template-columns:minmax(0,1fr);gap:8px;min-height:0;padding:14px 0}
+  .setting-row>select,.setting-row>input:not([type=checkbox]),.setting-control{justify-self:stretch}
+  .setting-row>input[type=checkbox]{justify-self:start}
+  .setting-row>button{justify-self:start}
+  .settings-section-heading{align-items:flex-start;gap:4px 10px}
+  .settings-section+.settings-section,.settings-danger{margin-top:26px;padding-top:20px}
+  .settings-actions{justify-content:flex-start;gap:10px}
+  .settings-actions>.hint,.settings-actions>.panel-link{flex-basis:100%}
+}
+
+@media(max-width:720px){.settings-list>.setting-row:has(>input[type=checkbox]){grid-template-columns:minmax(0,1fr) auto}.setting-row>input[type=checkbox]{justify-self:end}}

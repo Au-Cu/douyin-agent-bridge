@@ -98,7 +98,7 @@ export function createPreviewServer() {
       else if (path === '/api/needs/switch') { const n=state.conversations.needs.find(n=>n.id===body.id&&!n.archived);if(!n)return json({error:'需求不存在'},404);state.conversations.current=n;state.conversations.activeNeed=n.id;return json(n); }
       else if (path === '/api/needs/new') { const n={id:'demo-new-'+Date.now(),number:10+state.conversations.needs.length,title:body.title||'新的演示需求',summary:'验收预览中新建的需求。未创建真实助手聊天。',seq:1,contextTokens:0};state.conversations.needs.unshift(n);state.conversations.current=n;state.conversations.activeNeed=n.id;return json(n); }
       else if (path === '/api/preferences') Object.assign(state.config,body);
-      else if (path === '/api/chat-preferences') Object.assign(state.config,{chatModel:body.model,chatReasoningEffort:body.reasoningEffort,chatFastMode:body.fastMode,chatWebSearch:body.webSearch,chatCodeSandbox:body.codeSandbox});
+      else if (path === '/api/chat-preferences') Object.assign(state.config,{chatModel:body.model,chatReasoningEffort:body.reasoningEffort,chatFastMode:body.fastMode,chatWebSearch:body.webSearch,chatCodeSandbox:body.codeSandbox,chatContextBudget:body.contextBudget});
       else if (path === '/api/codex/login') return json({url:'https://auth.openai.com/',preview:true});
       else if (path === '/api/douyin/mode') {
         const previous=state.config.douyinMode||(state.config.owner?(state.config.owner.selfChat?'self':'assistant'):'');
