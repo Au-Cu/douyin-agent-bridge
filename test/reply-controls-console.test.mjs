@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {once} from 'node:events';
-import {createPreviewServer} from '../scripts/ui-preview.mjs';import {launchTestBrowser} from './browser.mjs';
+import {createPreviewServer} from '../scripts/ui-preview.mjs';import {launchTestBrowser,answerConfirmation} from './browser.mjs';
 
 test('both consoles retry/cancel exact stored reply groups; chat read errors release the button and controls fit mobile',async t=>{
   const {server,state}=createPreviewServer();server.listen(0,'127.0.0.1');await once(server,'listening');
@@ -17,14 +17,14 @@ test('both consoles retry/cancel exact stored reply groups; chat read errors rel
     });
     const address='http://127.0.0.1:'+server.address().port,taskPath=layout==='classic'?'/classic.html?ui=classic':'/#workbench';
     await page.goto(address+taskPath);const cancel=page.locator('#taskList [data-reply-id="demo-task-26"][data-reply-action="cancel"]');await cancel.waitFor();
-    const count=calls.length;page.once('dialog',d=>d.dismiss());await cancel.click();assert.equal(calls.length,count);
-    page.once('dialog',d=>d.accept());await cancel.click();await cancel.waitFor({state:'hidden'});assert.deepEqual(calls.at(-1),{cancel:true,kind:'task',id:task.id,confirmed:true});
+    const count=calls.length;await answerConfirmation(page,cancel,{accept:false});assert.equal(calls.length,count);
+    await answerConfirmation(page,cancel);await cancel.waitFor({state:'hidden'});assert.deepEqual(calls.at(-1),{cancel:true,kind:'task',id:task.id,confirmed:true});
     assert.match(await page.locator('[data-operation="demo-task-26"]').innerText(),/已取消 1 段，原文已保留/);
-    page.once('dialog',d=>d.accept());await page.locator('#taskList [data-reply-id="demo-task-26"][data-reply-action="resend"]').click();await cancel.waitFor();assert.equal(calls.at(-1).cancel,false);
+    await answerConfirmation(page,page.locator('#taskList [data-reply-id="demo-task-26"][data-reply-action="resend"]'));await cancel.waitFor();assert.equal(calls.at(-1).cancel,false);
     if(layout==='modern')await page.goto(address+'/#chats/peer/demo-group');
     else if(!await page.locator('#chatsPanel').evaluate(e=>e.open))await page.locator('#chatsPanel>summary').click();
     if(layout==='classic')await page.locator('details[data-fold-key="bot-history"]>summary').click();
-    const groupCancel=page.locator('#botHistory [data-reply-id="demo-group-reply"][data-reply-action="cancel"]');await groupCancel.waitFor();page.once('dialog',d=>d.accept());await groupCancel.click();await groupCancel.waitFor({state:'hidden'});assert.deepEqual(calls.at(-1),{cancel:true,kind:'chat_reply',id:bot.id,confirmed:true});
+    const groupCancel=page.locator('#botHistory [data-reply-id="demo-group-reply"][data-reply-action="cancel"]');await groupCancel.waitFor();await answerConfirmation(page,groupCancel);await groupCancel.waitFor({state:'hidden'});assert.deepEqual(calls.at(-1),{cancel:true,kind:'chat_reply',id:bot.id,confirmed:true});
     for(const width of [320,390]){await page.setViewportSize({width,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);}
     await page.setViewportSize({width:1280,height:900});
     if(layout==='modern')await page.goto(address+'/#chats/add');

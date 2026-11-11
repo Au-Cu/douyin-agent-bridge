@@ -7,7 +7,11 @@ export function openSettingsSection(){
   if(!location.hash.startsWith('#settings/')||!section)return;
   const target=$(section);
   if(!target)return;
-  if(target.tagName==='DETAILS')target.open=true;
+  if(target.tagName==='DETAILS'){
+    target.open=true;
+    // Record navigation intent before a pending state poll can coalesce the native toggle away.
+    target.dispatchEvent(new Event('toggle'));
+  }
   target.scrollIntoView({block:'start'});
 }
 export function initViews() {

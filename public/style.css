@@ -104,3 +104,41 @@
 #setupPrompt.setup-error{border-top-color:var(--warn)}
 #setupPrompt h2{font-size:18px;margin:0}
 #setupPrompt p{margin:8px 0 14px}
+
+/* Shared interaction hierarchy. Colors inherit the selected console style. */
+.console-dialog{color:var(--text,#20372d);background:var(--surface,#fff);border-color:var(--line,#dce4d9);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;box-shadow:0 20px 70px #10251c26}
+.console-dialog h2,.console-dialog p{overflow-wrap:anywhere}
+.console-dialog .section-title{align-items:flex-start;gap:16px;margin-bottom:18px}
+.console-dialog .section-title h2{min-width:0;font-size:20px;line-height:1.5}
+.console-dialog .section-title>button{flex:none}
+.console-dialog::backdrop{background:#10251c66}
+.console-dialog[data-overlay=reader]{position:fixed;inset:0 0 0 auto;margin:0;width:min(880px,94vw);max-width:1100px;height:100dvh;max-height:100dvh;border-radius:16px 0 0 16px;padding:28px}
+#visualDialog.console-dialog[data-overlay=reader]{width:min(1100px,96vw)}
+.console-dialog[data-overlay=reader] .section-title{position:sticky;top:-28px;z-index:1;background:var(--surface,#fff);padding:18px 0;border-bottom:1px solid var(--line,#dce4d9)}
+#visualSheets img{display:block;width:100%;height:auto;margin:14px 0;border-radius:8px}
+#actionDialog.console-dialog{width:calc(100% - 32px);max-width:500px;max-height:calc(100dvh - 32px);padding:26px;border-radius:14px}
+#actionDialog.console-dialog[data-overlay=local]{position:fixed;inset:auto;margin:0;width:min(380px,calc(100% - 32px));padding:20px;border-radius:12px}
+#actionDialog[data-overlay=local]::backdrop{background:transparent}
+.dialog-category{font-size:12px;font-weight:600;color:var(--muted,#5d7065);margin:0 0 8px;letter-spacing:.04em}
+#actionHeading{font-size:21px;margin:0 0 12px;line-height:1.5}
+.dialog-context{padding:9px 12px;background:var(--soft,#f5f7f4);border-radius:8px;font-size:13px;color:var(--muted,#5d7065)}
+#actionMessage{white-space:pre-wrap;line-height:1.9;margin:16px 0 24px}
+.dialog-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.dialog-actions button{min-width:88px}
+#actionDialog[data-overlay=warning] .dialog-category,#actionDialog[data-overlay=danger] .dialog-category{color:var(--warn,#a63120)}
+.console-dialog[data-overlay=danger] .delete-record{color:#fff;background:#a63120;border-color:#a63120}
+#actionDialog[data-overlay=danger] .dialog-category{color:var(--danger,#a63120)}
+:root[data-theme=dark] #actionDialog[data-overlay=danger] .dialog-category{color:#ffb2a3}
+#actionDialog .delete-check{align-items:flex-start}
+.sync-issue{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 18px;margin:0 0 20px;border:1px solid var(--line,#dce4d9);border-left:3px solid var(--warn,#995136);background:var(--warn-bg,#fff0e8);color:var(--warn,#995136);border-radius:9px;overflow-wrap:anywhere}
+.sync-issue span{min-width:0}.sync-issue button{flex:none}
+#notice{inset:auto 20px 20px auto;transform:none;width:min(480px,calc(100% - 40px));max-height:45dvh}
+@media(max-width:600px){
+  .console-dialog[data-overlay=reader],#visualDialog.console-dialog[data-overlay=reader]{width:100%;max-width:100%;padding:18px;border-radius:0}
+  .console-dialog[data-overlay=reader] .section-title{top:-18px}
+  #actionDialog.console-dialog{padding:20px}
+  #actionDialog.console-dialog[data-overlay=local]{inset:auto 12px 12px 12px!important;width:auto;max-width:none}
+  .dialog-actions button{flex:1;min-width:0}
+  .sync-issue{align-items:flex-start;padding:12px;gap:10px}
+  #notice{inset:auto 12px 12px auto;width:calc(100% - 24px)}
+}
