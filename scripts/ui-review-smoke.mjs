@@ -133,7 +133,7 @@ try {
     await page.locator('#setupPromptText strong').filter({hasText:'助手账号'}).waitFor();
     await page.locator('#openBrowser').click();
     Object.assign(state.runtime,{browserLoggedIn:true,browser:'select_chat',loginCompletedAt:Date.now()});
-    await page.locator('#setupPromptTitle').filter({hasText:'抖音登录成功'}).waitFor();
+    await page.locator('#noticeText').filter({hasText:'抖音登录成功'}).waitFor();
     assert.equal(await page.locator('#openBrowser').isVisible(),false);
     state.runtime.asrReady=true;
     await page.getByRole('link',{name:'前往添加会话'}).click();
@@ -337,15 +337,15 @@ try {
       for(const width of [320,1440]){
         await page.setViewportSize({width,height:844});await page.locator('#backupNow').scrollIntoViewIfNeeded();const before=await page.evaluate(()=>scrollY);await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'测试报错'}).waitFor();
         const state=await page.evaluate(()=>{const n=document.querySelector('#notice'),r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:innerWidth,height:innerHeight,scroll:scrollY,documentWidth:document.documentElement.scrollWidth,focused:n.contains(document.activeElement),role:n.getAttribute('role')};});
-        const inset=width<=600?12:20;assert.ok(state.top>=0&&Math.abs(state.bottom-(state.height-inset))<2&&state.left>=0&&Math.abs(state.right-(state.width-inset))<2);assert.ok(state.documentWidth<=state.width);assert.ok(Math.abs(state.scroll-before)<3);assert.equal(state.focused,false);assert.equal(state.role,'alert');
+        const inset=width<=600?12:18;assert.ok(Math.abs(state.top-inset)<2&&state.left>=0&&Math.abs((state.left+state.right)/2-state.width/2)<2);assert.ok(state.documentWidth<=state.width);assert.ok(Math.abs(state.scroll-before)<3);assert.equal(state.focused,false);assert.equal(state.role,'alert');
         if(width===320)await page.screenshot({path:join(root,'floating-error-'+layout+'.png')});
         await page.locator('#closeNotice').click();assert.equal(await page.locator('#notice').isVisible(),false);
       }
     }await page.unroute('**/api/storage/backup');
   });
-  await check('errors stay until dismissed; routine success expires without moving focus or scrolling',async()=>{
+  await check('top-center error and success notices expire after six seconds without moving focus or scrolling',async()=>{
     await page.route('**/api/storage/backup',route=>route.fulfill({status:400,json:{error:'持续错误提示测试'}}));
-    await page.clock.install();await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'持续错误提示测试'}).waitFor();await page.mouse.move(0,0);await page.clock.fastForward(10100);assert.equal(await page.locator('#notice').isVisible(),true);await page.locator('#closeNotice').click();await page.unroute('**/api/storage/backup');
+    await page.clock.install();await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'持续错误提示测试'}).waitFor();await page.mouse.move(0,0);await page.clock.fastForward(6100);assert.equal(await page.locator('#notice').isVisible(),false);await page.unroute('**/api/storage/backup');
     await page.route('**/api/storage/backup',route=>route.fulfill({json:{ok:true}}));await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'状态快照'}).waitFor();await page.mouse.move(0,0);await page.clock.fastForward(6100);assert.equal(await page.locator('#notice').isVisible(),false);await page.clock.resume();await page.unroute('**/api/storage/backup');
   });
   await check('receipt review lists the exact uncertain emoji and text; cancelling confirmation does not resolve or resend',async()=>{

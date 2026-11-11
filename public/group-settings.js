@@ -31,12 +31,12 @@ export function initGroupSettings({api,notice,escape,getState,refresh}){
   });
   document.addEventListener('click',async event=>{
     const button=event.target.closest('button'),key=button?.dataset.groupSessions||button?.dataset.groupReset||button?.dataset.groupPause;
-    if(button?.dataset.chatRetry){if(!await confirmAction({title:'重试尚未提交的消息？',message:'已完成的视频预处理会复用。只有确认未提交给模型的消息会恢复。',confirmLabel:'重试此消息'}))return;button.disabled=true;try{await api('ai-chats/retry',{id:button.dataset.chatRetry,confirmed:true});notice('已恢复这条确认未提交的消息，不重跑已提交的回合。');await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}return;}
+    if(button?.dataset.chatRetry){if(!await confirmAction({anchor:button,title:'重试尚未提交的消息？',message:'已完成的视频预处理会复用。只有确认未提交给模型的消息会恢复。',confirmLabel:'重试此消息'}))return;button.disabled=true;try{await api('ai-chats/retry',{id:button.dataset.chatRetry,confirmed:true});notice('已恢复这条确认未提交的消息，不重跑已提交的回合。');await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}return;}
     if(!key)return;
     const chat=getState().aiChats.chats.find(c=>c.chatKey===key);
-    if(button.dataset.groupPause){const paused=!chat.deliveryPaused;if(!paused&&!await confirmAction({title:'恢复本群新消息回复？',context:chat.displayName,message:'暂停期间的旧队列不会自动补发，仍可在核实与处理中查看。',confirmLabel:'恢复新消息回复'}))return;button.disabled=true;try{await api('ai-chats/pause-delivery',{peer:key,paused});await refresh();notice(paused?'已暂停本群自动回复，保留旧记录；其他聊天继续运行。':'已恢复本群新消息回复，旧积压不会自动补发。');}catch(e){notice(e.message,true);}finally{button.disabled=false;}return;}
+    if(button.dataset.groupPause){const paused=!chat.deliveryPaused;if(!paused&&!await confirmAction({anchor:button,title:'恢复本群新消息回复？',context:chat.displayName,message:'暂停期间的旧队列不会自动补发，仍可在核实与处理中查看。',confirmLabel:'恢复新消息回复'}))return;button.disabled=true;try{await api('ai-chats/pause-delivery',{peer:key,paused});await refresh();notice(paused?'已暂停本群自动回复，保留旧记录；其他聊天继续运行。':'已恢复本群新消息回复，旧积压不会自动补发。');}catch(e){notice(e.message,true);}finally{button.disabled=false;}return;}
     if(button.dataset.groupSessions){await openSessions(key,button.dataset.sessionId||'');return;}
-    const context=chat?.sessions,stopPending=!!(context?.busy||context?.pending||context?.current?.state==='uncertain');if(!await confirmAction({title:stopPending?'停止旧回复并清空上下文？':'清空本群上下文？',context:chat.displayName,message:stopPending?'将中断本群旧任务，停止待发回复，切换全新空白会话。状态不明的执行和回执保留在旧记录里，不会标成成功或自动重发；原生归档待核实后补做。':'将建立全新的空白会话，不转接旧摘要；旧会话会自动归档，之后仍可查看。',confirmLabel:stopPending?'停止并清空':'建立空白会话',kind:'warning'}))return;
+    const context=chat?.sessions,stopPending=!!(context?.busy||context?.pending||context?.current?.state==='uncertain');if(!await confirmAction({anchor:button,title:stopPending?'停止旧回复并清空上下文？':'清空本群上下文？',context:chat.displayName,message:stopPending?'将中断本群旧任务，停止待发回复，切换全新空白会话。状态不明的执行和回执保留在旧记录里，不会标成成功或自动重发；原生归档待核实后补做。':'将建立全新的空白会话，不转接旧摘要；旧会话会自动归档，之后仍可查看。',confirmLabel:stopPending?'停止并清空':'建立空白会话',kind:'warning'}))return;
     const latest=getState()?.aiChats?.chats.find(c=>c.chatKey===key),latestContext=latest?.sessions;
     if(!latest||latest.mode!=='chat'||latestContext?.current?.id!==context?.current?.id||!!(latestContext?.busy||latestContext?.pending||latestContext?.current?.state==='uncertain')!==stopPending){notice('群聊会话状态已变化，请重新确认后再清空。',true);return;}
     button.disabled=true;try{await api('chat-sessions/reset',{peer:key,confirmed:true,stopPending});notice('已切换到空白群聊会话。旧会话的归档结果可在“会话与归档”查看。');await refresh();}catch(e){notice(e.message,true);}finally{button.disabled=false;}
@@ -50,7 +50,7 @@ export function initGroupSettings({api,notice,escape,getState,refresh}){
   for(const id of ['retentionEnabled','retentionAge','retentionUnit'])$(id).addEventListener('change',()=>{retentionDirty=true;$('retentionAge').max=$('retentionUnit').value==='days'?'3650':'87600';});
   $('saveRetention').onclick=async()=>{
     const enabled=$('retentionEnabled').checked,hours=Number($('retentionAge').value)*($('retentionUnit').value==='days'?24:1),old=getState()?.retention?.policy;
-    if(enabled&&(!old?.enabled||hours<old.hours)&&!await confirmAction({title:'启用归档到期永久清理？',context:'归档后保留 '+hours+' 小时',message:'已归档且超过保留时间的桥接记录和专属缓存将被删除，不能恢复。仍在执行、送达或原生归档尚未核实的记录会保留。原生会话和备份不删除。',confirmLabel:'启用永久清理',kind:'danger',acknowledge:'我理解到期清理会永久删除符合条件的桥接记录与缓存'}))return;
+    if(enabled&&(!old?.enabled||hours<old.hours)&&!await confirmAction({anchor:$('saveRetention'),title:'启用归档到期永久清理？',context:'归档后保留 '+hours+' 小时',message:'已归档且超过保留时间的桥接记录和专属缓存将被删除，不能恢复。仍在执行、送达或原生归档尚未核实的记录会保留。原生会话和备份不删除。',confirmLabel:'启用永久清理',kind:'danger',acknowledge:'我理解到期清理会永久删除符合条件的桥接记录与缓存'}))return;
     $('saveRetention').disabled=true;try{await api('archive/retention',{enabled,hours});retentionDirty=false;notice(enabled?'归档保留策略已保存。程序每分钟检查一次，到期且通过安全检查的记录会清理。':'自动清理已关闭，归档记录继续保留。');await refresh();}
     catch(e){notice(e.message,true);}finally{$('saveRetention').disabled=false;}
   };

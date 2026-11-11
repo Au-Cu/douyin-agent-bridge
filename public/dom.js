@@ -87,7 +87,7 @@ export function configureDialog(dialog,{kind='workspace',dismissible=true}={}){
   return dialog;
 }
 
-export function confirmAction({title,message,confirmLabel,context,kind='confirm',acknowledge=''}){
+export function confirmAction({title,message,confirmLabel,context,kind='confirm',acknowledge='',anchor=document.activeElement}){
   // Do not queue a decision for an action the user can no longer see.
   if(confirmation)return Promise.resolve(false);
   let dialog=document.getElementById('actionDialog');
@@ -100,11 +100,21 @@ export function confirmAction({title,message,confirmLabel,context,kind='confirm'
     dialog.querySelector('#confirmAction').addEventListener('click',()=>dialog.close('confirm'));
     dialog.querySelector('#actionAcknowledge').addEventListener('change',event=>{dialog.querySelector('#confirmAction').disabled=!event.target.checked;});
   }
-  const $=id=>dialog.querySelector('#'+id),trigger=document.activeElement,parent=trigger?.closest('dialog'),route=location.hash;
+  // Safari and touch clicks need not focus the clicked button. Keep the actual
+  // action source, rather than anchoring a decision to whichever field had focus.
+  const $=id=>dialog.querySelector('#'+id),previousFocus=document.activeElement,trigger=anchor?.matches?.('button,a,input,select,[tabindex]')?anchor:null,parent=trigger?.closest('dialog'),route=location.hash;
+  const source=trigger?JSON.stringify(trigger.dataset):'',disabled=trigger?.disabled;
+  const validSource=()=>location.hash===route&&(!parent||parent.open)&&(!trigger||trigger.isConnected&&trigger.getClientRects().length>0&&JSON.stringify(trigger.dataset)===source&&(disabled||!trigger.disabled));
+  if(!validSource())return Promise.resolve(false);
   const record=trigger?.closest('.work-card,.delivery-review-row,.item');
   context??=[record?.querySelector('.work-kicker')?.textContent,record?.querySelector('strong')?.textContent].filter(Boolean).join(' · ');
-  const local=kind==='confirm'&&trigger?.isConnected&&trigger.getClientRects().length>0;
+  const local=kind==='confirm'&&!!trigger&&typeof dialog.showPopover==='function';
+  // A nonmodal popover must remain inside its source modal's subtree to avoid
+  // inheriting the background's inert state.
+  (parent||document.body).append(dialog);
   dialog.dataset.overlay=local?'local':kind;dialog.setAttribute('role',kind==='confirm'?'dialog':'alertdialog');
+  dialog.setAttribute('aria-modal',String(!local));
+  if(local)dialog.setAttribute('popover','auto');else dialog.removeAttribute('popover');
   dialog.style.removeProperty('left');dialog.style.removeProperty('top');
   $('actionCategory').textContent=kind==='danger'?'永久清理':kind==='warning'?'高影响操作':'操作确认';
   $('actionHeading').textContent=title;$('actionContext').textContent=context;$('actionContext').hidden=!context;
@@ -114,24 +124,38 @@ export function confirmAction({title,message,confirmLabel,context,kind='confirm'
   $('actionAcknowledge').checked=false;$('confirmAction').disabled=!!acknowledge;
   dialog.returnValue='cancel';dialog.dataset.decision='pending';
   return new Promise(resolve=>{
+    let restoreFocus=true;
     const cancel=()=>{if(dialog.open)dialog.close('cancel');};
+    const lightDismiss=event=>{if(event.newState==='closed')cancel();};
+    const leaveFocus=event=>{if(local&&dialog.open&&!dialog.contains(event.target)){restoreFocus=false;cancel();}};
     const place=()=>{
+      if(!validSource()){cancel();return;}
       if(!local||!dialog.open)return;
-      if(!trigger.isConnected){cancel();return;}
       const anchor=trigger.getBoundingClientRect(),panel=dialog.getBoundingClientRect(),gap=10,margin=16;
+      if(anchor.bottom<=0||anchor.top>=innerHeight||anchor.right<=0||anchor.left>=innerWidth){cancel();return;}
       const below=anchor.bottom+gap,above=anchor.top-panel.height-gap;
       dialog.style.left=Math.max(margin,Math.min(anchor.left,innerWidth-panel.width-margin))+'px';
       dialog.style.top=Math.max(margin,Math.min(below+panel.height<=innerHeight-margin?below:above,innerHeight-panel.height-margin))+'px';
     };
+    const observer=new MutationObserver(place);
     const closed=()=>{
-      const accepted=dialog.returnValue==='confirm'&&location.hash===route&&(!parent||parent.open);confirmation=null;dialog.dataset.decision=accepted?'confirm':'cancel';
+      const accepted=dialog.returnValue==='confirm'&&validSource();confirmation=null;dialog.dataset.decision=accepted?'confirm':'cancel';
+      observer.disconnect();dialog.removeEventListener('beforetoggle',lightDismiss);document.removeEventListener('focusin',leaveFocus);
       window.removeEventListener('hashchange',cancel);parent?.removeEventListener('close',cancel);
       window.removeEventListener('resize',place);document.removeEventListener('scroll',place,true);
-      if(trigger?.isConnected&&!trigger.disabled)trigger.focus({preventScroll:true});
+      if(local&&dialog.matches(':popover-open'))dialog.hidePopover();
+      if(dialog.parentElement!==document.body)document.body.append(dialog);
+      // An outside click or Tab can continue to another field. Do not steal its
+      // focus back after dismissing this nonmodal decision.
+      if(restoreFocus&&(!local||dialog.contains(document.activeElement)||[trigger,previousFocus,document.body].includes(document.activeElement))&&validSource()&&trigger&&!trigger.disabled)trigger.focus({preventScroll:true});
       resolve(accepted);
     };
     confirmation={cancel};
     dialog.addEventListener('close',closed,{once:true});window.addEventListener('hashchange',cancel);parent?.addEventListener('close',cancel,{once:true});
-    dialog.showModal();place();if(local){window.addEventListener('resize',place);document.addEventListener('scroll',place,true);}$('cancelAction').focus({preventScroll:true});
+    if(local){dialog.addEventListener('beforetoggle',lightDismiss);dialog.show();dialog.showPopover();}else dialog.showModal();
+    place();$('cancelAction').focus({preventScroll:true});
+    if(local){window.addEventListener('resize',place);document.addEventListener('scroll',place,true);document.addEventListener('focusin',leaveFocus);}
+    observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden']});
+    if(trigger)observer.observe(trigger,{attributes:true});
   });
 }

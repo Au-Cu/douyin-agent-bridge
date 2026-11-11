@@ -354,6 +354,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(path==='/api/approval'){(taskCodex.approvals.has(String(body.id))?taskCodex:codex).approve(String(body.id),body.allow===true);return json(res,{ok:true});}
       if(path==='/api/outbox/reconcile')return json(res,await deliveryReview.reconcile(body.id));
+      if(path==='/api/operations/reconcile'){if(body.confirmed!==true)throw new Error('请确认只读取原回合并恢复最终结果');return json(res,await engine.reconcileOperation(body.id));}
       if(path==='/api/outbox/cancel-replies'){
         if(body.confirmed!==true)throw new Error('请确认取消这组回复的剩余发送');
         return json(res,deliveryReview.cancelReplies(body.kind,String(body.id||'')));

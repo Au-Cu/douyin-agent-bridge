@@ -35,7 +35,7 @@
 #visualSheets img{display:block;width:100%;height:auto;margin:14px 0;border-radius:8px}
 #actionDialog.console-dialog{width:calc(100% - 32px);max-width:500px;max-height:calc(100dvh - 32px);padding:26px;border-radius:14px}
 #actionDialog.console-dialog[data-overlay=local]{position:fixed;inset:auto;margin:0;width:min(380px,calc(100% - 32px));padding:20px;border-radius:12px}
-#actionDialog[data-overlay=local]::backdrop{background:transparent}
+#actionDialog[data-overlay=local]::backdrop{background:transparent;pointer-events:none}
 .dialog-category{font-size:12px;font-weight:600;color:var(--muted,#5d7065);margin:0 0 8px;letter-spacing:.04em}
 #actionHeading{font-size:21px;margin:0 0 12px;line-height:1.5}
 .dialog-context{padding:9px 12px;background:var(--soft,#f5f7f4);border-radius:8px;font-size:13px;color:var(--muted,#5d7065)}
@@ -48,7 +48,8 @@
 #actionDialog .delete-check{align-items:flex-start}
 .sync-issue{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 18px;margin:0 0 20px;border:1px solid var(--line,#dce4d9);border-left:3px solid var(--warn,#995136);background:var(--warn-bg,#fff0e8);color:var(--warn,#995136);border-radius:9px;overflow-wrap:anywhere}
 .sync-issue span{min-width:0}.sync-issue button{flex:none}
-#notice{inset:auto 20px 20px auto;transform:none;width:min(480px,calc(100% - 40px));max-height:45dvh}
+#notice{inset:18px auto auto 50%;transform:translateX(-50%);width:min(560px,calc(100% - 36px));max-height:45dvh}
+.notice-content{flex:1;min-width:0}#noticeText{display:block}#noticeActions{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}#noticeActions[hidden]{display:none}
 @media(max-width:600px){
   .console-dialog[data-overlay=reader],#visualDialog.console-dialog[data-overlay=reader]{width:100%;max-width:100%;padding:18px;border-radius:0}
   .console-dialog[data-overlay=reader] .section-title{top:-18px}
@@ -56,5 +57,5 @@
   #actionDialog.console-dialog[data-overlay=local]{inset:auto 12px 12px 12px!important;width:auto;max-width:none}
   .dialog-actions button{flex:1;min-width:0}
   .sync-issue{align-items:flex-start;padding:12px;gap:10px}
-  #notice{inset:auto 12px 12px auto;width:calc(100% - 24px)}
+  #notice{inset:12px auto auto 50%;width:calc(100% - 24px)}
 }

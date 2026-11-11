@@ -2,6 +2,43 @@ import test from 'node:test';import assert from 'node:assert/strict';import {Eve
 import {mkdtempSync,mkdirSync} from 'node:fs';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
 import {Store} from '../src/store.mjs';import {BridgeEngine} from '../src/engine.mjs';import {Conversations} from '../src/conversations.mjs';import {DeliveryReview} from '../src/delivery-review.mjs';import {ArchivedDeletion} from '../src/deletion.mjs';
 import {Chats} from '../src/chats.mjs';
+
+test('global review exposes orphaned archived reactions with exact failed checks and manual decisions',async()=>{
+  const h=await setup();try{
+    const receipt=h.s.db.prepare("SELECT * FROM outbox WHERE kind='progress_reaction' LIMIT 1").get();
+    h.s.delivery(receipt.id,'uncertain','历史点击结果不明');h.s.mergeOutboxPayload(receipt.id,{deliveryRecheck:{at:1,verified:false,reason:'原消息不在当前可读历史中'}});
+    h.e.archives.archiveTask(h.m.id);h.s.saveConfig({owner:{...h.owner,chatKey:'another-owner'}});
+    const row=h.r.view('all','').rows.find(r=>r.id===receipt.id);assert.equal(row.number,1);assert.equal(row.lastCheck.reason,'原消息不在当前可读历史中');assert.equal(row.canResend,false);
+    h.r.startBatch();await h.r.batchWork;assert.equal(h.r.batch.verified,0);assert.equal(h.r.batch.results[0].id,receipt.id);assert.match(h.r.batch.results[0].reason,/绑定已变化/);
+    assert.throws(()=>h.r.resolve(receipt.id,'sent'),/确认/);h.r.resolve(receipt.id,'abandoned',{confirmed:true});
+    assert.equal(h.r.view('all','').rows.length,0);assert.equal(h.s.db.prepare('SELECT status FROM outbox WHERE id=?').get(receipt.id).status,'unavailable');
+  }finally{h.s.close();}
+});
+
+test('execution recovery reads only the submitted turn and restores its final answer once without replaying delivery',async()=>{
+  const h=await setup();try{
+    h.e.progress.stage(h.m.id,'生成答复','',{running:true,thread:h.n.thread,turn:'original-turn',submitted:true});h.s.messageStatus(h.m.id,'uncertain','fixture timeout');h.e.progress.finish(h.m.id,'uncertain');
+    let reads=0;h.c.request=async(method,params)=>{reads++;assert.equal(method,'thread/read');assert.equal(params.threadId,h.n.thread);return {thread:{id:h.n.thread,turns:[{id:'original-turn',status:'completed',items:[{type:'agentMessage',phase:'commentary',text:'处理中'},{type:'agentMessage',phase:'final_answer',text:'真正的最终答复'}]},{id:'newer-turn',status:'inProgress',items:[]}]}};};
+    const before=h.s.db.prepare('SELECT count(*) n FROM outbox').get().n;
+    const result=await h.e.reconcileOperation(h.m.id);assert.equal(result.recovered,true);assert.equal(reads,1);
+    const out=h.s.outboxByDedupe('result:'+h.m.id+':0');assert.match(out.body,/真正的最终答复/);assert.doesNotMatch(out.body,/处理中/);assert.equal(h.e.progress.get(h.m.id).status,'sending');
+    h.s.delivery(out.id,'uncertain');h.e.progress.finish(h.m.id,'uncertain');await h.e.reconcileOperation(h.m.id);
+    assert.equal(h.s.db.prepare('SELECT count(*) n FROM outbox').get().n,before+1);assert.equal(h.s.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id).status,'uncertain');
+    assert.equal(h.s.db.prepare('SELECT count(*) n FROM tasks').get().n,0);
+  }finally{h.s.close();}
+});
+
+test('execution recovery refuses commentary-only results, missing exact turns and archives made during the read',async()=>{
+  const h=await setup();try{
+    h.e.progress.stage(h.m.id,'生成答复','',{running:true,thread:h.n.thread,turn:'original-turn',submitted:true});h.s.messageStatus(h.m.id,'uncertain','timeout');h.e.progress.finish(h.m.id,'uncertain');
+    const before=h.s.db.prepare('SELECT count(*) n FROM outbox').get().n;
+    h.c.request=async()=>({thread:{id:h.n.thread,turns:[{id:'original-turn',status:'completed',items:[{type:'agentMessage',phase:'commentary',text:'并非最终结果'}]}]}});
+    assert.match((await h.e.reconcileOperation(h.m.id)).reason,/没有可识别/);
+    h.c.request=async()=>({thread:{id:h.n.thread,turns:[{id:'another-turn',status:'completed',text:'别的任务'}]}});assert.match((await h.e.reconcileOperation(h.m.id)).reason,/暂不可确认/);
+    h.c.request=async()=>{h.e.archives.archiveTask(h.m.id);return {thread:{id:h.n.thread,turns:[{id:'original-turn',status:'completed',text:'不可恢复'}]}};};
+    assert.match((await h.e.reconcileOperation(h.m.id)).reason,/已变化/);assert.equal(h.s.db.prepare('SELECT count(*) n FROM outbox').get().n,before);
+  }finally{h.s.close();}
+});
 import {checkWork,operationContext} from '../src/execution.mjs';
 const base=fileURLToPath(new URL('../data/test-runs/',import.meta.url));mkdirSync(base,{recursive:true});
 async function setup(){const s=new Store(mkdtempSync(join(base,'delivery-review-'))),owner={chatKey:'owner',peerUid:'owner-id',selfUid:'assistant',type:'single'};s.saveConfig({owner,autoRoute:false});const c=new EventEmitter();c.createCoordinator=async()=>randomUUID();const preferences={work:async()=>({})},conversations=new Conversations({store:s,codex:c,preferences}),scan={peer:owner,messages:[]},adapter={scanPeer:async()=>scan,send:()=>{throw Error('不得发送');},react:()=>{throw Error('不得点击表情');}},e=new BridgeEngine({store:s,codex:c,adapter,conversations,preferences,media:{}}),chats={deliveryTarget:()=>null,reconcile:()=>{}},r=new DeliveryReview({store:s,adapter,engine:e,chats}),n=await conversations.create('回执核实'),m={id:'owner:80000001',peer:'owner',platformId:'80000001',kind:'text',text:'原指令',created:Date.now()};s.incoming(m);e.progress.receive(m);e.progress.identify(m.id);e.progress.bind(m.id,n.id,n.thread);s.messageStatus(m.id,'done');return {s,c,e,r,n,m,scan,adapter,owner,delete:new ArchivedDeletion({store:s,engine:e,conversations})};}

@@ -401,7 +401,7 @@ export class BridgeEngine {
       }else{
         this.store.messageStatus(row.id,row.kind==='video'&&auth?'waiting_auth':phase==='routing'&&!auth?'waiting_route':this.progress.get(operationId)?.submitted&&e.uncertain?'uncertain':'failed',e.message);
         if(route?.needId)this.conversations.needs.complete(row.id,e.message,e.uncertain?'uncertain':'failed');
-        this.store.event(auth?'Codex 登录或额度暂不可用，进度已保留':e.message,'error');this.reply(this.failureNotice(e,{video:row.kind==='video'}));
+        this.store.event(auth?'Codex 登录或额度暂不可用，进度已保留':e.message,'error');this.reply(this.failureNotice(e,{video:row.kind==='video'}),{notification:true,payload:{executionNotice:true}});
       }
     }
     finally {release();const status=this.store.db.prepare('SELECT status FROM messages WHERE id=?').get(row.id)?.status;if(!this.interrupts.record(operationId)&&!['new','blocked'].includes(status))this.progress.finish(operationId,status==='done'?'done':status==='uncertain'?'uncertain':['waiting_auth','waiting_route'].includes(status)?'waiting':'failed');}
@@ -548,6 +548,47 @@ export class BridgeEngine {
     // project execution or result delivery depends on this model call.
     const update=(async()=>{try{const need=this.conversations.needs.get(context.needId);if(need){const message={id:'task-result:'+task.id,kind:'text',text:'已授权任务执行结果，原指令：'+task.prompt,created:Date.now()};this.conversations.needs.reserve(message,need);this.conversations.record(message.id,result.text);await this.conversations.refreshMemory(need.id);}}catch{if(!this.store.closed)this.store.event('目标任务已完成并保存回复；需求摘要暂未更新，可稍后核对','attention');}})();
     this.memoryUpdates.add(update);update.finally(()=>this.memoryUpdates.delete(update));
+  }
+  async reconcileOperation(id){
+    const db=this.store.db,op=this.progress.get(String(id));
+    if(!op||op.peer!==this.store.config.owner?.chatKey)throw new Error('请先绑定此任务所属的用户会话');
+    if(this.interrupts.record(op.id)||this.store.isArchived('task',op.id)||op.need_id&&this.store.isArchived('need',op.need_id))throw new Error('此任务已中断或归档，保留原结果，不恢复发送');
+    if(!op.thread||!op.turn||!op.submitted)throw new Error('此任务没有可核实的原回合，不会重新执行');
+    // Target dispatch already has its own exact-turn reconciler. Never mark
+    // an operation done while a target task might still be executing.
+    if(this.progress.tasks(op.id).length){await this.reconcileTasks();return {reason:this.progress.status(op.id)};}
+    if(op.status!=='uncertain')return {reason:'此任务的执行状态已更新，请刷新查看。'};
+    if(this.interrupts.scopes.get(op.id)?.users) return {reason:'原任务仍由本机处理，继续等待原结果，不重复恢复。'};
+    this.recoveringOperations??=new Set();if(this.recoveringOperations.has(op.id))return {reason:'正在核实此任务的原回合，请稍候。'};
+    this.recoveringOperations.add(op.id);
+    try{
+      const executor=this.codex.forThread?this.codex.forThread(op.thread):this.codex;
+      if(executor.ensureAuthenticated)await executor.ensureAuthenticated();
+      const observed=await nativeTurnState(executor,op.thread,op.turn);
+      if(this.stopping||this.store.closed)return {reason:'助手正在关闭，未修改原任务或发送记录。'};
+      this.progress.checks.set(op.id,{checked:Date.now(),state:observed.state,turnId:op.turn});
+      const current=this.progress.get(op.id);
+      if(!current||current.thread!==op.thread||current.turn!==op.turn||current.status!=='uncertain'||op.peer!==this.store.config.owner?.chatKey||this.interrupts.record(op.id)||this.store.isArchived('task',op.id)||op.need_id&&this.store.isArchived('need',op.need_id))return {reason:'等待期间任务或绑定已变化，未恢复结果。'};
+      if(observed.state!=='completed')return {reason:observed.state==='active'?'已核对原回合仍在运行，不会重复执行。':observed.state==='unknown'?'原回合状态暂不可确认，保留现场，不会重新执行。':'原回合已失败或中断，请打开原 Codex 聊天检查；没有重跑。'};
+      const final=observed.turn.items?.filter(i=>i.type==='agentMessage'&&i.phase==='final_answer').at(-1);
+      const text=final?.text||observed.turn.text;
+      if(!text?.trim())return {reason:'原回合已完成，但没有可识别的最终答复，保留现场；不会把中途说明当作结果。'};
+      const message=db.prepare('SELECT * FROM messages WHERE id=?').get(op.id);if(!message)return {reason:'原始请求记录缺失，保留原回合，不恢复发送。'};
+      const existing=this.store.outboxByDedupe('result:'+op.id+':0');
+      db.exec('BEGIN IMMEDIATE');try{
+        if(!existing)this.reply(text,{operationId:op.id,dedupe:'result:'+op.id,payload:{recovered:true,nativeTurnId:op.turn}});
+        // Older builds counted a timeout notice as a delivered final result.
+        // Reclassify only the exact saved failure template, keeping its body,
+        // delivery status and platform link untouched.
+        if(message.status==='uncertain'&&message.result)for(const row of db.prepare("SELECT * FROM outbox WHERE kind='text' AND json_extract(payload,'$.operationId')=?").all(op.id))if(row.body.includes('这次处理未完成：'+message.result))this.store.mergeOutboxPayload(row.id,{notification:true,executionNotice:true});
+        this.store.messageStatus(op.id,'done',text);
+        db.prepare("UPDATE operations SET ended=1,outcome='done',phase='已核实原回合完成',changed=? WHERE id=?").run(Date.now(),op.id);
+        this.store.mergeOutboxPayload((existing||this.store.outboxByDedupe('result:'+op.id+':0')).id,{executionRecovery:{at:Date.now(),thread:op.thread,turn:op.turn,method:'exact_completed_turn'}});
+        this.progress.sync(op.id);db.exec('COMMIT');
+      }catch(e){db.exec('ROLLBACK');throw e;}
+      try{this.conversations?.record(op.id,text);}catch{this.store.event('原回合结果已恢复，需求历史暂未同步','attention');}
+      return {recovered:true,reason:existing?'已核实原回合完成，保留原回复的发送状态；没有重发或重新执行。':'已核实原回合完成，最终结果已恢复到发送队列；没有重新执行任务。'};
+    }finally{this.recoveringOperations.delete(op.id);}
   }
   async reconcileTasks(){
     if(this.reconcilingTasks||this.stopping||!this.store.config.enabled)return;this.reconcilingTasks=true;
