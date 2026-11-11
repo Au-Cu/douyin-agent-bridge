@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {once} from 'node:events';
-import {createPreviewServer} from '../scripts/ui-preview.mjs';import {launchTestBrowser} from './browser.mjs';
+import {createPreviewServer} from '../scripts/ui-preview.mjs';import {launchTestBrowser,answerConfirmation} from './browser.mjs';
 test('both consoles expose isolated group history, blank reset confirmation, lightweight video and opt-in retention without poll loss',async t=>{
   const {server,state}=createPreviewServer();server.listen(0,'127.0.0.1');await once(server,'listening');const browser=await launchTestBrowser(t);if(!browser){server.close();return;}
   const sessions=[{id:'current',seq:2,harness:'codex',peer:'demo-group',thread:'native',current:true,state:'current',created:Date.now(),archived:0,archive_state:'none'},{id:'old',seq:1,harness:'dsh',peer:'demo-group',thread:'dsh:native',current:false,state:'archived',created:Date.now()-3000,archived:1,archive_state:'unsupported'}];let resets=0,policies=[],groupSaves=[];
@@ -15,10 +15,17 @@ test('both consoles expose isolated group history, blank reset confirmation, lig
     await page.locator('[data-group-video="demo-group"]').check();await page.selectOption('[data-group-video-limit="demo-group"]','60');await page.waitForFunction(()=>document.querySelector('[data-group-video-limit]').value==='60'&&!document.querySelector('[data-group-video-limit]').disabled);assert.equal(groupSaves.at(-1).videoMaxSeconds,60);
     if(layout==='modern')await page.locator('#conversationHistoryTab').click();await page.locator('[data-group-sessions="demo-group"]').click();await page.locator('[data-session-read="old"]').waitFor();assert.match(await page.locator('#chatSessionList').innerText(),/DSH ACP 不支持原生归档/);assert.equal(await page.locator('#chatSessionList a[href^="codex:"]').count(),0);await page.locator('[data-session-read="old"]').click();await page.locator('#chatSessionTranscript').filter({hasText:'完整回复第二段'}).waitFor();await page.waitForTimeout(2800);assert.equal(await page.locator('#chatSessionsDialog').evaluate(e=>e.open),true);await page.locator('#closeChatSessions').click();
     if(layout==='modern')await page.locator('#conversationSettingsTab').click();
-    const before=resets;page.once('dialog',d=>d.dismiss());await page.locator('[data-group-reset="demo-group"]').click();assert.equal(resets,before);page.once('dialog',d=>d.accept());await page.locator('[data-group-reset="demo-group"]').click();await page.waitForFunction(()=>!document.querySelector('[data-group-reset]').disabled);assert.equal(resets,before+1);
+    const before=resets;await answerConfirmation(page,page.locator('[data-group-reset="demo-group"]'),{accept:false});assert.equal(resets,before);
+    if(layout==='modern'){
+      await page.locator('[data-group-reset="demo-group"]').click();await page.locator('#actionDialog[open]').waitFor();
+      group.sessions.current={...group.sessions.current,id:'rolled-over'};await page.waitForTimeout(2700);
+      await page.locator('#confirmAction').click();await page.locator('#noticeText').filter({hasText:'会话状态已变化'}).waitFor();assert.equal(resets,before);
+      group.sessions.current={...group.sessions.current,id:'current'};await page.waitForTimeout(2700);
+    }
+    await answerConfirmation(page,page.locator('[data-group-reset="demo-group"]'));await page.waitForFunction(()=>!document.querySelector('[data-group-reset]').disabled);assert.equal(resets,before+1);
     if(layout==='modern')await page.locator('a[data-view="settings"]').click();
     if(!await page.locator('#storagePanel').evaluate(e=>e.open))await page.locator('#storagePanel>summary').click();await page.locator('#retentionEnabled').check();await page.locator('#retentionAge').fill('7');await page.locator('#retentionAge').blur();await page.waitForTimeout(2800);assert.equal(await page.locator('#retentionAge').inputValue(),'7');assert.equal(await page.locator('#retentionEnabled').isChecked(),true);
-    const policyBefore=policies.length;page.once('dialog',d=>d.dismiss());await page.locator('#saveRetention').click();assert.equal(policies.length,policyBefore);page.once('dialog',d=>d.accept());await page.locator('#saveRetention').click();await page.waitForFunction(()=>!document.querySelector('#saveRetention').disabled);assert.deepEqual(policies.at(-1),{enabled:true,hours:168});
+    const policyBefore=policies.length;await answerConfirmation(page,page.locator('#saveRetention'),{accept:false});assert.equal(policies.length,policyBefore);await answerConfirmation(page,page.locator('#saveRetention'));await page.waitForFunction(()=>!document.querySelector('#saveRetention').disabled);assert.deepEqual(policies.at(-1),{enabled:true,hours:168});
     await page.locator('#retentionEnabled').uncheck();await page.locator('#saveRetention').click();await page.waitForFunction(()=>!document.querySelector('#saveRetention').disabled);assert.equal(policies.at(-1).enabled,false);
     for(const width of [320,390]){await page.setViewportSize({width,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);}
     assert.deepEqual(errors,[]);await page.close();state.retention.policy={enabled:false,hours:720};

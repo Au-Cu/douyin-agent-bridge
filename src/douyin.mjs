@@ -369,10 +369,10 @@ export class DouyinAdapter {
       if(scan.loginRequired)return false;
       for(const frame of this.page.frames()){
         if(!/^https:\/\/(www\.)?douyin\.com\//.test(frame.url()))continue;
-        if(!await foregroundFrame(frame))continue;
-        const count=await frame.evaluate(markOwnerConversation,owner);this.lastSelectionDiagnostic=await frame.evaluate(()=>globalThis.__douyinBridgeChoiceDiagnostic||null);
+        if(!await browserRead(foregroundFrame(frame)))continue;
+        const count=await browserRead(frame.evaluate(markOwnerConversation,owner));this.lastSelectionDiagnostic=await browserRead(frame.evaluate(()=>globalThis.__douyinBridgeChoiceDiagnostic||null));
         if(count>1)throw new Error('联系人重名，需手动选择后核验账号');
-        if(count===1&&(!clicked||attempt===10)){await frame.locator('[data-bridge-owner-choice="true"]').click({timeout:3000});clicked=true;}
+        if(count===1&&(!clicked||attempt===10)){checkWork();await frame.locator('[data-bridge-owner-choice="true"]').click({timeout:3000});clicked=true;}
       }
       await new Promise(r=>setTimeout(r,500));
     }
@@ -384,11 +384,11 @@ export class DouyinAdapter {
     const scans=[];
     for(const page of candidates)for(const frame of page.frames()){
       if(!/^https:\/\/(www\.)?douyin\.com\//.test(frame.url()))continue;
-      try{if(await foregroundFrame(frame))scans.push({page,frame,value:await frame.evaluate(scanConversation)});}catch{}
+      try{if(await browserRead(foregroundFrame(frame)))scans.push({page,frame,value:await browserRead(frame.evaluate(scanConversation))});}catch(e){if(e.code==='BROWSER_READ_TIMEOUT'||workSignal()?.aborted)throw e;}
     }
     const best=scans.sort((a,b)=>Number(b.value.diagnostics.interactiveRows>0)-Number(a.value.diagnostics.interactiveRows>0)||b.value.messages.length-a.value.messages.length)[0];
     const raw=best?.value||{peer:null,messages:[],diagnostics:{pages:candidates.length},loginRequired:true};
-    const cookies=await this.context.cookies('https://www.douyin.com/'),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
+    const cookies=await browserRead(this.context.cookies('https://www.douyin.com/')),identityCookies=cookies.filter(c=>/^(?:uid_tt|uid_tt_ss|sessionid|sessionid_ss|sid_tt|sid_guard)$/.test(c.name)).map(c=>c.name+'='+c.value).sort();
     const marker=identityCookies.length?createHash('sha256').update(identityCookies.join(';')).digest('hex'):'';
     const value=bindScanIdentity(this,raw,marker);
     value.loginViaHome=!!best&&this.isLoginHome(best.page);
@@ -403,44 +403,54 @@ export class DouyinAdapter {
       let host=null;try{if(f!==this.page.mainFrame())host=await(await f.frameElement()).evaluate(e=>{const r=e.getBoundingClientRect(),top=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {visible:!!e.getClientRects().length&&r.width>0&&r.height>0,hit:top===e||e.contains(top),className:String(e.className),parentClass:String(e.parentElement?.className||'').slice(0,100)};});frames.push({main:f===this.page.mainFrame(),host,...await f.evaluate(inspectChatSurface)});}catch{}
     }return {opened:true,frames};
   }
-  async inbox(){if(!this.chatFrame)return {entries:[],rows:0};return this.chatFrame.evaluate(inspectInbox);}
+  async inbox(){if(!this.chatFrame)return {entries:[],rows:0};return browserRead(this.chatFrame.evaluate(inspectInbox));}
   async quoteSchema(){return this.chatFrame?{...await this.chatFrame.evaluate(inspectQuoteSchema),nativeDraft:await this.chatFrame.evaluate(inspectNativeMentionDraft)}:null;}
   async send(owner,text,{plainText=false,replyToMessageId='',replyToSenderUid=''}={}) {
     checkWork();
     if(this.sending)throw new Error('正在发送上一条回复');
-    this.sending=true;let submitted=false,editor,surface,body;
+    this.sending=true;let submitted=false,composed=false,initialEmpty=false,expectedDraft='',editor,surface,body;
     try {
       let scan=await this.scan();
       if(!matchesPeer(scan.peer,owner))throw new Error('请先在浏览器选回绑定的用户会话');
       surface=this.chatFrame||this.page;
-      const composer=(await surface.evaluate(inspectComposers))[0];
+      body=plainText?String(text).trim():toPlainChatText(text);
+      let composer=(await browserRead(surface.evaluate(inspectComposers)))[0];
       if(!composer)throw new Error('未找到私信输入框，抖音页面可能已改版');
+      const delivery=operationContext.getStore()?.delivery;
+      if(await recoverOwnedDraft({draft:composer,saved:delivery?.previousDraft,body,quoteId:replyToMessageId,quote:()=>browserRead(surface.evaluate(inspectQuoteDraft)),clear:async draft=>{
+        checkWork();if(!matchesPeer((await this.scan()).peer,owner))throw new Error('会话变化，未清理草稿');
+        await surface.evaluate(clearOwnedComposer,{index:draft.index,expected:draft.text});
+      }})){delivery.draftRecoveries=(delivery.previousDraft.recoveries||0)+1;composer=(await browserRead(surface.evaluate(inspectComposers)))[0];}
+      initialEmpty=!composer.text;
       editor=surface.locator('[contenteditable="true"],textarea').nth(composer.index);
       const replyToSender=replyToSenderUid||scan.messages.find(m=>m.id===replyToMessageId)?.sender||'';
-      if(!await allowComposerDraft(fn=>surface.evaluate(fn),composer.text,replyToMessageId,replyToSender))throw new Error('私信输入框有未发送的草稿，请先处理草稿');
+      if(!await allowComposerDraft(fn=>browserRead(surface.evaluate(fn)),composer.text,replyToMessageId,replyToSender))throw new Error('私信输入框有未发送的草稿，请先处理草稿');
       if(replyToMessageId)await prepareQuote({evaluate:(fn,arg)=>surface.evaluate(fn,arg),wait:ms=>new Promise(r=>setTimeout(r,ms)),verify:async()=>{checkWork();if(!matchesPeer((await this.scan()).peer,owner))throw new Error('会话已切换，停止准备引用');},openMenu:async()=>{await surface.evaluate(captureMessageMenu);await surface.locator('[data-bridge-quote-source="true"]').last().click({button:'right',timeout:3000});},choose:async token=>{checkWork();await surface.evaluate(clickQuoteAction,token);},diagnostic:v=>{this.lastQuoteDiagnostic=v;}},replyToMessageId);
       body=plainText?String(text).trim():toPlainChatText(text);
-      const prefix=(await surface.evaluate(inspectComposers))[0]?.text||'';
-      if(!await allowComposerDraft(fn=>surface.evaluate(fn),prefix,replyToMessageId,replyToSender))throw new Error('引用后出现了其他草稿，未填写回复');
+      const prefix=(await browserRead(surface.evaluate(inspectComposers)))[0]?.text||'';
+      if(!await allowComposerDraft(fn=>browserRead(surface.evaluate(fn)),prefix,replyToMessageId,replyToSender))throw new Error('引用后出现了其他草稿，未填写回复');
       const expectedBody=prefix?prefix+' '+body:body;
-      checkWork();await surface.evaluate(focusComposerEnd,{index:composer.index,expected:prefix});checkWork();await this.page.keyboard.insertText(prefix?' '+body:body);
+      expectedDraft=expectedBody;
+      delivery?.recordDraft?.({text:expectedBody,body,quoteId:replyToMessageId,state:'planned'});
+      checkWork();await surface.evaluate(focusComposerEnd,{index:composer.index,expected:prefix});checkWork();await this.page.keyboard.insertText(prefix?' '+body:body);composed=true;
+      delivery?.recordDraft?.({text:expectedBody,body,quoteId:replyToMessageId,state:'prepared'});
       scan=await this.scan();
       if(!matchesPeer(scan.peer,owner))throw new Error('会话已切换，已取消发送，请检查未发送的草稿');
-      if(replyToMessageId){const quote=await surface.evaluate(inspectQuoteDraft);if(quote.ids.length!==1||quote.ids[0]!==replyToMessageId)throw new Error('引用草稿已变化，已取消发送');}
-      if(comparableChatText((await surface.evaluate(inspectComposers))[0]?.text)!==comparableChatText(expectedBody))throw new Error('回复草稿发生变化，未发送');
+      if(replyToMessageId){const quote=await browserRead(surface.evaluate(inspectQuoteDraft));if(quote.ids.length!==1||quote.ids[0]!==replyToMessageId)throw new Error('引用草稿已变化，已取消发送');}
+      if(comparableChatText((await browserRead(surface.evaluate(inspectComposers)))[0]?.text)!==comparableChatText(expectedBody))throw new Error('回复草稿发生变化，未发送');
       const before=new Set(scan.messages.map(m=>m.id));
-      checkWork();if(operationContext.getStore()?.delivery)operationContext.getStore().delivery.submitted=true;
+      checkWork();delivery?.markSubmitted?.();if(delivery)delivery.submitted=true;
       submitted=true;
       await this.page.keyboard.press('Enter');
       for(let i=0;i<15;i++) {
-        await new Promise(r=>setTimeout(r,400));const after=await this.scan();
+        await new Promise(r=>setTimeout(r,400));checkWork();const after=await this.scan();
         if(!matchesPeer(after.peer,owner))throw new UncertainDelivery('发送后会话发生变化，请在抖音确认是否已收到');
         const matches=after.messages.filter(m=>m.direction==='out'&&!before.has(m.id)&&matchesOutgoingText(m,body,{replyToMessageId,replyToSender}));
         if(matches.length===1){if(replyToMessageId&&matches[0].replyTo?.messageId!==replyToMessageId)throw new UncertainDelivery('消息已发出，但未能核验它引用了指定原消息；不会自动重发');return {messageId:matches[0].id};}
         if(matches.length>1)throw new UncertainDelivery('检测到多条相同回复，无法确认本次发送的消息；不会自动重发');
       }
       throw new UncertainDelivery('已按下发送，但未能确认回执；不会自动重复发送');
-    } catch(e){if(submitted)e.uncertain=true;else if(workSignal()?.aborted&&editor&&surface&&body){try{const scan=await this.scan(),draft=(await surface.evaluate(inspectComposers))[0];if(scan.peer?.chatKey===owner.chatKey&&scan.peer?.peerUid===owner.peerUid&&draft?.text===body)await editor.fill('');}catch{}}throw e;} finally {if(replyToMessageId&&surface)await surface.evaluate(()=>{document.removeEventListener('contextmenu',globalThis.__douyinBridgeContextListener,true);delete globalThis.__douyinBridgeContextListener;document.querySelectorAll('[data-bridge-quote-source],[data-bridge-quote-action]').forEach(e=>{e.removeAttribute('data-bridge-quote-source');e.removeAttribute('data-bridge-quote-action');});}).catch(()=>{});this.sending=false;}
+    } catch(e){if(submitted)e.uncertain=true;else if(composed&&initialEmpty&&workSignal()?.aborted&&editor&&surface&&body){try{await operationContext.run(undefined,async()=>{const scan=await this.scan(),draft=(await browserRead(surface.evaluate(inspectComposers)))[0];if(matchesPeer(scan.peer,owner)&&draft?.text===expectedDraft)await editor.fill('',{timeout:1500});});}catch{}}throw e;} finally {if(replyToMessageId&&surface)await browserRead(surface.evaluate(()=>{document.removeEventListener('contextmenu',globalThis.__douyinBridgeContextListener,true);delete globalThis.__douyinBridgeContextListener;document.querySelectorAll('[data-bridge-quote-source],[data-bridge-quote-action]').forEach(e=>{e.removeAttribute('data-bridge-quote-source');e.removeAttribute('data-bridge-quote-action');});})).catch(()=>{});this.sending=false;}
   }
   async react(owner,messageId,{probeOnly=false,verifyOnly=false,emojis=['👌','👀','👍']}={}) {
     checkWork();
@@ -690,4 +700,5 @@ exit 1
   async close(){await this.context?.close();}
 }
 export class UncertainDelivery extends Error {constructor(message){super(message);this.uncertain=true;}}
-import {operationContext,checkWork,workSignal,raceWork} from './execution.mjs';
+import {operationContext,checkWork,workSignal,raceWork,browserRead} from './execution.mjs';
+import {recoverOwnedDraft,clearOwnedComposer} from './owned-draft.mjs';

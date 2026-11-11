@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {PeerBrowser} from '../src/peer-browser.mjs';import {operationContext,checkWork} from '../src/execution.mjs';
+import {DouyinAdapter} from '../src/douyin.mjs';
 const A={chatKey:'chat-a',peerUid:'user-a'},B={chatKey:'chat-b',peerUid:'user-b'},C={chatKey:'chat-c',peerUid:'user-c'};
 const tick=()=>new Promise(r=>setImmediate(r));
 function fixture(){let current=A,now=0,release;const order=[],native={scan:async()=>({peer:current,messages:[]}),restoreOwner:async peer=>{current=peer;order.push('select:'+peer.chatKey);},send:async peer=>{assert.equal(current.chatKey,peer.chatKey);order.push('send:'+peer.chatKey);await new Promise(r=>release=r);assert.equal(current.chatKey,peer.chatKey);order.push('confirmed:'+peer.chatKey);return {messageId:'90000000000001'};},react:async peer=>{assert.equal(current.chatKey,peer.chatKey);order.push('react:'+peer.chatKey);return {verified:true};}},browser=new PeerBrowser(native,{now:()=>now,wait:async ms=>{now+=ms;await tick();}});browser.multiple=true;return {native,browser,order,get current(){return current;},get now(){return now;},release:()=>release?.()};}
@@ -28,3 +29,16 @@ test('a zero unread badge cannot hide a personal Agent message for the full grou
 });
 
 test('queued browser work retains the originating cancellation guard after prioritization',async()=>{const h=fixture(),sending=h.browser.send(A,'fixture');await tick();const c=new AbortController();const job=operationContext.run({signal:c.signal,guard:()=>{if(c.signal.aborted)throw new Error('origin-cancelled');}},()=>h.browser.react(B,'90000000000001'));const failure=assert.rejects(job,/origin-cancelled|用户已强制中断/);c.abort();h.release();await Promise.all([sending,failure]);assert.deepEqual(h.order,['send:chat-a','confirmed:chat-a']);checkWork();});
+
+test('hung Edge observation releases its lease; choosing a chat can finish and a late read cannot overwrite the new selection',async()=>{
+  let release,started;const ready=new Promise(r=>started=r),native=new DouyinAdapter({root:'fixture'}),raw={peer:A,messages:[],diagnostics:{interactiveRows:1}};
+  const frame={url:()=> 'https://www.douyin.com/chat',parentFrame:()=>null,evaluate:()=>{frame.evaluate=async()=>raw;started();return new Promise(r=>release=r);}},page={url:frame.url,isClosed:()=>false,frames:()=>[frame]};
+  native.page=page;native.context={pages:()=>[page],cookies:async()=>[]};const browser=new PeerBrowser(native);browser.multiple=true;
+  const keepAlive=setTimeout(()=>{},9000);try{
+    const failed=assert.rejects(browser.scanPeer(B),e=>e.code==='BROWSER_READ_TIMEOUT'&&e.notSubmitted);await ready;
+    const selecting=browser.selection(true),reading=selecting.then(()=>browser.scan());await failed;
+    const scan=await reading;assert.equal(scan.peer.chatKey,A.chatKey);assert.equal(browser.selecting,true);assert.equal(browser.diagnostics.queued,0);
+    release({...raw,peer:B});await tick();assert.equal(native.lastScan.peer.chatKey,A.chatKey);
+    assert.ok(browser.diagnostics.maxOperationMs<8500);await assert.rejects(browser.scanPeer(B),/轮询暂时暂停/);
+  }finally{clearTimeout(keepAlive);release?.(raw);}
+});

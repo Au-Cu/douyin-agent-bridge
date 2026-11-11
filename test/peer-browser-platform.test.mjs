@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {launchTestBrowser} from './browser.mjs';
 import {DouyinAdapter} from '../src/douyin.mjs';import {SafariDouyinAdapter} from '../src/safari.mjs';import {PeerBrowser} from '../src/peer-browser.mjs';
+import {operationContext} from '../src/execution.mjs';
 const html=`<style>.conversationConversationItemwrapper{display:inline-block;width:150px;height:30px}.messageMessageBoxcontentBox{height:50px}#messages{margin-top:50px}</style><div class="conversationConversationItemwrapper" data-chat="a">聊天 A</div><div class="conversationConversationItemwrapper" data-chat="b">聊天 B</div><div class="RightPanelHeadertitle">聊天 A</div><div id="messages"></div><div contenteditable="true" style="position:absolute;left:400px;top:600px;width:400px;height:80px"></div><script>
 window.actions=[];let current='a',out=0;
 const add=(key,id,sender,text,side)=>{const e=document.createElement('div');e.className='messageMessageBoxcontentBox';e.dataset.direction=side;e.textContent=text;e.__reactProps$fixture={message:{serverId:id,conversationId:'chat-'+key,conversationType:1,sender,createTime:Date.now(),content:JSON.stringify({text})}};document.querySelector('#messages').append(e);};
@@ -15,5 +16,15 @@ for(const platform of ['edge-adapter','safari-adapter'])test(platform+': concurr
     const sending=bridge.send(a,'第一段\n第二段',{plainText:true}).catch(async e=>{const draft=await page.locator('[contenteditable=true]').evaluate(e=>({text:e.textContent,inner:e.innerText,html:e.innerHTML,active:document.activeElement===e}));throw new Error(e.message+'; fixture editor '+JSON.stringify(draft));});await page.waitForFunction(()=>window.actions.includes('send:a'));const reading=bridge.scanPeer(b);assert.equal((await sending).messageId,'90000000000101');const snapshot=await reading;
     assert.equal(snapshot.peer.chatKey,b.chatKey);assert.ok(snapshot.messages.some(m=>m.text==='延迟加载的新消息'));const actions=await page.evaluate(()=>window.actions);assert.ok(actions.indexOf('confirmed:a')<actions.indexOf('select:b'));assert.equal(actions.includes('WRONG_CHAT'),false);
     const cached=platform==='edge-adapter'?native.chatFrame:native.framePath,last=native.lastScan;const peek=await native.scan({observeOnly:true});assert.equal(peek.peer.chatKey,b.chatKey);assert.equal(native.lastScan,last);assert.equal(platform==='edge-adapter'?native.chatFrame:native.framePath,cached);
+    const originalScan=native.scan.bind(native),controller=new AbortController();let scans=0;
+    native.scan=async options=>{const scan=await originalScan(options);if(++scans===2)controller.abort(new Error('cancel-before-enter'));return scan;};
+    await assert.rejects(operationContext.run({signal:controller.signal},()=>native.send(b,'取消尚未发送的草稿',{plainText:true})),/cancel-before-enter/);native.scan=originalScan;
+    assert.equal((await page.locator('[contenteditable=true]').innerText()).trim(),'');assert.equal((await page.evaluate(()=>window.actions)).filter(a=>a.startsWith('send:')).length,1);
+    const body='恢复超时自动草稿',delivery={previousDraft:{body,text:body,quoteId:'',created:Date.now()-20000,state:'prepared',recoveries:0},recordDraft:value=>{assert.equal(value.body,body);},markSubmitted:()=>{delivery.marked=true;}};
+    await page.locator('[contenteditable=true]').fill(' '+body);
+    await operationContext.run({delivery},()=>native.send(b,body,{plainText:true}));assert.equal(delivery.draftRecoveries,1);assert.equal(delivery.marked,true);
+    assert.equal((await page.evaluate(()=>window.actions)).filter(a=>a.startsWith('send:')).length,2);
+    await page.locator('[contenteditable=true]').fill('用户自己的草稿');
+    await assert.rejects(operationContext.run({delivery},()=>native.send(b,body,{plainText:true})),/草稿/);assert.equal(await page.locator('[contenteditable=true]').innerText(),'用户自己的草稿');
   }finally{await browser.close();}
 });

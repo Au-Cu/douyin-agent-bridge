@@ -16,3 +16,11 @@ export async function launchTestBrowser(t) {
     return null;
   }
 }
+
+export async function answerConfirmation(page,button,{accept=true}={}){
+  await button.click();await page.locator('#actionDialog[open]').waitFor();
+  if(accept&&await page.locator('#actionAcknowledgeRow').isVisible())await page.locator('#actionAcknowledge').check();
+  const closed=page.evaluate(()=>new Promise(resolve=>document.getElementById('actionDialog').addEventListener('close',()=>resolve(),{once:true})));
+  await page.locator(accept?'#confirmAction':'#cancelAction').click();
+  await closed;
+}

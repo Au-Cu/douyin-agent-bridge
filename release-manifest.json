@@ -32,6 +32,7 @@
     "scripts/mac-native-smoke.mjs",
     "scripts/mac-safari-smoke.mjs",
     "scripts/Launcher.ps1",
+    "scripts/PackagedDesktopLauncher.cs",
     "scripts/storage.mjs",
     "scripts/setup-asr.mjs",
     "scripts/setup-runtime.mjs",

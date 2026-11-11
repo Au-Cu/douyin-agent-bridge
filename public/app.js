@@ -1,4 +1,4 @@
-import {updateHTML,updateOptions} from './dom.js';
+import {updateHTML,updateOptions,configureDialog,confirmAction} from './dom.js';
 import {initViews,openSettingsSection,renderVisuals,renderLearning} from './views.js';
 import {initGroupSettings} from './group-settings.js';
 function normalizeAgentRoute(){
@@ -9,9 +9,13 @@ normalizeAgentRoute();
 initViews();
 const classic=document.documentElement.dataset.layout==='classic';
 const $=id=>document.getElementById(id);let state=null,targets=[],threads=[],dirty=false,busy=false;
+for(const id of ['noteDialog','visualDialog'])configureDialog($(id),{kind:'reader'});
+const syncIssue=document.createElement('div');syncIssue.id='syncIssue';syncIssue.className='sync-issue';syncIssue.hidden=true;
+syncIssue.innerHTML='<span role="status" aria-live="polite"></span><button class="secondary">重试同步</button>';
+$('notice').after(syncIssue);syncIssue.querySelector('button').addEventListener('click',()=>refresh());
 let catalog=null,chatCatalog=null,preferencesDirty=false,chatPreferencesDirty=false,observedAiChat=null,agentHarnessDirty=false;
 const backendName=value=>value==='dsh'?'DeepSeek Harness':'Codex';
-const panelPending=new Set();let refreshAgain=false;
+const panelPending=new Set();let refreshAgain=false,panelRevision=0;
 window.addEventListener('bridge-layout-change',event=>{if(dirty||preferencesDirty||chatPreferencesDirty||agentHarnessDirty||groupUI.dirty()||instanceDrafts.size||panelPending.size||$('newNeedTitle').value.trim()||$('targetAlias').value.trim()){event.preventDefault();notice('请先保存未保存的配置或清空输入草稿，再切换界面。');}});
 const archiveButton=(kind,item)=>`<button class="secondary" data-archive-kind="${kind}" data-archive-id="${escape(item.id)}" data-archive-value="${!item.archived}">${item.archived?'恢复显示':'归档'}</button>`+(['task','need'].includes(kind)&&(item.archived||item.receipts?.some(r=>r.uncertain)||item.replies?.some(r=>r.status==='uncertain'))?`<button class="secondary" data-review-kind="${kind}" data-review-id="${escape(item.id)}">核实送达</button>`:'')+(item.archived&&['task','need','knowledge'].includes(kind)?`<button class="delete-record" data-delete-kind="${kind}" data-delete-id="${escape(item.id)}">彻底删除</button>`:'')+(kind==='task'&&item.kind!=='control'?`<button class="interrupt-button" data-interrupt-task="${escape(item.id)}" aria-label="中断任务 ${item.number||''}" ${item.canInterrupt?'':'disabled'}>中断</button>`:'');
 const chatLink=(url,label='需求对话')=>/^(?:codex:\/\/threads|dsh:\/\/session)\/[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(url||'')?`<a class="chat-link" href="${escape(url)}">${url.startsWith('dsh:')?'DSH':'Codex'} · ${escape(label)}</a>`:'';
@@ -93,7 +97,7 @@ function renderChatDirectory(data,owner){
   $('botHistory').hidden=ownerIsAgent;
   $('agentChatHistory').hidden=!ownerIsAgent;
   updateHTML($('conversationRecordActions'),selected?.type==='group'?groupUI.recordControls(selected):'');
-  updateHTML($('agentChatHistory'),ownerIsAgent?(state.chatWork||[]).map(w=>'<article class="item" data-ui-key="agent-message:'+escape(w.id)+'"><strong>'+escape(w.title)+'</strong><p>'+escape(w.detail)+'</p><small>文字回复 '+w.replies.filter(r=>r.status==='sent').length+' / '+w.replies.length+' 段 · '+escape(w.phase)+'</small>'+(w.request||w.replies.length?'<details data-fold-key="agent-reply:'+escape(w.id)+'"><summary>查看原消息和回复</summary>'+(w.request?'<p><strong>收到</strong><br>'+escape(w.request)+'</p>':'')+w.replies.map(r=>'<p><strong>'+escape(({sent:'已发出',pending:'待发送',sending:'发送中',uncertain:'需核实'})[r.status]||'已保留')+'</strong><br>'+escape(r.body||'')+'</p>').join('')+'</details>':'')+'<div class="button-row">'+w.links.map(l=>chatLink(l.url,l.label)).join('')+(w.replies.some(r=>['sending','uncertain'].includes(r.status))?'<button class="secondary" data-review-kind="task" data-review-id="'+escape(w.id)+'">核实送达</button>':'')+'</div></article>').join('')||'<p class="empty">此会话还没有桥接记录。</p>':'');
+  updateHTML($('agentChatHistory'),ownerIsAgent?(state.chatWork||[]).map(w=>'<article class="item" data-ui-key="agent-message:'+escape(w.id)+'"><strong>'+escape(w.title)+'</strong><p>'+escape(w.detail)+'</p><small>文字回复 '+w.replies.filter(r=>r.status==='sent').length+' / '+w.replies.length+' 段 · '+escape(w.phase)+'</small>'+(w.request||w.replies.length?'<details data-fold-key="agent-reply:'+escape(w.id)+'"><summary>查看原消息和回复</summary>'+(w.request?'<p><strong>收到</strong><br>'+escape(w.request)+'</p>':'')+w.replies.map(r=>'<p><strong>'+escape(({sent:'已发出',pending:'待发送',sending:'发送中',uncertain:'需核实'})[r.status]||'已保留')+'</strong><br>'+escape(r.body||'')+'</p>').join('')+'</details>':'')+renderReplyControls('task',w.id,w.deliveryControls)+'<div class="button-row">'+w.links.map(l=>chatLink(l.url,l.label)).join('')+(w.replies.some(r=>['sending','uncertain'].includes(r.status))?'<button class="secondary" data-review-kind="task" data-review-id="'+escape(w.id)+'">核实送达</button>':'')+'</div></article>').join('')||'<p class="empty">此会话还没有桥接记录。</p>':'');
   return selected;
 }
 if(!classic){
@@ -127,7 +131,7 @@ function renderAiChats(){
   $('aiChatSelection').hidden=!data.selecting;$('finishAiSelection').hidden=!data.selecting;
   updateHTML($('aiChatList'),(classic?data.chats:selected&&data.chats.some(c=>c.chatKey===selected.chatKey&&c.mode===selected.mode)?[selected]:[]).map(c=>{const agentAllowed=c.type==='single'&&c.chatKey===owner?.chatKey&&c.peerUid===owner?.peerUid;return `<div class="ai-chat-item" data-ui-key="chat:${escape(c.chatKey)}">${classic?`<strong>${escape(c.displayName)}</strong> `:''}<span class="pill">${c.type==='group'?'群聊':'单聊'} · ${c.enabled?'已启用':'已停用'}</span><small>${c.mode==='agent'?'个人 Agent · 现有用户授权模式':c.type==='group'?(c.groupReplyMode==='all'?'普通聊天 · 回复所有新消息':'普通聊天 · 仅原生 @ 助手时回复'):'普通聊天 · 仅回复本聊天'}</small><div class="button-row"><label>使用方式 <select data-ai-mode="${escape(c.chatKey)}"><option value="chat" ${c.mode==='chat'?'selected':''}>普通聊天 AI</option>${agentAllowed?`<option value="agent" ${c.mode==='agent'?'selected':''}>个人 Agent · 现有模式</option>`:''}</select></label>${c.type==='group'&&c.mode==='chat'?`<label>回复范围 <select data-ai-reply="${escape(c.chatKey)}"><option value="mentions" ${c.groupReplyMode!=='all'?'selected':''}>仅被 @ 时回复</option><option value="all" ${c.groupReplyMode==='all'?'selected':''}>回复所有新消息</option></select></label>`:''}<button class="secondary" data-ai-toggle="${escape(c.chatKey)}">${c.enabled?'停用此聊天':'启用此聊天'}</button></div>${groupUI.controls(c,{showRecords:classic})}</div>`;}).join('')||'<p class="empty">选择需要启用 AI 的单聊或群聊。其他聊天保持静默。</p>');
   const names={new:'排队中',preparing:'准备聊天',submitted:'正在回复',replying:'结果已生成，等待送达',delivery_uncertain:'送达需核实，不自动重发',done:'助手端已发出',held:'暂停保留',cancelled:'已停止',failed:'处理失败',uncertain:'需要核实',blocked:'队列已满'};
-  updateHTML($('botHistory'),(classic?data.messages:data.messages.filter(m=>m.peer===selected?.chatKey)).map(m=>`<div class="item" data-ui-key="bot:${escape(m.id)}"><strong>${escape(m.name)}</strong> <span class="pill">${m.deliveryIssue?'发送受阻，等待重试':names[m.status]||escape(m.status)}</span>${m.deliveryIssue?`<small>${escape(deliveryError(m.deliveryIssue))}</small>`:''}<small>${new Date(m.created).toLocaleString('zh-CN',{hour12:false})}</small>${!classic&&m.input?`<p><strong>收到</strong><br>${escape(m.input)}</p>`:''}${!classic&&m.result?.length>300?`<details data-fold-key="chat-reply:${escape(m.id)}"><summary>查看完整回复</summary><p>${escape(m.result)}</p></details>`:`<p>${escape(m.result?.slice(0,300)||'尚未生成回复')}</p>`}<small>${m.recipientVisibility==='confirmed'?'用户已确认接收方可见':m.recipientVisibility==='reported_invisible'?'群成员反馈不可见，待核实':m.status==='done'?'仅确认助手端状态，接收方可见性未确认':'尚未确认送达'}</small>${m.canRetry?`<button class="secondary" data-chat-retry="${escape(m.id)}">重试未提交的消息</button>`:''}${m.sessionId?`<button class="secondary" data-group-sessions="${escape(m.peer)}" data-session-id="${escape(m.sessionId)}">查看对应会话</button>`:''}${(m.uncertainReplies||[]).map(id=>`<div class="button-row"><button class="secondary" data-reconcile-reply="${escape(id)}">核验原聊天</button><button class="secondary" data-delivered="${escape(id)}">这段已在抖音收到</button>${m.recipientVisibility!=='reported_invisible'?`<button class="secondary" data-resend="${escape(id)}">确认这段未收到，重新发送</button>`:''}</div>`).join('')}</div>`).join('')||'<p class="empty">普通聊天尚无新交流记录。</p>');
+  updateHTML($('botHistory'),(classic?data.messages:data.messages.filter(m=>m.peer===selected?.chatKey)).map(m=>`<div class="item" data-ui-key="bot:${escape(m.id)}"><strong>${escape(m.name)}</strong> <span class="pill">${m.deliveryIssue?'发送受阻，等待重试':names[m.status]||escape(m.status)}</span>${m.deliveryIssue?`<small>${escape(deliveryError(m.deliveryIssue))}</small>`:''}<small>${new Date(m.created).toLocaleString('zh-CN',{hour12:false})}</small>${!classic&&m.input?`<p><strong>收到</strong><br>${escape(m.input)}</p>`:''}${!classic&&m.result?.length>300?`<details data-fold-key="chat-reply:${escape(m.id)}"><summary>查看完整回复</summary><p>${escape(m.result)}</p></details>`:`<p>${escape(m.result?.slice(0,300)||'尚未生成回复')}</p>`}<small>${m.recipientVisibility==='confirmed'?'用户已确认接收方可见':m.recipientVisibility==='reported_invisible'?'群成员反馈不可见，待核实':m.status==='done'?'仅确认助手端状态，接收方可见性未确认':'尚未确认送达'}</small>${renderReplyControls('chat_reply',m.id,m.deliveryControls)}${m.canRetry?`<button class="secondary" data-chat-retry="${escape(m.id)}">重试未提交的消息</button>`:''}${m.sessionId?`<button class="secondary" data-group-sessions="${escape(m.peer)}" data-session-id="${escape(m.sessionId)}">查看对应会话</button>`:''}${(m.uncertainReplies||[]).map(id=>`<div class="button-row"><button class="secondary" data-reconcile-reply="${escape(id)}">核验原聊天</button><button class="secondary" data-delivered="${escape(id)}">这段已在抖音收到</button>${m.recipientVisibility!=='reported_invisible'?`<button class="secondary" data-resend="${escape(id)}">确认这段未收到，重新发送</button>`:''}</div>`).join('')}</div>`).join('')||'<p class="empty">普通聊天尚无新交流记录。</p>');
 }
 function deliveryError(s){s=cleanError(s);return /intercepts pointer events|OVERLAY_BLOCKED/.test(s)?'抖音弹层遮挡原消息，尚未点击表情。关闭视频预览或弹窗后可恢复。':/locator\.click: Timeout/.test(s)?'原消息暂不可操作，未确认贴表情。请检查弹层遮挡或消息位置。':s.length>220?s.slice(0,220)+'…':s;}
 function renderRetries(w){
@@ -139,24 +143,32 @@ function renderRetries(w){
     return `<div class="retry-summary"><strong>写入调度 · ${escape(group.label)}</strong><p>最近：${escape(describe(latest))}</p>${schedule?`<p>${escape(schedule)}</p>`:''}<details class="retry-details" data-fold-key="${escape('retry:'+w.id+':'+index)}"><summary>查看调度记录（${group.events.length} 条）</summary>${legacy?`<p class="work-meta">升级前的 ${legacy.attempt-1} 次详细时间和结果未保存。</p>`:''}<ol>${group.events.map(e=>`<li>${escape(describe(e))}</li>`).join('')}</ol></details></div>`;
   }).join('');
 }
+function renderReplyControls(kind,id,controls){
+  if(!controls)return '';
+  const attrs=' data-reply-kind="'+escape(kind)+'" data-reply-id="'+escape(id)+'"';
+  return '<div class="button-row reply-controls">'
+    +(controls.canResend?'<button class="secondary" data-reply-action="resend"'+attrs+'>重新发送</button>':'')
+    +(controls.canCancel?'<button class="secondary" data-reply-action="cancel"'+attrs+'>取消发送</button>':'')
+    +(controls.cancelled?'<small>已取消 '+controls.cancelled+' 段，原文已保留</small>':'')+'</div>';
+}
 function renderWorkCard(w){
   const labels={roger:'👌 收到',active:'奋斗 · 运行',done:'🎉 完成'};
   const receipt=w.receipts.map(r=>{const verified=!!r.total&&r.sent===r.total;const text=!r.total?'未生成回执':r.uncertain?'送达需核实':verified?'已送达'+(r.total>1?' '+r.sent+'/'+r.total:''):r.pending?'等待发送':r.abandoned?'已放弃 '+r.abandoned+' 条，不再发送':r.unavailable?'表情暂不可用':'待确认';return `<div data-ui-key="receipt:${r.stage}" class="receipt-state ${r.uncertain||r.unavailable?'error':verified?'verified':''}"><span class="receipt-label">${labels[r.stage]}</span>${escape(text)}</div>`;}).join('');
   const errors=[...new Set(w.receipts.flatMap(r=>r.errors||[]))],results=w.replies.filter(r=>!r.notification),sent=results.filter(r=>r.status==='sent').length,uncertain=w.replies.filter(r=>r.status==='uncertain');
   const details=errors.length?`<details class="work-details" data-fold-key="${escape('receipts:'+w.id)}"><summary>表情发送详情（${errors.length}）</summary>${errors.map((e,i)=>`<p>${escape(deliveryError(e))}</p>${cleanError(e).length>240?`<details data-fold-key="${escape('technical:'+w.id+':'+i)}"><summary>技术详情</summary><pre>${escape(cleanError(e).slice(0,1800))}</pre></details>`:''}`).join('')}</details>`:'';
   const long=(w.detail||'').length>210,detail=long?`<details class="work-full-detail" data-fold-key="${escape('detail:'+w.id)}"><summary>查看完整处理说明</summary><p class="work-detail">${escape(w.detail)}</p></details>`:'';
-  return `<article class="work-card" data-operation="${escape(w.id)}"><div class="work-head"><div class="work-title"><div class="work-kicker">${w.kind==='control'?'命令回执':'任务 '+(w.number||'待登记')}${w.archived?' · 已归档':''}</div><strong>${escape(w.title)}</strong></div><span class="pill ${['uncertain','failed_delivery','failed','blocked'].includes(w.status)?'error':''}">${statuses[w.status]||escape(w.status)}</span></div><p data-ui-key="phase" class="work-detail">${escape(long?w.detail.slice(0,210)+'…':w.detail)}</p>${detail}${renderVisuals(w)}${w.targets?.length?`<small class="work-meta" data-ui-key="targets">目标：${w.targets.map(t=>escape(t.alias)+'（'+(statuses[t.status]||escape(t.status))+'）').join('、')}</small>`:''}${renderRetries(w)}<div class="delivery-summary" data-ui-key="delivery"><span>文字回复</span><strong>${results.length?'已送达 '+sent+' / '+results.length+' 段':'尚未生成'}${uncertain.length?' · 待核实':''}</strong></div><div class="work-receipts" data-ui-key="receipts">${receipt}</div>${uncertain.map(r=>`<div class="reply-review" data-ui-key="review:${r.id}">回复送达需核实<div class="button-row"><button data-delivered="${r.id}">已在抖音收到</button><button data-resend="${r.id}">确认未收到，重新发送</button></div></div>`).join('')}${details}<div class="card-actions" data-ui-key="actions">${archiveButton('task',w)}${(w.links||[]).map(l=>chatLink(l.url,l.label)).join('')}</div></article>`;
+  return `<article class="work-card" data-operation="${escape(w.id)}"><div class="work-head"><div class="work-title"><div class="work-kicker">${w.kind==='control'?'命令回执':'任务 '+(w.number||'待登记')}${w.archived?' · 已归档':''}</div><strong>${escape(w.title)}</strong></div><span class="pill ${['uncertain','failed_delivery','failed','blocked'].includes(w.status)?'error':''}">${statuses[w.status]||escape(w.status)}</span></div><p data-ui-key="phase" class="work-detail">${escape(long?w.detail.slice(0,210)+'…':w.detail)}</p>${detail}${renderVisuals(w)}${w.targets?.length?`<small class="work-meta" data-ui-key="targets">目标：${w.targets.map(t=>escape(t.alias)+'（'+(statuses[t.status]||escape(t.status))+'）').join('、')}</small>`:''}${renderRetries(w)}<div class="delivery-summary" data-ui-key="delivery"><span>文字回复</span><strong>${results.length?'已送达 '+sent+' / '+results.length+' 段':'尚未生成'}${uncertain.length?' · 待核实':''}</strong></div><div class="work-receipts" data-ui-key="receipts">${receipt}</div>${uncertain.map(r=>`<div class="reply-review" data-ui-key="review:${r.id}">回复送达需核实<div class="button-row"><button data-delivered="${r.id}">已在抖音收到</button><button data-resend="${r.id}">确认未收到，重新发送</button></div></div>`).join('')}${details}${renderReplyControls('task',w.id,w.deliveryControls)}<div class="card-actions" data-ui-key="actions">${archiveButton('task',w)}${(w.links||[]).map(l=>chatLink(l.url,l.label)).join('')}</div></article>`;
 }
 
 const statuses={queued:'排队中',blocked:'调度受阻',running:'执行中',done:'已完成',failed:'处理失败',cancelled:'已取消',waiting:'等待恢复',failed_delivery:'送达需核实',unavailable:'表情暂不可用',waiting_auth:'等待账号恢复',waiting_route:'等待选择需求',uncertain:'需要核实',pending:'待发送',sent:'已送达',sending:'发送中',new:'等待处理',processing:'处理中'};
 statuses.stopping='中断中';
 $('workStatus').add(new Option('中断中','stopping'),$('workStatus').querySelector('[value="sending"]'));
-async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Object.assign(new Error(data.error||'请求失败'),{code:data.code});return data;}
+async function api(path,body,{timeout=0}={}){const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};if(timeout)options.signal=AbortSignal.timeout(timeout);const r=await fetch('/api/'+path,options).catch(e=>{if(e.name==='TimeoutError')throw new Error('读取抖音聊天超时，请检查专用抖音窗口后重新读取。');throw e;});const data=await r.json();if(!r.ok)throw Object.assign(new Error(data.error||'请求失败'),{code:data.code});return data;}
 const noticeBox=$('notice');noticeBox.setAttribute('popover','manual');
 noticeBox.innerHTML='<span id="noticeText"></span><button id="closeNotice" aria-label="关闭提示" title="关闭提示">×</button>';
 let lastNotice='',noticeTimer;
 function hideNotice(){clearTimeout(noticeTimer);if(noticeBox.matches(':popover-open'))noticeBox.hidePopover();noticeBox.style.display='none';}
-function expireNotice(){clearTimeout(noticeTimer);noticeTimer=setTimeout(hideNotice,noticeBox.classList.contains('error')?10000:6000);}
+function expireNotice(){clearTimeout(noticeTimer);if(noticeBox.classList.contains('error')||noticeBox.matches(':hover')||noticeBox.contains(document.activeElement))return;noticeTimer=setTimeout(hideNotice,6000);}
 noticeBox.addEventListener('pointerenter',()=>clearTimeout(noticeTimer));noticeBox.addEventListener('pointerleave',expireNotice);noticeBox.addEventListener('focusin',()=>clearTimeout(noticeTimer));noticeBox.addEventListener('focusout',expireNotice);
 $('closeNotice').addEventListener('click',()=>{hideNotice();lastNotice='';});
 function notice(text,error=false){const key=String(error)+':'+text;if(key===lastNotice&&noticeBox.style.display!=='none')return;lastNotice=key;$('noticeText').textContent=text;noticeBox.className=error?'error':'';noticeBox.setAttribute('role',error?'alert':'status');noticeBox.setAttribute('aria-live',error?'assertive':'polite');noticeBox.style.display='flex';if(noticeBox.showPopover&&!noticeBox.matches(':popover-open'))noticeBox.showPopover();expireNotice();}
@@ -216,10 +228,12 @@ function renderOnboarding(runtime,agentReady){
 }
 let deleting=null;
 const deleteDialog=document.createElement('dialog');deleteDialog.id='deleteDialog';deleteDialog.setAttribute('aria-labelledby','deleteHeading');
+deleteDialog.setAttribute('aria-describedby','deleteLabel deleteCounts deleteWarning');
 deleteDialog.innerHTML='<h2 id="deleteHeading">彻底删除归档记录</h2><p id="deleteLabel"></p><p id="deleteCounts"></p><p id="deleteWarning"></p><label class="delete-check"><input id="deleteAcknowledge" type="checkbox">我理解这是永久删除，不能恢复显示</label><p id="deleteError" role="alert"></p><div class="button-row"><button id="cancelDelete" class="secondary">取消</button><button id="confirmDelete" class="delete-record" disabled>确认彻底删除</button></div>';
 document.body.append(deleteDialog);
+configureDialog(deleteDialog,{kind:'danger'});
 const reviewDialog=document.createElement('dialog');reviewDialog.id='deliveryReviewDialog';reviewDialog.setAttribute('aria-labelledby','reviewHeading');reviewDialog.innerHTML='<div class="section-title"><h2 id="reviewHeading">核实送达</h2><button id="closeDeliveryReview" class="secondary">关闭</button></div><p class="hint">自动核验读取助手端原聊天，不重发或补点表情。助手端有消息气泡不代表群成员可见；请在接收方确认后再人工标记。旧回复可以停止发送，原文仍保留。</p><div class="button-row"><button id="reconcileReviewBatch" class="secondary">一键核实本组</button></div><p id="reviewBatchStatus" role="status"></p><p id="reviewError" role="alert"></p><div id="deliveryReviewRows"></div>';
-document.body.append(reviewDialog);$('closeDeliveryReview').addEventListener('click',()=>reviewDialog.close());let reviewSelection=null,lastChatScope='';
+document.body.append(reviewDialog);configureDialog(reviewDialog);$('closeDeliveryReview').addEventListener('click',()=>reviewDialog.close());let reviewSelection=null,lastChatScope='';
 let reviewBatchTimer;
 async function followReviewBatch(){
   clearTimeout(reviewBatchTimer);try{const {batch}=await api('outbox/reconcile-batch');if(!batch)return;const summary='只读核实：'+batch.checked+'/'+batch.total+' 条，已确认 '+batch.verified+' 条，仍需核实 '+batch.unresolved+' 条'+(batch.waiting?'；'+batch.waiting+' 条正在发送，本次未干预':'')+'。'+(batch.status==='running'?'正在核实…':batch.status==='done'?'核实结束；未重发文字或点击表情。':'检查已停止，未确认的记录继续保留。');$('reviewBatchStatus').textContent=summary;$('allDeliveryBatchStatus').textContent=summary;$('reconcileAllDeliveries').disabled=batch.status==='running';$('reconcileReviewBatch').disabled=batch.status==='running';if(batch.status==='running')reviewBatchTimer=setTimeout(followReviewBatch,1500);else{if(reviewDialog.open)await loadDeliveryReview();notice(summary);await refresh();}}catch(e){$('reviewBatchStatus').textContent=e.message;$('reconcileAllDeliveries').disabled=false;$('reconcileReviewBatch').disabled=false;}
@@ -237,15 +251,15 @@ async function loadDeliveryReview(){
   updateHTML($('deliveryReviewRows'),d.rows.map(renderDeliveryReviewRow).join('')||'<p class="empty">没有需要处理的回执。</p>');
 }
 async function openDeliveryReview(kind,id){reviewSelection={kind,id};$('reviewError').textContent='';await loadDeliveryReview();if(!reviewDialog.open)reviewDialog.showModal();}
-$('deleteAcknowledge').addEventListener('change',()=>{$('confirmDelete').disabled=!$('deleteAcknowledge').checked;});
+$('deleteAcknowledge').addEventListener('change',()=>{$('confirmDelete').disabled=!$('deleteAcknowledge').checked||$('confirmDelete').dataset.dialogBusy==='true';});
 $('cancelDelete').addEventListener('click',()=>deleteDialog.close());
 deleteDialog.addEventListener('close',()=>{deleting=null;});
 $('confirmDelete').addEventListener('click',async()=>{
-  if(!deleting||!$('deleteAcknowledge').checked)return;
-  const selection=deleting;$('confirmDelete').disabled=true;$('cancelDelete').disabled=true;
+  if(!deleting||!$('deleteAcknowledge').checked||$('confirmDelete').dataset.dialogBusy==='true')return;
+  const selection=deleting;$('confirmDelete').disabled=true;$('cancelDelete').disabled=true;$('deleteAcknowledge').disabled=true;$('confirmDelete').dataset.dialogBusy='true';
   try{const result=await api('archive/delete',selection);deleteDialog.close();notice(result.cleanupPending?'记录已删除；部分历史缓存待清理，重启后会继续。':selection.kind==='knowledge'?'已彻底删除所选学习资料及本地文件。':'已彻底删除所选归档记录，原有编号不会复用。');await refresh();}
   catch(e){$('deleteError').textContent=e.message;$('deleteAcknowledge').checked=false;}
-  finally{$('cancelDelete').disabled=false;}
+  finally{$('cancelDelete').disabled=false;$('deleteAcknowledge').disabled=false;delete $('confirmDelete').dataset.dialogBusy;}
 });
 function action(id,fn){$(id).addEventListener('click',async()=>{const button=$(id);button.disabled=true;try{await fn();}catch(e){notice(e.message,true);}finally{button.disabled=false;}await refresh();});}
 const groupUI=initGroupSettings({api,notice,escape,getState:()=>state,refresh});
@@ -288,8 +302,8 @@ function renderPanels(){
 }
 for(const el of document.querySelectorAll('[data-panel]'))el.addEventListener('toggle',async()=>{
   const key=el.dataset.panel,collapsed=!el.open;if(!state||panelPending.has(key)||collapsed===!!state.config.uiPanels?.[key])return;
-  const previous=!!state.config.uiPanels?.[key];state.config.uiPanels={...state.config.uiPanels,[key]:collapsed};panelPending.add(key);
-  try{await api('ui/panels',{[key]:collapsed});}catch(e){state.config.uiPanels[key]=previous;el.open=!previous;notice('展开状态未保存：'+e.message,true);}finally{panelPending.delete(key);}
+  const previous=!!state.config.uiPanels?.[key];state.config.uiPanels={...state.config.uiPanels,[key]:collapsed};panelPending.add(key);panelRevision++;
+  try{await api('ui/panels',{[key]:collapsed});state.config.uiPanels={...state.config.uiPanels,[key]:collapsed};}catch(e){state.config.uiPanels[key]=previous;el.open=!previous;notice('展开状态未保存：'+e.message,true);}finally{panelRevision++;panelPending.delete(key);}
 });
 for(const id of ['needScope','knowledgeScope','workScope','workStatus'])$(id).addEventListener('change',()=>{if(id==='workStatus'&&$('workStatus').value==='done')$('workScope').value='all';refresh();});
 function renderThreadOptions(){
@@ -311,7 +325,10 @@ function stateQuery(){const q=new URLSearchParams();const chat=chatDestination()
 async function refresh(){
   if(busy){refreshAgain=true;return;}busy=true;try{
     const query=stateQuery();
-    const oldChat=state?.runtime.harness?.chat||'codex';const incoming=await api('state'+(query?'?'+query:''));if(query!==stateQuery()){refreshAgain=true;return;}state=incoming;const r=state.runtime;
+    const oldChat=state?.runtime.harness?.chat||'codex',panelsAtStart=panelRevision;const incoming=await api('state'+(query?'?'+query:''));if(query!==stateQuery()){refreshAgain=true;return;}
+    // A response started before a local panel change cannot undo that choice.
+    if(panelsAtStart!==panelRevision)incoming.config.uiPanels={...incoming.config.uiPanels,...state?.config.uiPanels};
+    state=incoming;const r=state.runtime;
     $('previewNotice').hidden=!state.preview;
     if($('syncStatus'))$('syncStatus').textContent='已同步 · '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
     const agentBackend=r.harness?.active||'codex',chatBackend=r.harness?.chat||'codex';
@@ -365,7 +382,8 @@ async function refresh(){
     restoreDetails();
     updateHTML($('eventList'),state.events.map(e=>`<div data-ui-key="event:${escape(e.id||e.created+e.message)}" class="event ${escape(e.level)}">${new Date(e.created).toLocaleTimeString('zh-CN',{hour12:false})}　${escape(e.message)}</div>`).join(''));
     const approvals=await api('approvals');updateHTML($('approvalList'),approvals.map(a=>`<div class="approval" data-ui-key="approval:${escape(a.id)}"><strong>待确认操作 #${escape(a.id)}</strong><pre>${escape(a.description)}</pre><button data-approve="${escape(a.id)}">同意本次</button> <button data-decline="${escape(a.id)}">拒绝</button></div>`).join(''));
-  }catch(e){if($('syncStatus'))$('syncStatus').textContent='同步中断';notice('暂时无法确认最新状态：'+e.message,true);}finally{busy=false;if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
+    syncIssue.hidden=true;
+  }catch(e){if($('syncStatus'))$('syncStatus').textContent='同步中断';const text='暂时无法确认最新状态：'+e.message;if(syncIssue.firstElementChild.textContent!==text)syncIssue.firstElementChild.textContent=text;syncIssue.hidden=false;}finally{busy=false;if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
 }
 action('prepareDesktopShared',async()=>{const r=await api('desktop/prepare',{});$('desktopSharedState').textContent='入口已准备。先结束桌面中的工作并完全退出，再运行：'+r.launcher+'。之后点击检查共享连接。';notice('共享入口已准备，当前聊天和任务未被中断。');});
 action('recoverDesktopTasks',async()=>{const r=await api('desktop/recover',{});notice('已恢复 '+r.recovered+' 项可证明未提交的写入受阻任务；结果不明、归档及中断的任务保持原状态。');});
@@ -405,7 +423,7 @@ action('openBrowser',async()=>{
 });
 action('selectAiChat',async()=>{await api('ai-chats/select',{});observedAiChat=null;$('enableAiChat').disabled=true;$('observedChat').textContent='在抖音窗口打开目标聊天后，点击读取。';notice('轮询与发送已暂时暂停，请在抖音窗口选择需要配置的单聊或群聊。');});
 action('finishAiSelection',async()=>{await api('ai-chats/cancel',{});observedAiChat=null;notice('已恢复聊天轮询。');});
-action('observeAiChat',async()=>{const c=observedAiChat=await api('ai-chats/current',{});$('observedChat').textContent=`已核验：${c.displayName} · ${c.type==='group'?'群聊':'单聊'}`;const option=$('observedChatMode').querySelector('[value="agent"]');option.disabled=c.type!=='single'||c.chatKey!==state.config.owner?.chatKey||c.peerUid!==state.config.owner?.peerUid;$('observedChatMode').value=option.disabled?'chat':state.aiChats?.chats.find(v=>v.chatKey===c.chatKey)?.mode||'chat';$('observedGroupReplyLabel').hidden=c.type!=='group';$('observedGroupReply').value=state.aiChats?.chats.find(v=>v.chatKey===c.chatKey)?.groupReplyMode||'mentions';$('enableAiChat').disabled=false;});
+action('observeAiChat',async()=>{observedAiChat=null;$('enableAiChat').disabled=true;$('observedChat').textContent='正在读取当前聊天…';const c=observedAiChat=await api('ai-chats/current',{}, {timeout:35000}).catch(e=>{$('observedChat').textContent='读取失败：'+e.message;throw e;});$('observedChat').textContent=`已核验：${c.displayName} · ${c.type==='group'?'群聊':'单聊'}`;const option=$('observedChatMode').querySelector('[value="agent"]');option.disabled=c.type!=='single'||c.chatKey!==state.config.owner?.chatKey||c.peerUid!==state.config.owner?.peerUid;$('observedChatMode').value=option.disabled?'chat':state.aiChats?.chats.find(v=>v.chatKey===c.chatKey)?.mode||'chat';$('observedGroupReplyLabel').hidden=c.type!=='group';$('observedGroupReply').value=state.aiChats?.chats.find(v=>v.chatKey===c.chatKey)?.groupReplyMode||'mentions';$('enableAiChat').disabled=false;});
 action('enableAiChat',async()=>{if(!observedAiChat)throw new Error('请先读取当前聊天');const saved=await api('ai-chats/save',{token:observedAiChat.token,mode:$('observedChatMode').value,enabled:true,...(observedAiChat.type==='group'?{groupReplyMode:$('observedGroupReply').value}:{})});observedAiChat=null;if(!classic&&saved.chatKey)location.hash=saved.mode==='agent'?'chats/agent/settings':'chats/peer/'+encodeURIComponent(saved.chatKey)+'/settings';notice('聊天模式已保存。监听开启后，只接收启用后的新消息。');});
 $('aiChatList').addEventListener('change',async e=>{const select=e.target,key=select.dataset.aiMode||select.dataset.aiReply;if(!key)return;const chat=state.aiChats.chats.find(c=>c.chatKey===key),scope=!!select.dataset.aiReply;select.disabled=true;try{await api('ai-chats/save',{chatKey:key,mode:scope?chat.mode:select.value,enabled:chat.enabled,...(scope?{groupReplyMode:select.value}:{})});notice(scope?'群聊回复范围已保存，从新消息起生效；当前回复继续完成。':'聊天方式已保存，仅影响此聊天；旧任务保留，不会交给普通聊天。');}catch(e){notice(e.message,true);}finally{select.disabled=false;await refresh();}});
 action('backupNow',async()=>{await api('storage/backup',{});notice(state?.runtime?.browserEngine==='safari'?'配置、需求记忆和任务记录已生成状态快照。原视频保留在固定数据目录；登录态由 Safari 管理。':'配置、需求记忆和任务记录已生成状态快照。原视频和登录态保留在固定数据目录。');});
@@ -433,7 +451,7 @@ action('bindSelf',async()=>{
   await commitAgentBinding(verifiedBinding,false);
 });
 async function commitAgentBinding(binding,acceptModeMismatch){
-  if(binding.replaceMain&&!confirm('将主号更换为「'+binding.displayName+'」？旧的任务和聊天记录仍会保留。'))return;
+  if(binding.replaceMain&&!await confirmAction({title:'更换绑定主号？',context:binding.displayName,message:'旧的任务和聊天记录仍会保留，后续个人 Agent 指令将由新主号授权。',confirmLabel:'更换主号',kind:'warning'}))return;
   const r=await api('bind',{mode:'auto',chatKey:binding.chatKey,selfUid:binding.selfUid,mainUid:binding.mainUid,detectedMode:binding.mode,expectedMode:binding.expectedMode,replaceMain:binding.replaceMain,acceptModeMismatch});
   verifiedBinding=null;$('bindSelf').disabled=true;
   hideSetupPrompt();
@@ -462,11 +480,13 @@ $('chatHarness').addEventListener('change',async()=>{const select=$('chatHarness
 action('savePreferences',async()=>{await api('preferences',{model:$('defaultModel').value,reasoningEffort:$('defaultEffort').value,fastMode:$('fastMode').checked,autoRoute:$('autoRoute').checked,contextBudget:Number($('contextBudget').value)});preferencesDirty=false;notice('默认配置已保存，从下一次调用起生效。');});
 action('saveChatPreferences',async()=>{await api('chat-preferences',{model:$('chatModel').value,reasoningEffort:$('chatEffort').value,fastMode:$('chatFast').checked,webSearch:$('chatWeb').checked,codeSandbox:$('chatCode').checked,contextBudget:Number($('chatContextBudget').value)});chatPreferencesDirty=false;notice('普通聊天配置已保存，从下一轮起生效。');});
 $('chatModel').addEventListener('change',()=>{chatPreferencesDirty=true;renderChatEfforts('');});for(const id of ['chatEffort','chatFast','chatWeb','chatCode','chatContextBudget'])$(id).addEventListener('change',()=>chatPreferencesDirty=true);
+$('chatContextBudget').addEventListener('input',()=>chatPreferencesDirty=true);
 action('checkCodeSandbox',async()=>{const r=await api('code-sandbox/check',{});$('codeSandboxState').textContent=r.message;notice(r.message,!r.ready);});
 action('setupCodeSandbox',async()=>{await api('code-sandbox/setup',{});notice('已开始准备 Python 容器镜像。完成后点“检查代码沙箱”，再保存启用；模型不会自行安装镜像。');});
 action('newNeed',async()=>{const n=await api('needs/new',{title:$('newNeedTitle').value.trim()});$('newNeedTitle').value='';notice('已新建并切换到需求 '+(n.number||'')+'：'+n.title);});
 $('defaultModel').addEventListener('change',()=>{preferencesDirty=true;renderEfforts('');});
 for(const id of ['defaultEffort','fastMode','autoRoute','contextBudget'])$(id).addEventListener('change',()=>preferencesDirty=true);
+$('contextBudget').addEventListener('input',()=>preferencesDirty=true);
 action('setupAsr',async()=>{await api('asr/setup',{});notice('转写模型正在后台安装，可在运行记录查看进度。');});
 action('toggleListen',async()=>{await api('listen',{enabled:!state.config.enabled});notice(state.config.enabled?'已暂停接收新指令。':'监听已启动。请从手机分享一条新视频。');});
 action('loadThreads',async()=>{threads=await api('threads?harness='+encodeURIComponent($('targetHarness').value));renderThreadOptions();notice('已读取 '+threads.length+' 个 '+backendName($('targetHarness').value)+' 本机聊天。');});
@@ -478,11 +498,24 @@ $('visualFps').addEventListener('change',()=>dirty=true);
 $('ackMode').addEventListener('change',()=>dirty=true);
 $('targetList').addEventListener('click',e=>{const index=e.target.dataset.remove,id=targets[Number(index)]?.id;if(index!==undefined&&id)changeTargets(list=>list.filter(t=>t.id!==id)).catch(e=>notice(e.message,true));});
 document.addEventListener('click',async e=>{try{
-  const control=e.target.closest('button,a');if(!control)return;const d=control.dataset;
+  const control=e.target.closest('button,a');if(!control)return;const d={...control.dataset};
+  if(d.replyAction){
+    const cancel=d.replyAction==='cancel',prompt=cancel?'取消这组回复尚未发完的内容？生成结果会保留，可稍后重新发送。':'将已生成的剩余文字重新排入发送队列？已经确认发出的分段会跳过。';
+    if(!await confirmAction({title:cancel?'停止剩余回复？':'重新发送剩余回复？',message:prompt,confirmLabel:cancel?'停止发送':'重新排入队列',kind:cancel?'confirm':'warning'}))return;
+    control.disabled=true;
+    try{
+      const body={kind:d.replyKind,id:d.replyId,confirmed:true};
+      let result=await api(cancel?'outbox/cancel-replies':'outbox/resend-replies',body);
+      if(result.needsConfirmation&&await confirmAction({title:'确认接收方未收到？',message:result.message,confirmLabel:'确认未收到并重发',kind:'warning'}))result=await api('outbox/resend-replies',{...body,confirmUnreceived:true});
+      notice(result.needsConfirmation?'已保留原回复，等待确认接收方情况。':result.message|| (cancel?'已取消剩余 '+result.cancelled+' 段的发送。':'已重新排入 '+result.requeued+' 段文字。'));
+      await refresh();
+    }finally{control.disabled=false;}
+    return;
+  }
   if(d.reviewKind)await openDeliveryReview(d.reviewKind,d.reviewId);
   if(d.reviewReconcile){control.disabled=true;try{const r=await api('outbox/reconcile',{id:d.reviewReconcile});$('reviewError').textContent=r.reason||'当前未取得确定证据，保持待核实。';await loadDeliveryReview();await refresh();}catch(e){$('reviewError').textContent=e.message;}finally{control.disabled=false;}}
-  if(d.reviewInvisible){if(confirm('确认这条回复在群成员一侧看不到？将标记可见性待核实并暂停本群自动回复，其他聊天继续；不重发此消息。')){await api('outbox/recipient-invisible',{id:d.reviewInvisible,confirmed:true});await loadDeliveryReview();await refresh();}}
-  if(d.reviewResolve){const status=d.reviewStatus,prompt=status==='sent'?'文字请确认接收方账号能看到本段；表情请确认原消息上显示助手所贴表情。仅看到助手自己的文字气泡不能确认接收方可见。确认后保存人工记录，不重发。':status==='pending'?'请确认此段文字在抖音没有收到，并授权重新发送这一段。':'确定放弃这条回执？它不会再发送，也不会被标记为已送达。执行结果和其他回复保留。';if(confirm(prompt)){control.disabled=true;try{await api('outbox/resolve',{id:d.reviewResolve,status,confirmed:true});$('reviewError').textContent=status==='sent'?'已记录人工确认送达。':status==='pending'?'已按你的明确确认排入这一段文字。':'已放弃此回执，未将其标记为送达。';await loadDeliveryReview();await refresh();}catch(e){$('reviewError').textContent=e.message;}finally{control.disabled=false;}}}
+  if(d.reviewInvisible){if(await confirmAction({title:'标记接收方不可见？',message:'请确认这条回复在群成员一侧看不到。将标记可见性待核实并暂停本群自动回复，其他聊天继续；不重发此消息。',confirmLabel:'标记并暂停本群',kind:'warning'})){await api('outbox/recipient-invisible',{id:d.reviewInvisible,confirmed:true});await loadDeliveryReview();await refresh();}}
+  if(d.reviewResolve){const status=d.reviewStatus,prompt=status==='sent'?'文字请确认接收方账号能看到本段；表情请确认原消息上显示助手所贴表情。仅看到助手自己的文字气泡不能确认接收方可见。确认后保存人工记录，不重发。':status==='pending'?'请确认此段文字在抖音没有收到，并授权重新发送这一段。':'确定放弃这条回执？它不会再发送，也不会被标记为已送达。执行结果和其他回复保留。';if(await confirmAction({title:status==='sent'?'记录人工确认送达？':status==='pending'?'重发这一段文字？':'放弃此条回执？',message:prompt,confirmLabel:status==='sent'?'确认已收到':status==='pending'?'确认未收到并重发':'放弃此回执',kind:status==='sent'?'confirm':'warning'})){control.disabled=true;try{await api('outbox/resolve',{id:d.reviewResolve,status,confirmed:true});$('reviewError').textContent=status==='sent'?'已记录人工确认送达。':status==='pending'?'已按你的明确确认排入这一段文字。':'已放弃此回执，未将其标记为送达。';await loadDeliveryReview();await refresh();}catch(e){$('reviewError').textContent=e.message;}finally{control.disabled=false;}}}
   if(d.deleteKind){control.disabled=true;try{const p=await api('archive/delete/prepare',{kind:d.deleteKind,id:d.deleteId});deleting={kind:d.deleteKind,id:d.deleteId,token:p.token};$('deleteLabel').textContent=p.label;$('deleteCounts').textContent=d.deleteKind==='knowledge'?'将删除 1 条学习资料及其本地文件。':`将删除 ${p.counts.operations} 项任务记录、${p.counts.tasks} 项执行记录、${p.counts.messages} 条原始请求、${p.counts.replies} 段回复及 ${p.counts.receipts} 条回执。`;$('deleteWarning').textContent=p.warning;$('deleteError').textContent='';$('deleteAcknowledge').checked=false;$('confirmDelete').disabled=true;deleteDialog.showModal();$('cancelDelete').focus();}catch(e){if(e.code==='DELIVERY_UNCONFIRMED')await openDeliveryReview(d.deleteKind,d.deleteId);throw e;}finally{control.disabled=false;}}
   if(d.reconcileReply){const r=await api('outbox/reconcile',{id:d.reconcileReply});notice(r.reason||'当前未取得确定证据，保留待核实。',!r.verified);await refresh();}
   if(d.aiToggle){const chat=state.aiChats.chats.find(c=>c.chatKey===d.aiToggle);control.disabled=true;try{await api('ai-chats/save',{chatKey:chat.chatKey,mode:chat.mode,enabled:!chat.enabled});notice(chat.enabled?'此聊天已停用，未发送的旧回复已停止。':'此聊天已启用，从新消息开始处理。');await refresh();}finally{control.disabled=false;}}
@@ -497,7 +530,7 @@ document.addEventListener('click',async e=>{try{
     visualNotes.textContent=frames.map(f=>f.alt).join('\n');visualDialog.showModal();return;
   }$('visualInfo').textContent=`${v.fps} 帧/秒 · 已分析 ${v.completedSegments}/${v.totalSegments} 段 · 覆盖至 ${v.coveredUntil.toFixed(1)}/${v.duration.toFixed(1)} 秒。每组按左上、右上、左下、右下阅读。`;$('visualSheets').innerHTML=Array.from({length:v.sheetCount},(_,i)=>`<img loading="lazy" src="/api/knowledge/${encodeURIComponent(d.visual)}/sheet/${i}" alt="第 ${i+1} 组连续画面">`).join('');$('visualNotes').textContent=v.segments.map(s=>`${s.start.toFixed(1)}–${s.end.toFixed(1)} 秒\n${s.text}`).join('\n\n');$('visualDialog').showModal();}
   if(d.reanalyze){await api('knowledge/reanalyze',{id:d.reanalyze});notice('开始按完整时间轴重分析视觉内容，已完成的片段会复用。');}
-  if(d.delivered||d.resend){if(confirm(d.delivered?'请确认已在抖音收到这一段文字。':'请确认这一段没有收到，并授权重新发送。')){await api('outbox/resolve',{id:d.delivered||d.resend,status:d.delivered?'sent':'pending',confirmed:true});await refresh();}}
+  if(d.delivered||d.resend){if(await confirmAction({title:d.delivered?'记录人工确认送达？':'重发这一段文字？',message:d.delivered?'请确认已在抖音收到这一段文字。':'请确认这一段没有收到，并授权重新发送。',confirmLabel:d.delivered?'确认已收到':'确认未收到并重发',kind:d.delivered?'confirm':'warning'})){await api('outbox/resolve',{id:d.delivered||d.resend,status:d.delivered?'sent':'pending',confirmed:true});await refresh();}}
   if(d.retry)await api('retry/video',{id:d.retry});
   if(d.approve||d.decline)await api('approval',{id:d.approve||d.decline,allow:!!d.approve});
 }catch(err){notice(err.message,true);}});

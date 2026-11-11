@@ -5,7 +5,7 @@ import {chmod,unlink} from 'node:fs/promises';
 import {timingSafeEqual} from 'node:crypto';
 
 const terminal=new Set(['completed','failed','interrupted']);
-const allowedBridge=/^(?:thread\/(?:start|resume|read|turns\/list|items\/list|loaded\/list|list|unsubscribe|name\/set)|turn\/(?:start|interrupt)|model\/list|account\/read|config\/read|getAuthStatus)$/;
+const allowedBridge=/^(?:thread\/(?:start|resume|read|archive|unarchive|turns\/list|items\/list|loaded\/list|list|unsubscribe|name\/set)|turn\/(?:start|interrupt)|model\/list|account\/read|config\/read|getAuthStatus)$/;
 
 // Both frontends share ONE real app-server. RPC IDs are connection-local, so
 // every request and server callback is translated; no raw byte broadcast.

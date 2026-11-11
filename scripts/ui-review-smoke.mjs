@@ -48,7 +48,7 @@ try {
     const synced=await page.locator('#syncStatus').textContent();await page.waitForFunction(previous=>document.querySelector('#syncStatus').textContent!==previous,synced);
     assert.equal(await page.locator('#defaultModel').inputValue(),'gpt-6-astra');assert.equal(await page.locator('#contextBudget').inputValue(),'65000');
     assert.ok(await page.evaluate(()=>window.formProbe.focus===document.activeElement&&window.formProbe.option===document.querySelector('#defaultEffort option[value="max"]')));
-    await page.locator('#savePreferences').click();assert.equal(state.config.model,'gpt-6-astra');assert.equal(state.config.contextBudget,65000);
+    await page.locator('#savePreferences').click();await page.waitForFunction(()=>!document.querySelector('#savePreferences').disabled);assert.equal(state.config.model,'gpt-6-astra');assert.equal(state.config.contextBudget,65000);
     await page.locator('a[data-view="dispatch"]').click();await page.locator('#targetsPanel>summary').click();await page.locator('#loadThreads').click();await page.waitForFunction(()=>document.querySelector('#threadSelect').options.length===3);
     const option=await page.locator('#threadSelect').evaluate(e=>({text:e.options[2].text.length,title:e.options[2].title.length,direction:getComputedStyle(e).direction}));assert.ok(option.text<option.title);assert.equal(option.direction,'ltr');
   });
@@ -56,7 +56,7 @@ try {
     await page.locator('a[data-view="workbench"]').click();await page.locator('#workStatus').selectOption('done');
     await page.waitForFunction(()=>document.querySelectorAll('#taskList .work-card').length===1&&document.querySelector('#taskList .work-card').dataset.operation==='demo-task-22');
     assert.equal(await page.locator('#workScope').inputValue(),'all');
-    await page.locator('[data-operation="demo-task-22"] [data-archive-kind]').click();assert.equal(state.work.find(w=>w.id==='demo-task-22').archived,false);
+    const archived=page.waitForResponse('**/api/archive');await page.locator('[data-operation="demo-task-22"] [data-archive-kind]').click();await archived;assert.equal(state.work.find(w=>w.id==='demo-task-22').archived,false);
     await page.locator('#workStatus').selectOption('all');await page.locator('#workScope').selectOption('current');
     await page.locator('[data-operation="demo-task-28"] [data-interrupt-task]').click();
     await page.waitForFunction(()=>document.querySelector('[data-operation="demo-task-28"] .pill').textContent==='已取消');
@@ -184,7 +184,7 @@ try {
     await page.locator('#instanceBudget').fill('8000');await page.locator('#saveInstancePreferences').click();
     await page.waitForFunction(()=>!document.querySelector('#saveInstancePreferences').disabled);
     assert.equal(state.config.conversationOverrides['conversation:'+JSON.stringify(['chat','demo-group',''])].contextBudget,8000);
-    await page.locator('#instanceSystemDefaults').click();await page.locator('#chatsPanel').waitFor();assert.equal(await page.locator('#chatsPanel').evaluate(e=>e.open),true);
+    await page.locator('#instanceSystemDefaults').click();await page.waitForFunction(()=>document.querySelector('#chatsPanel').open);assert.equal(await page.locator('#chatsPanel').evaluate(e=>e.open),true);
     assert.equal(await page.locator('#modelPanel').evaluate(e=>e.closest('.system-defaults')===document.querySelector('#chatsPanel').closest('.system-defaults')),true);
     assert.equal(await page.locator('#appearanceSection #themeToggle').count(),1);assert.equal(await page.locator('.app-header #themeToggle').count(),0);
     Object.assign(state.config,originalConfig);Object.assign(state.runtime,originalRuntime);state.aiChats.chats=originalChats;
@@ -266,6 +266,7 @@ try {
     await page.locator('a[data-view="settings"]').click();
     if(!await page.locator('#modelPanel').evaluate(e=>e.open))await page.locator('#modelPanel>summary').click();
     await page.locator('#contextBudget').fill('66000');
+    await page.waitForTimeout(2700);assert.equal(await page.locator('#contextBudget').inputValue(),'66000','focused numeric drafts must survive a poll before blur');
     await page.locator('#contextBudget').dispatchEvent('change');
     await page.locator('#uiLayoutChoice').selectOption('classic');
     assert.equal(await page.locator('html').getAttribute('data-layout'),'modern');
@@ -336,15 +337,16 @@ try {
       for(const width of [320,1440]){
         await page.setViewportSize({width,height:844});await page.locator('#backupNow').scrollIntoViewIfNeeded();const before=await page.evaluate(()=>scrollY);await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'测试报错'}).waitFor();
         const state=await page.evaluate(()=>{const n=document.querySelector('#notice'),r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:innerWidth,height:innerHeight,scroll:scrollY,documentWidth:document.documentElement.scrollWidth,focused:n.contains(document.activeElement),role:n.getAttribute('role')};});
-        assert.ok(state.top>=14&&state.top<=24&&state.bottom<=state.height&&state.left>=0&&state.right<=state.width);assert.ok(Math.abs((state.left+state.right)/2-state.width/2)<2);assert.ok(state.documentWidth<=state.width);assert.ok(Math.abs(state.scroll-before)<3);assert.equal(state.focused,false);assert.equal(state.role,'alert');
+        const inset=width<=600?12:20;assert.ok(state.top>=0&&Math.abs(state.bottom-(state.height-inset))<2&&state.left>=0&&Math.abs(state.right-(state.width-inset))<2);assert.ok(state.documentWidth<=state.width);assert.ok(Math.abs(state.scroll-before)<3);assert.equal(state.focused,false);assert.equal(state.role,'alert');
         if(width===320)await page.screenshot({path:join(root,'floating-error-'+layout+'.png')});
         await page.locator('#closeNotice').click();assert.equal(await page.locator('#notice').isVisible(),false);
       }
     }await page.unroute('**/api/storage/backup');
   });
-  await check('top-centred error expires automatically without moving focus or scrolling',async()=>{
-    await page.route('**/api/storage/backup',route=>route.fulfill({status:400,json:{error:'自动消失测试'}}));
-    await page.clock.install();await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'自动消失测试'}).waitFor();await page.mouse.move(0,840);await page.clock.fastForward(10100);assert.equal(await page.locator('#notice').isVisible(),false);await page.clock.resume();await page.unroute('**/api/storage/backup');
+  await check('errors stay until dismissed; routine success expires without moving focus or scrolling',async()=>{
+    await page.route('**/api/storage/backup',route=>route.fulfill({status:400,json:{error:'持续错误提示测试'}}));
+    await page.clock.install();await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'持续错误提示测试'}).waitFor();await page.mouse.move(0,0);await page.clock.fastForward(10100);assert.equal(await page.locator('#notice').isVisible(),true);await page.locator('#closeNotice').click();await page.unroute('**/api/storage/backup');
+    await page.route('**/api/storage/backup',route=>route.fulfill({json:{ok:true}}));await page.locator('#backupNow').click();await page.locator('#noticeText').filter({hasText:'状态快照'}).waitFor();await page.mouse.move(0,0);await page.clock.fastForward(6100);assert.equal(await page.locator('#notice').isVisible(),false);await page.clock.resume();await page.unroute('**/api/storage/backup');
   });
   await check('receipt review lists the exact uncertain emoji and text; cancelling confirmation does not resolve or resend',async()=>{
     let rows=[{id:'review-emoji',operationId:'demo-task-23',number:23,title:'确认上一轮回复',kind:'progress_reaction',status:'uncertain',label:'表情：运行 · 奋斗',body:'原消息：请分析视频',error:'点击后连接中断',created:Date.now(),canResend:false},{id:'review-text',number:23,title:'确认上一轮回复',kind:'text',status:'uncertain',label:'文字回复：第 2/3 段',body:'完整反馈第二段',error:'送达未核实',created:Date.now(),canResend:true}],resolved=[];
@@ -355,8 +357,8 @@ try {
     await page.locator('#deliveryReviewDialog').waitFor();assert.equal(await page.locator('[data-ui-key="review:review-emoji"] [data-review-status="pending"]').count(),0);
     await page.locator('[data-review-reconcile="review-emoji"]').click();await page.locator('#reviewError').filter({hasText:'未点击表情'}).waitFor();
     let batches=0;await page.route('**/api/outbox/reconcile-batch',route=>{if(route.request().method()==='POST'){assert.deepEqual(route.request().postDataJSON(),{kind:'task',id:'demo-task-23'});batches++;}return route.fulfill({json:{batch:{status:'done',checked:2,total:2,verified:1,unresolved:1,waiting:0}}});});await page.locator('#reconcileReviewBatch').click();await page.locator('#reviewBatchStatus').filter({hasText:'已确认 1 条'}).waitFor();assert.equal(batches,1);assert.equal(resolved.length,0);await page.unroute('**/api/outbox/reconcile-batch');
-    page.once('dialog',dialog=>dialog.dismiss());await page.locator('[data-review-resolve="review-text"][data-review-status="sent"]').click();assert.equal(resolved.length,0);
-    page.once('dialog',dialog=>dialog.accept());await page.locator('[data-review-resolve="review-emoji"][data-review-status="abandoned"]').click();await page.waitForFunction(()=>!document.querySelector('[data-ui-key="review:review-emoji"]'));assert.deepEqual(resolved,[{id:'review-emoji',status:'abandoned',confirmed:true}]);
+    await page.locator('[data-review-resolve="review-text"][data-review-status="sent"]').click();await page.locator('#cancelAction').click();await page.waitForFunction(()=>document.querySelector('#actionDialog').dataset.decision==='cancel');assert.equal(resolved.length,0);
+    await page.locator('[data-review-resolve="review-emoji"][data-review-status="abandoned"]').click();await page.locator('#confirmAction').click();await page.waitForFunction(()=>!document.querySelector('[data-ui-key="review:review-emoji"]'));assert.deepEqual(resolved,[{id:'review-emoji',status:'abandoned',confirmed:true}]);
     await page.locator('#closeDeliveryReview').click();await page.unroute('**/api/outbox/review?*');await page.unroute('**/api/outbox/reconcile');await page.unroute('**/api/outbox/resolve');
   });
   await check('preview cannot execute real APIs or accept foreign-origin mutations',async()=>{

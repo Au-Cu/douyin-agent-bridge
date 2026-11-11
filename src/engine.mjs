@@ -597,6 +597,12 @@ export class BridgeEngine {
     if(normalizedBody!==out.body){this.store.updatePendingOutbox(out.id,{body:normalizedBody,payload:JSON.parse(out.payload||'{}'),priority:out.priority});out.body=normalizedBody;}
     this.deliveryTurns.set(out.peer,++this.deliveryTurn);
     this.outboxBusy=true;this.store.delivery(out.id,'sending');
+    const attempt={id:out.id,controller:new AbortController(),submitted:false};
+    attempt.previousDraft=payload.composerDraft;
+    attempt.recordDraft=value=>this.store.mergeOutboxPayload(out.id,{composerDraft:{...value,created:Date.now(),state:value.state||'prepared',recoveries:attempt.draftRecoveries??payload.composerDraft?.recoveries??0}});
+    attempt.markSubmitted=()=>{const p=JSON.parse(this.store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(out.id)?.payload||'{}');if(p.composerDraft)this.store.mergeOutboxPayload(out.id,{composerDraft:{...p.composerDraft,state:'submitted'}});};
+    attempt.done=new Promise(resolve=>attempt.finish=resolve);
+    this.activeDelivery=attempt;
     if(out.kind==='text')this.store.mergeOutboxPayload(out.id,{deliveryAttempt:{started:Date.now(),ended:0}});
     try{
       let method='text',textReceipt;
@@ -607,12 +613,38 @@ export class BridgeEngine {
         this.store.mergeOutboxPayload(out.id,{receiptResult:{method:'reaction',...result}});method='reaction';
       }
       else if(out.kind==='video_ack'&&this.adapter.acknowledge){const result=await this.adapter.acknowledge(this.store.config.owner,JSON.parse(out.payload),out.body);method=result.method;this.store.mergeOutboxPayload(out.id,{receiptResult:result});}
-      else {const send=()=>this.adapter.send(target,out.body,{plainText:payload.plainText===true,...(payload.replyToMessageId?{replyToMessageId:payload.replyToMessageId,replyToSenderUid:payload.chatbot?JSON.parse(this.store.db.prepare('SELECT body FROM bot_messages WHERE id=?').get(payload.botId)?.body||'{}').sender||'':''}:{})});if(payload.chatbot)textReceipt=await this.chats.delivery(payload,out.peer,send);else {const operationId=payload.operationId;textReceipt=await this.interrupts.run(operationId,()=>{this.context.getStore().delivery={id:out.id,submitted:false};return send();});}}
+      else {
+        const send=()=>{
+          const parent=operationContext.getStore(),signal=parent?.signal?AbortSignal.any([parent.signal,attempt.controller.signal]):attempt.controller.signal;
+          if(parent)parent.delivery=attempt;
+          return operationContext.run({...parent,signal,delivery:attempt,guard:()=>{
+            parent?.guard?.();
+            if(this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status!=='sending')throw Object.assign(new Error('此回复已停止发送'),{code:'DELIVERY_CANCELLED',notSubmitted:!attempt.submitted});
+          }},()=>{checkWork();return this.adapter.send(target,out.body,{plainText:payload.plainText===true,...(payload.replyToMessageId?{replyToMessageId:payload.replyToMessageId,replyToSenderUid:payload.chatbot?JSON.parse(this.store.db.prepare('SELECT body FROM bot_messages WHERE id=?').get(payload.botId)?.body||'{}').sender||'':''}:{})});});
+        };
+        if(payload.chatbot)textReceipt=await this.chats.delivery(payload,out.peer,send);
+        else textReceipt=await this.interrupts.run(payload.operationId,send);
+      }
+      if(this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='superseded'){
+        this.store.mergeOutboxPayload(out.id,{cancelledDeliveryEvidence:{at:Date.now(),verified:true,...(textReceipt?.messageId?{messageId:textReceipt.messageId}:{})}});
+        if(out.kind==='text'){
+          this.store.confirmTextDelivery(out.id,textReceipt?.messageId);
+          this.store.mergeOutboxPayload(out.id,{deliveryReview:{at:Date.now(),method:'exact_message_after_cancel',resolution:'sent'}});
+          if(payload.operationId)this.progress.sync(payload.operationId);
+          if(payload.chatbot)this.chats.reconcile();
+        }
+        return;
+      }
       if(out.kind==='text'){this.store.confirmTextDelivery(out.id,textReceipt?.messageId);if(payload.chatbot)this.store.mergeOutboxPayload(out.id,{deliveryEvidence:{scope:'sender_client',at:Date.now()}});}else this.store.delivery(out.id,'sent');
       const operationId=JSON.parse(out.payload||'{}').operationId;if(operationId)this.progress.sync(operationId);
       if(out.kind==='video_ack')this.store.event('已在抖音确认收到视频（'+(method==='reaction'?'消息表情回应':'私信文字')+'）');
     }
-    catch(e){if(!e.uncertain&&e.code==='CHAT_ACCOUNT_INACTIVE'&&e.notSubmitted){this.store.delivery(out.id,'pending',e.message);return;}let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':e.code==='CHAT_DELIVERY_PAUSED'?'held':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
+    catch(e){
+      if(this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='superseded'){
+        this.store.mergeOutboxPayload(out.id,{cancelledDeliveryEvidence:{at:Date.now(),uncertain:!!e.uncertain||attempt.submitted,submitted:attempt.submitted}});
+        return;
+      }
+      if(!e.uncertain&&e.code==='CHAT_ACCOUNT_INACTIVE'&&e.notSubmitted){this.store.delivery(out.id,'pending',e.message);return;}let status=e.uncertain||this.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(out.id)?.status==='uncertain'?'uncertain':(e.code==='CHAT_DELIVERY_PAUSED'||e.code==='OWNED_DRAFT_EXHAUSTED')?'held':e.code==='CHAT_DISABLED'||this.interrupts.record(JSON.parse(out.payload||'{}').operationId)?'superseded':out.kind==='progress_reaction'?'unavailable':'pending';if(out.kind==='progress_reaction'){const p=JSON.parse(out.payload||'{}'),attempts=(p.reactionAttempt?.attempts||0)+1;this.store.mergeOutboxPayload(out.id,{reactionAttempt:{state:e.uncertain?'uncertain':e.notSubmitted?'not_submitted':'unavailable',attempts,code:e.code||'UNAVAILABLE'}});if(!e.uncertain&&e.notSubmitted&&e.retryable&&attempts<3)status='pending';}
       let retryAfter;
       if(status==='pending'&&out.kind==='text'){
         const failures=Math.min(6,(payload.deliveryRetry?.failures||0)+1);
@@ -621,7 +653,12 @@ export class BridgeEngine {
       }
       this.store.delivery(out.id,status,e.message,retryAfter);
     }
-    finally{if(out.kind==='text'){const row=this.store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(out.id);if(row){const attempt=JSON.parse(row.payload||'{}').deliveryAttempt;this.store.mergeOutboxPayload(out.id,{deliveryAttempt:{...attempt,ended:Date.now()}});}}this.outboxBusy=false;}
+    finally{if(out.kind==='text'){const row=this.store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(out.id);if(row){const timing=JSON.parse(row.payload||'{}').deliveryAttempt;this.store.mergeOutboxPayload(out.id,{deliveryAttempt:{...timing,ended:Date.now(),submitted:attempt.submitted}});}}if(this.activeDelivery===attempt)this.activeDelivery=null;attempt.finish();this.outboxBusy=false;}
+  }
+  stopReplyDelivery(ids){
+    const active=this.activeDelivery;
+    if(active&&ids.includes(active.id))active.controller.abort(Object.assign(new Error('用户已取消发送此回复'),{code:'DELIVERY_CANCELLED',notSubmitted:!active.submitted}));
+    return active&&ids.includes(active.id)?active:null;
   }
   start(){
     const report=e=>this.store.event(e.message,'error');

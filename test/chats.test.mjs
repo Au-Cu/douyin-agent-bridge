@@ -8,6 +8,16 @@ async function configure(h,peer=group){h.native.scan=async()=>({peer,messages:[]
 async function settle(h){await h.chats.process();await Promise.all([...h.chats.running.values()]);}
 async function drain(h){for(let i=0;i<50&&h.s.pendingOutbox().length;i++)await h.engine.deliver();h.chats.reconcile();for(let i=0;i<10&&h.s.pendingOutbox().length;i++)await h.engine.deliver();}
 
+test('read current chat pauses automatic navigation, preserves selection after an error and releases it only after save or cancel',async()=>{
+  const h=setup();try{
+    h.native.scan=async()=>({peer:null,messages:[],loginRequired:true});await assert.rejects(h.chats.observe(),/打开目标聊天/);assert.equal(h.adapter.selecting,true);
+    await assert.rejects(h.adapter.scanPeer(group),/轮询暂时暂停/);
+    h.native.scan=async()=>({peer:group,messages:[],diagnostics:{}});const observed=await h.chats.observe();assert.equal(observed.chatKey,group.chatKey);assert.equal(h.adapter.selecting,true);
+    h.chats.configure({token:observed.token,mode:'chat',enabled:true});assert.equal(h.adapter.selecting,false);
+    await h.adapter.selection(true,'self');await assert.rejects(h.chats.observe(),/先完成/);h.adapter.selection(false,'self');
+  }finally{h.s.close();}
+});
+
 test('logout hides ordinary chats and the same platform group is independent across accounts',async()=>{
   const h=setup();
   try{
