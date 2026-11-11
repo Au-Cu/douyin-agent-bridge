@@ -74,7 +74,7 @@ test('旧版界面：长聊天名从左侧显示、限定菜单宽度；缩小�
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     await page.getByRole('button',{name:'重新连接助手'}).click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('已读取本机当前助手登录'));
     await page.waitForFunction(()=>document.querySelectorAll('#defaultModel option').length===2);
-    await page.selectOption('#defaultModel','fixture-sol');await page.selectOption('#defaultEffort','max');await page.locator('#fastMode').check();await page.locator('#autoRoute').uncheck();await page.locator('#contextBudget').fill('16000');await page.getByRole('button',{name:'保存默认配置'}).click();
+    await page.selectOption('#defaultModel','fixture-sol');await page.selectOption('#defaultEffort','max');await page.locator('#fastMode').check();await page.locator('#autoRoute').uncheck();await page.locator('#contextBudget').fill('16000');await page.getByRole('button',{name:'保存模型与对话'}).click();
     await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('默认配置已保存'));
     assert.deepEqual(preferencesSaved,{model:'fixture-sol',reasoningEffort:'max',fastMode:true,autoRoute:false,contextBudget:16000});
     await page.waitForFunction(()=>!document.querySelector('#modelPanel').open);assert.equal(await page.locator('#targetsPanel').evaluate(e=>e.open),false);

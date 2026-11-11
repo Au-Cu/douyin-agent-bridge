@@ -45,6 +45,7 @@ function renderInstance(peer,mode){
   const isChat=mode==='chat',harness=(isChat?state.runtime.harness?.chat:state.runtime.harness?.active)||'codex';
   const key='conversation:'+JSON.stringify([isChat?'chat':'agent',peer.chatKey,peer.selfUid||'']);
   const draftKey=key+':'+harness,stored=state.config.conversationOverrides?.[key]||{},model=stored.models?.[harness]||{};
+  const error=$('instancePreferencesError');if(error.dataset.context!==draftKey){error.hidden=true;error.textContent='';error.dataset.context=draftKey;}
   const list=(isChat?chatCatalog:catalog)?.models||[];
   instanceForm={draftKey,peer:peer.chatKey,mode,harness};
   const values=instanceDrafts.get(draftKey)||[model.model??'__inherit',model.reasoningEffort??'__inherit',model.fastMode===undefined?'':model.fastMode?'on':'off',stored.contextBudget??'',stored.maxVideoSeconds==null?'':stored.maxVideoSeconds/60,stored.visualFps??'',stored.autoRoute===undefined?'':stored.autoRoute?'on':'off'];
@@ -54,7 +55,7 @@ function renderInstance(peer,mode){
   updateOptions($('instanceModel'),options(values[0],list.map(m=>[m.model,m.displayName||m.model]),'后端默认模型'));
   updateOptions($('instanceEffort'),options(values[1],(info?.supportedReasoningEfforts||[]).map(e=>[e.reasoningEffort,effortLabels[e.reasoningEffort]||e.reasoningEffort]),'模型默认强度'));
   for(const [i,id] of instanceFields.entries())if($(id).value!==String(values[i]))$(id).value=values[i];
-  $('instanceRouting').hidden=isChat;$('instanceVideoDuration').hidden=isChat;$('instanceVideoDensity').hidden=isChat;
+  $('instanceVideoGroup').hidden=isChat;$('instanceRouting').hidden=isChat;$('instanceVideoDuration').hidden=isChat;$('instanceVideoDensity').hidden=isChat;
   $('instanceContextRow').hidden=isChat&&peer.type!=='group';
   $('instanceBudget').max=isChat?'96000':'200000';
   $('instanceSystemDefaults').href=isChat?'#settings/chat-defaults':'#settings/agent-defaults';
@@ -118,6 +119,15 @@ if(!classic){
     refresh();
   });
 }
+function renderChatSettings(c,owner){
+  const key=escape(c.chatKey),agentAllowed=c.type==='single'&&c.chatKey===owner?.chatKey&&c.peerUid===owner?.peerUid;
+  return `<div class="ai-chat-item" data-ui-key="chat:${key}">${classic?'<strong>'+escape(c.displayName)+'</strong> ':''}<span class="pill">${c.type==='group'?'群聊':'单聊'} · ${c.enabled?'已启用':'已停用'}</span><small>${c.mode==='agent'?'个人 Agent · 现有用户授权模式':c.type==='group'?(c.groupReplyMode==='all'?'普通聊天 · 回复所有新消息':'普通聊天 · 仅原生 @ 助手时回复'):'普通聊天 · 仅回复本聊天'}</small>
+  <div class="settings-section-heading"><h4>使用与回复</h4><span class="save-scope">选择后立即保存</span></div><div class="settings-list">
+    <label class="setting-row"><span class="setting-label">使用方式</span><select data-ai-mode="${key}"><option value="chat" ${c.mode==='chat'?'selected':''}>普通聊天 AI</option>${agentAllowed?'<option value="agent" '+(c.mode==='agent'?'selected':'')+'>个人 Agent · 现有模式</option>':''}</select></label>
+    ${c.type==='group'&&c.mode==='chat'?'<label class="setting-row"><span class="setting-label">回复范围</span><select data-ai-reply="'+key+'"><option value="mentions" '+(c.groupReplyMode!=='all'?'selected':'')+'>仅被 @ 时回复</option><option value="all" '+(c.groupReplyMode==='all'?'selected':'')+'>回复所有新消息</option></select></label>':''}
+    <div class="setting-row"><span class="setting-label">此聊天的 AI</span><button class="secondary" data-ai-toggle="${key}">${c.enabled?'停用此聊天':'启用此聊天'}</button></div>
+  </div>${groupUI.controls(c,{showRecords:classic})}</div>`;
+}
 function renderAiChats(){
   groupUI.render(state);
   const data=state.aiChats||{chats:[],messages:[]},owner=state.config.owner;
@@ -127,9 +137,10 @@ function renderAiChats(){
   const selected=classic?null:renderChatDirectory(data,owner);
   const backend=backendName(state.runtime.harness?.chat);
   $('chatsSummary').textContent='已启用 '+data.chats.filter(c=>c.enabled).length+' 个聊天 · '+backend+' · '+(state.config.chatModel||'默认模型')+(data.selecting?' · 正在选择聊天':'');
+  $('chatBackendStatus').textContent='当前后端：'+backend+'。选择后立即保存；下方模型与能力默认值仍需单独保存。';
   $('chatEffectiveModel').textContent='已保存的普通聊天配置：'+backend+' · '+(state.config.chatModel||chatCatalog?.defaults?.model||'默认模型')+' · '+(effortLabels[state.config.chatReasoningEffort]||state.config.chatReasoningEffort||'模型默认强度')+' · 快速模式'+(state.config.chatFastMode?'开':'关')+'。从下一轮起生效，与个人 Agent 分开保存。';
   $('aiChatSelection').hidden=!data.selecting;$('finishAiSelection').hidden=!data.selecting;
-  updateHTML($('aiChatList'),(classic?data.chats:selected&&data.chats.some(c=>c.chatKey===selected.chatKey&&c.mode===selected.mode)?[selected]:[]).map(c=>{const agentAllowed=c.type==='single'&&c.chatKey===owner?.chatKey&&c.peerUid===owner?.peerUid;return `<div class="ai-chat-item" data-ui-key="chat:${escape(c.chatKey)}">${classic?`<strong>${escape(c.displayName)}</strong> `:''}<span class="pill">${c.type==='group'?'群聊':'单聊'} · ${c.enabled?'已启用':'已停用'}</span><small>${c.mode==='agent'?'个人 Agent · 现有用户授权模式':c.type==='group'?(c.groupReplyMode==='all'?'普通聊天 · 回复所有新消息':'普通聊天 · 仅原生 @ 助手时回复'):'普通聊天 · 仅回复本聊天'}</small><div class="button-row"><label>使用方式 <select data-ai-mode="${escape(c.chatKey)}"><option value="chat" ${c.mode==='chat'?'selected':''}>普通聊天 AI</option>${agentAllowed?`<option value="agent" ${c.mode==='agent'?'selected':''}>个人 Agent · 现有模式</option>`:''}</select></label>${c.type==='group'&&c.mode==='chat'?`<label>回复范围 <select data-ai-reply="${escape(c.chatKey)}"><option value="mentions" ${c.groupReplyMode!=='all'?'selected':''}>仅被 @ 时回复</option><option value="all" ${c.groupReplyMode==='all'?'selected':''}>回复所有新消息</option></select></label>`:''}<button class="secondary" data-ai-toggle="${escape(c.chatKey)}">${c.enabled?'停用此聊天':'启用此聊天'}</button></div>${groupUI.controls(c,{showRecords:classic})}</div>`;}).join('')||'<p class="empty">选择需要启用 AI 的单聊或群聊。其他聊天保持静默。</p>');
+  updateHTML($('aiChatList'),(classic?data.chats:selected&&data.chats.some(c=>c.chatKey===selected.chatKey&&c.mode===selected.mode)?[selected]:[]).map(c=>renderChatSettings(c,owner)).join('')||'<p class="empty">选择需要启用 AI 的单聊或群聊。其他聊天保持静默。</p>');
   const names={new:'排队中',preparing:'准备聊天',submitted:'正在回复',replying:'结果已生成，等待送达',delivery_uncertain:'送达需核实，不自动重发',done:'助手端已发出',held:'暂停保留',cancelled:'已停止',failed:'处理失败',uncertain:'需要核实',blocked:'队列已满'};
   updateHTML($('botHistory'),(classic?data.messages:data.messages.filter(m=>m.peer===selected?.chatKey)).map(m=>`<div class="item" data-ui-key="bot:${escape(m.id)}"><strong>${escape(m.name)}</strong> <span class="pill">${m.deliveryIssue?'发送受阻，等待重试':names[m.status]||escape(m.status)}</span>${m.deliveryIssue?`<small>${escape(deliveryError(m.deliveryIssue))}</small>`:''}<small>${new Date(m.created).toLocaleString('zh-CN',{hour12:false})}</small>${!classic&&m.input?`<p><strong>收到</strong><br>${escape(m.input)}</p>`:''}${!classic&&m.result?.length>300?`<details data-fold-key="chat-reply:${escape(m.id)}"><summary>查看完整回复</summary><p>${escape(m.result)}</p></details>`:`<p>${escape(m.result?.slice(0,300)||'尚未生成回复')}</p>`}<small>${m.recipientVisibility==='confirmed'?'用户已确认接收方可见':m.recipientVisibility==='reported_invisible'?'群成员反馈不可见，待核实':m.status==='done'?'仅确认助手端状态，接收方可见性未确认':'尚未确认送达'}</small>${renderReplyControls('chat_reply',m.id,m.deliveryControls)}${m.canRetry?`<button class="secondary" data-chat-retry="${escape(m.id)}">重试未提交的消息</button>`:''}${m.sessionId?`<button class="secondary" data-group-sessions="${escape(m.peer)}" data-session-id="${escape(m.sessionId)}">查看对应会话</button>`:''}${(m.uncertainReplies||[]).map(id=>`<div class="button-row"><button class="secondary" data-reconcile-reply="${escape(id)}">核验原聊天</button><button class="secondary" data-delivered="${escape(id)}">这段已在抖音收到</button>${m.recipientVisibility!=='reported_invisible'?`<button class="secondary" data-resend="${escape(id)}">确认这段未收到，重新发送</button>`:''}</div>`).join('')}</div>`).join('')||'<p class="empty">普通聊天尚无新交流记录。</p>');
 }
@@ -264,7 +275,7 @@ $('confirmDelete').addEventListener('click',async()=>{
   catch(e){$('deleteError').textContent=e.message;$('deleteAcknowledge').checked=false;}
   finally{$('cancelDelete').disabled=false;$('deleteAcknowledge').disabled=false;delete $('confirmDelete').dataset.dialogBusy;}
 });
-function action(id,fn){$(id).addEventListener('click',async()=>{const button=$(id);button.disabled=true;try{await fn(button);}catch(e){notice(e.message,true);}finally{button.disabled=false;}await refresh();});}
+function action(id,fn){$(id).addEventListener('click',async()=>{const button=$(id),error=button.dataset.errorTarget&&$(button.dataset.errorTarget),context=error?.dataset.context;if(error){error.hidden=true;error.textContent='';}button.disabled=true;try{await fn(button);}catch(e){if(error&&error.dataset.context===context){error.textContent=e.message;error.hidden=false;}notice(e.message,true);}finally{button.disabled=false;}await refresh();});}
 const groupUI=initGroupSettings({api,notice,escape,getState:()=>state,refresh});
 function renderTargets(){updateHTML($('targetList'),targets.map((t,i)=>`<div class="target" data-ui-key="target:${escape(t.thread||t.alias)}">${escape(t.alias)} <small>${escape(t.name)}</small><button data-remove="${i}" aria-label="移除目标">×</button></div>`).join(''));}
 let targetTail=Promise.resolve();
@@ -338,10 +349,10 @@ async function refresh(){
     $('agentBackendLabel').textContent='个人 Agent · '+backendName(agentBackend);
     if(!agentHarnessDirty)$('agentHarness').value=r.harness?.configured||agentBackend;
     $('chatHarness').value=chatBackend;
-    $('harnessState').textContent='正在使用：'+backendName(agentBackend)+'。已保存：'+backendName(r.harness?.configured||agentBackend)+'。'+(r.harness?.environmentOverride?'BRIDGE_HARNESS 环境变量优先，需修改该变量并重启。':r.harness?.configured&&r.harness.configured!==agentBackend?'重启助手后切换。':'保存其他后端后重启生效。')+' 旧需求与目标聊天继续使用原后端；DSH 需求仅作可恢复的本地归档。';
+    $('harnessState').textContent='正在使用：'+backendName(agentBackend)+'。已保存：'+backendName(r.harness?.configured||agentBackend)+'。'+(r.harness?.environmentOverride?'BRIDGE_HARNESS 环境变量优先，需修改该变量并重启。':r.harness?.configured&&r.harness.configured!==agentBackend?'重启助手后切换。':'保存其他后端后重启生效。');
     if(oldChat!==chatBackend){chatCatalog=null;chatPreferencesDirty=false;loadModeModels(true).catch(e=>notice('普通聊天模型名单暂未读取：'+e.message,true));}
     for(const el of document.querySelectorAll('[data-fold-key]'))if(el.open)openedDetails.add(el.dataset.foldKey);else openedDetails.delete(el.dataset.foldKey);
-    if(state.storage){$('storagePath').textContent='固定数据目录：'+state.storage.dataRoot;$('backupInfo').textContent=(state.storage.recovery?state.storage.recovery+'。':'')+(state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。':'尚未生成状态快照。')+(r.browserEngine==='safari'?' 原视频和连续画面保存在上述目录；Safari 登录态由 Safari 管理。':' 原视频、连续画面和登录态保留在上述目录；')+'自动备份配置、需求与任务记录，退出程序时也会生成快照。';}
+    if(state.storage){$('backupSummary').textContent=state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。配置与记录自动保存。':'配置与记录自动保存，尚未生成状态快照。';$('storagePath').textContent='固定数据目录：'+state.storage.dataRoot;$('backupInfo').textContent=(state.storage.recovery?state.storage.recovery+'。':'')+(state.storage.backup?'最近状态快照：'+new Date(state.storage.backup.created).toLocaleString('zh-CN',{hour12:false})+'。':'尚未生成状态快照。')+(r.browserEngine==='safari'?' 原视频和连续画面保存在上述目录；Safari 登录态由 Safari 管理。':' 原视频、连续画面和登录态保留在上述目录；')+'自动备份配置、需求与任务记录，退出程序时也会生成快照。';}
     if(classic)$('browserInstructions').textContent=r.browserEngine==='safari'?'使用 Safari 登录助手账号；需要时先切换到助手专用的 Safari 个人资料，再与主号互关并发送私信。':'首次登录专用 Edge 窗口；后续自动恢复保存的会话。主号与它互关后，从手机给它发一条私信。';
     $('liveBadge').textContent=state.config.enabled?'正在监听':'尚未监听';$('liveBadge').className='badge'+(state.config.enabled?' active':'');
     if(state.config.ignoreMessages)$('liveBadge').textContent='忽略新消息 · /结束忽略 恢复';
@@ -495,7 +506,8 @@ action('toggleListen',async()=>{await api('listen',{enabled:!state.config.enable
 action('loadThreads',async()=>{threads=await api('threads?harness='+encodeURIComponent($('targetHarness').value));renderThreadOptions();notice('已读取 '+threads.length+' 个 '+backendName($('targetHarness').value)+' 本机聊天。');});
 $('targetHarness').addEventListener('change',()=>{threads=[];renderThreadOptions();});
 action('addTarget',async()=>{const t=threads.find(t=>t.id===$('threadSelect').value);if(!t)throw new Error('请先选择聊天');const alias=$('targetAlias').value.trim();if(!alias)throw new Error('请填写别名');await changeTargets(list=>{if(list.some(x=>x.id===t.id||x.alias===alias))throw new Error('此聊天或别名已在名单中');return [...list,{id:t.id,name:t.name,alias}];});});
-action('saveConfig',async()=>{await api(classic?'config':'video-preferences',{...(classic?{targets}:{}),maxVideoSeconds:Number($('maxMinutes').value)*60,visualFps:Number($('visualFps').value),ackMode:$('ackMode').value});dirty=false;notice('配置已保存。');});
+for(const id of ['threadSelect','targetAlias'])$(id).addEventListener('input',()=>{$('targetFormError').hidden=true;});
+action('saveConfig',async()=>{await api('video-preferences',{maxVideoSeconds:Number($('maxMinutes').value)*60,visualFps:Number($('visualFps').value),ackMode:$('ackMode').value});dirty=false;notice('视频设置已保存，从下一次分析起生效。');});
 $('maxMinutes').addEventListener('input',()=>dirty=true);
 $('visualFps').addEventListener('change',()=>dirty=true);
 $('ackMode').addEventListener('change',()=>dirty=true);
